@@ -115,7 +115,9 @@ namespace eosio { namespace vm {
          // void* stack -> R8
          // uint64_t count -> R9
          // uint32_t vector_result -> (RBP + 16)
-         emit_enter(16);
+         emit_push(rbp);
+         emit_movq(rsp, rbp);
+         emit_sub(16, rsp);
 
          // switch stack
          emit(TESTQ, r8, r8);
@@ -140,15 +142,22 @@ namespace eosio { namespace vm {
 
          // load call depth counter
          emit_movq(rbx, *(rbp - 16));
-         emit_movd(*rdi, ebx);
+         if constexpr (Context::async_backtrace())
+         {
+            emit_movd(*(rdi + 16), ebx);
+         }
+         else
+         {
+            emit_movd(*rdi, ebx);
+         }
 
          if constexpr (Context::async_backtrace()) {
-            emit_movq(rbp, *(rdi + 16));
+            emit_movq(rbp, *(rdi + 8));
          }
          emit_call(rcx);
          if constexpr (Context::async_backtrace()) {
             emit_xord(edx, edx);
-            emit_movq(rdx, *(rdi + 16));
+            emit_movq(rdx, *(rdi + 8));
          }
 
          emit_movq(*(rbp - 16), rbx);
@@ -162,7 +171,8 @@ namespace eosio { namespace vm {
          emit_vpextrq(1, xmm0, rdx);
          fix_branch8(is_vector, code);
 
-         emit(LEAVE);
+         emit_movq(rbp, rsp);
+         emit_pop(rbp);
          emit(RET);
       }
 

@@ -206,9 +206,9 @@ namespace eosio { namespace vm {
    };
    template<>
    struct frame_info_holder<true> {
-      uint32_t _remaining_call_depth;
       void* volatile _bottom_frame = nullptr;
       void* volatile _top_frame = nullptr;
+      uint32_t _remaining_call_depth;
    };
 
    template<typename Host, bool EnableBacktrace = false>
