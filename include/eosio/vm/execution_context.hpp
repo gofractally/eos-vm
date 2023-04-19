@@ -293,12 +293,12 @@ namespace eosio { namespace vm {
 
          try {
             if (func_index < _mod.get_imported_functions_size()) {
-               std::reverse(args_raw + 0, args_raw + sizeof...(Args));
+               std::reverse(args_raw + 0, args_raw + args_count);
                result.scalar = call_host_function(args_raw, func_index);
             } else {
                std::size_t maximum_stack_usage =
-                  (_mod.maximum_stack + 2 /*frame ptr + return ptr*/) * (_remaining_call_depth + 1) +
-                 sizeof...(Args) + 4 /* scratch space */;
+                  (_mod.maximum_stack + 2 /*frame ptr + return ptr*/) * (this->_remaining_call_depth + 1) +
+                 args_count + 4 /* scratch space */;
                stack_allocator alt_stack(maximum_stack_usage * sizeof(native_value));
                // reserve 24 bytes for data accessed by inline assembly
                void* stack = alt_stack.top();
