@@ -38,6 +38,7 @@ public:
             static_cast<std::uint32_t>(reinterpret_cast<const char*>(wasm_addr) - reinterpret_cast<const char*>(wasm_base))
          });
       }
+      void on_function_end(const void* code_addr, const void* wasm_addr) {}
       void on_instr_start(const void* code_addr, const void* wasm_addr) {
          data.push_back({
             static_cast<std::uint32_t>(reinterpret_cast<const char*>(code_addr) - reinterpret_cast<const char*>(code_base)),

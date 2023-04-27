@@ -1721,6 +1721,7 @@ namespace eosio { namespace vm {
             code_writer.emit_prologue(ft, fb.locals, i);
             parse_function_body_code(_function_bodies[i].first, fb.size, _function_bodies[i].second, code_writer, ft, local_types);
             code_writer.emit_epilogue(ft, fb.locals, i);
+            imap.on_function_end(code_writer.get_addr(), _function_bodies[i].first.bnds);
             code_writer.finalize(fb);
          }
          imap.on_code_end(code_writer.get_addr(), code.raw());
