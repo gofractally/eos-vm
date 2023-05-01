@@ -12,6 +12,7 @@ struct null_debug_info {
    using builder = null_debug_info;
    void on_code_start(const void* compiled_base, const void* wasm_code_start) {}
    void on_function_start(const void* code_addr, const void* wasm_addr) {}
+   void on_function_end(const void* code_addr, const void* wasm_addr) {}
    void on_instr_start(const void* code_addr, const void* wasm_addr) {}
    void on_code_end(const void* code_addr, const void* wasm_addr) {}
    void set(const null_debug_info&) {}

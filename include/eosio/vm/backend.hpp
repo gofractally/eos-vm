@@ -63,6 +63,8 @@ namespace eosio { namespace vm {
       using host_t     = detail::host_type_t<HostFunctions>;
       using context_t  = typename Impl::template context<HostFunctions>;
       using parser_t   = typename Impl::template parser<HostFunctions, Options, DebugInfo>;
+      template<typename XDebugInfo>
+      using parser_tpl   = typename Impl::template parser<HostFunctions, Options, XDebugInfo>;
       void construct(host_t* host=nullptr) {
          mod.finalize();
          ctx.set_wasm_allocator(memory_alloc);
@@ -90,6 +92,12 @@ namespace eosio { namespace vm {
       }
       backend(wasm_code& code, wasm_allocator* alloc, const Options& options = Options{})
          : memory_alloc(alloc), ctx(parser_t{ mod.allocator, options }.parse_module(code, mod, debug), detail::get_max_call_depth(options)) {
+         ctx.set_max_pages(detail::get_max_pages(options));
+         construct();
+      }
+      template <typename XDebugInfo>
+      backend(wasm_code& code, wasm_allocator* alloc, const Options& options, XDebugInfo& debug)
+         : memory_alloc(alloc), ctx(parser_tpl<XDebugInfo>{ mod.allocator, options }.parse_module(code, mod, debug), detail::get_max_call_depth(options)) {
          ctx.set_max_pages(detail::get_max_pages(options));
          construct();
       }
