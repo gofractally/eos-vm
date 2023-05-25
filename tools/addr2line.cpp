@@ -11,6 +11,7 @@ struct nm_debug_info {
    void on_function_start(const void* code_addr, const void* wasm_addr) {
       function_offsets.push_back(static_cast<std::uint32_t>(reinterpret_cast<const char*>(wasm_addr) - reinterpret_cast<const char*>(wasm_base)));
    }
+   void on_function_end(const void*, const void*) {}
    void on_instr_start(const void* code_addr, const void* wasm_addr) {}
    void on_code_end(const void* code_addr, const void* wasm_addr) {}
    void set(nm_debug_info&& other) { *this = std::move(other); }
