@@ -29,7 +29,7 @@ namespace eosio { namespace vm {
       template<typename Host>
       using context = jit_execution_context<Host>;
       template<typename Host, typename Options, typename DebugInfo>
-      using parser = binary_parser<machine_code_writer<jit_execution_context<Host>>, Options, DebugInfo>;
+      using parser = binary_parser<machine_code_writer<jit_execution_context<Host>, detail::has_max_stack_bytes<Options>>, Options, DebugInfo>;
       static constexpr bool is_jit = true;
    };
 
@@ -37,7 +37,7 @@ namespace eosio { namespace vm {
       template<typename Host>
       using context = jit_execution_context<Host, true>;
       template<typename Host, typename Options, typename DebugInfo>
-      using parser = binary_parser<machine_code_writer<context<Host>>, Options, DebugInfo>;
+      using parser = binary_parser<machine_code_writer<context<Host>, detail::has_max_stack_bytes<Options>>, Options, DebugInfo>;
       static constexpr bool is_jit = true;
    };
 #endif
@@ -76,38 +76,38 @@ namespace eosio { namespace vm {
       }
     public:
       backend(wasm_code&& code, host_t& host, wasm_allocator* alloc, const Options& options = Options{})
-         : memory_alloc(alloc), ctx(parser_t{ mod.allocator, options }.parse_module(code, mod, debug), detail::get_max_call_depth(options)) {
+         : memory_alloc(alloc), ctx(parser_t{ mod.allocator, options }.parse_module(code, mod, debug), detail::choose_stack_limit(options)) {
          ctx.set_max_pages(detail::get_max_pages(options));
          construct(&host);
       }
       backend(wasm_code&& code, wasm_allocator* alloc, const Options& options = Options{})
-         : memory_alloc(alloc), ctx(parser_t{ mod.allocator, options }.parse_module(code, mod, debug), detail::get_max_call_depth(options)) {
+         : memory_alloc(alloc), ctx(parser_t{ mod.allocator, options }.parse_module(code, mod, debug), detail::choose_stack_limit(options)) {
          ctx.set_max_pages(detail::get_max_pages(options));
          construct();
       }
       backend(wasm_code& code, host_t& host, wasm_allocator* alloc, const Options& options = Options{})
-         : memory_alloc(alloc), ctx(parser_t{ mod.allocator, options }.parse_module(code, mod, debug), detail::get_max_call_depth(options)) {
+         : memory_alloc(alloc), ctx(parser_t{ mod.allocator, options }.parse_module(code, mod, debug), detail::choose_stack_limit(options)) {
          ctx.set_max_pages(detail::get_max_pages(options));
          construct(&host);
       }
       backend(wasm_code& code, wasm_allocator* alloc, const Options& options = Options{})
-         : memory_alloc(alloc), ctx(parser_t{ mod.allocator, options }.parse_module(code, mod, debug), detail::get_max_call_depth(options)) {
+         : memory_alloc(alloc), ctx(parser_t{ mod.allocator, options }.parse_module(code, mod, debug), detail::choose_stack_limit(options)) {
          ctx.set_max_pages(detail::get_max_pages(options));
          construct();
       }
       template <typename XDebugInfo>
       backend(wasm_code& code, wasm_allocator* alloc, const Options& options, XDebugInfo& debug)
-         : memory_alloc(alloc), ctx(parser_tpl<XDebugInfo>{ mod.allocator, options }.parse_module(code, mod, debug), detail::get_max_call_depth(options)) {
+         : memory_alloc(alloc), ctx(parser_tpl<XDebugInfo>{ mod.allocator, options }.parse_module(code, mod, debug), detail::choose_stack_limit(options)) {
          ctx.set_max_pages(detail::get_max_pages(options));
          construct();
       }
       backend(wasm_code_ptr& ptr, size_t sz, host_t& host, wasm_allocator* alloc, const Options& options = Options{})
-         : memory_alloc(alloc), ctx(parser_t{ mod.allocator, options }.parse_module2(ptr, sz, mod, debug), detail::get_max_call_depth(options)) {
+         : memory_alloc(alloc), ctx(parser_t{ mod.allocator, options }.parse_module2(ptr, sz, mod, debug), detail::choose_stack_limit(options)) {
          ctx.set_max_pages(detail::get_max_pages(options));
          construct(&host);
       }
       backend(wasm_code_ptr& ptr, size_t sz, wasm_allocator* alloc, const Options& options = Options{})
-         : memory_alloc(alloc), ctx(parser_t{ mod.allocator, options }.parse_module2(ptr, sz, mod, debug), detail::get_max_call_depth(options)) {
+         : memory_alloc(alloc), ctx(parser_t{ mod.allocator, options }.parse_module2(ptr, sz, mod, debug), detail::choose_stack_limit(options)) {
          ctx.set_max_pages(detail::get_max_pages(options));
          construct();
       }
@@ -124,7 +124,7 @@ namespace eosio { namespace vm {
 
       // Only dynamic options matter.  Parser options will be ignored.
       inline backend& initialize(host_t* host, const Options& new_options) {
-         ctx.set_max_call_depth(detail::get_max_call_depth(new_options));
+         ctx.set_max_call_depth(detail::choose_stack_limit(new_options));
          ctx.set_max_pages(detail::get_max_pages(new_options));
          initialize(host);
          return *this;

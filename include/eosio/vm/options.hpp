@@ -44,8 +44,10 @@ struct options {
    std::uint32_t max_code_bytes;
    // The maximum size of linear memory in page units.
    std::uint32_t max_pages;
-   // The maximum function call depth
+   // The maximum function call depth. Cannot be used with with max_stack_bytes
    std::uint32_t max_call_depth;
+   // The maximum total stack size in bytes. Cannot be used with max_call_depth
+   // std::uint32_t max_stack_bytes
    // Can mutable globals be exported
    bool forbid_export_mutable_globals = false;
    // Very strange non-conforming behavior

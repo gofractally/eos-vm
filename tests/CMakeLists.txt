@@ -51,32 +51,8 @@ macro( add_spec_test name )
    endif()
 endmacro()
 
-if(1)
-foreach(testcase
-    simd_address simd_align simd_bit_shift simd_bitwise simd_boolean simd_const
-    simd_conversions
-    simd_f32x4 simd_f32x4_arith simd_f32x4_cmp simd_f32x4_pmin_pmax simd_f32x4_rounding
-    simd_f64x2 simd_f64x2_arith simd_f64x2_cmp simd_f64x2_pmin_pmax simd_f64x2_rounding
-    simd_i8x16_arith simd_i8x16_arith2 simd_i8x16_cmp simd_i8x16_sat_arith
-    simd_i16x8_arith simd_i16x8_arith2 simd_i16x8_cmp simd_i16x8_extadd_pairwise_i8x16
-    simd_i16x8_extmul_i8x16 simd_i16x8_q15mulr_sat_s simd_i16x8_sat_arith
-    simd_i32x4_arith simd_i32x4_arith2 simd_i32x4_cmp simd_i32x4_dot_i16x8
-    simd_i32x4_extadd_pairwise_i16x8 simd_i32x4_extmul_i16x8
-    simd_i32x4_trunc_sat_f32x4 simd_i32x4_trunc_sat_f64x2
-    simd_i64x2_arith simd_i64x2_arith2 simd_i64x2_cmp simd_i64x2_extmul_i32x4
-    simd_int_to_int_extend simd_lane simd_load
-    simd_load8_lane simd_load16_lane simd_load32_lane simd_load64_lane
-    simd_load_extend simd_load_splat simd_load_zero
-    simd_splat simd_store
-    simd_store8_lane simd_store16_lane simd_store32_lane simd_store64_lane
-    )
-   add_spec_test(${testcase})
- endforeach()
- endif()
-
 if (ENABLE_SPEC_TESTS)
 
-if (0)
 foreach(testcase address align binary binary-leb128 block br br_if br_table break-drop call_indirect
                  call const conversions custom data elem
                  endianness f32 f32_bitwise f32_cmp f64 f64_bitwise f64_cmp
@@ -99,7 +75,6 @@ add_spec_test_impl(e_locals ${CMAKE_CURRENT_SOURCE_DIR}/spec/extra/locals.wast)
 #add_spec_test_impl(e_memory ${CMAKE_CURRENT_SOURCE_DIR}/spec/extra/memory.wast)
 add_spec_test_impl(e_module ${CMAKE_CURRENT_SOURCE_DIR}/spec/extra/module.wast)
 add_spec_test_impl(e_table ${CMAKE_CURRENT_SOURCE_DIR}/spec/extra/table.wast)
-endif()
 add_spec_test_impl(e_simd ${CMAKE_CURRENT_SOURCE_DIR}/spec/extra/simd.wast)
 
 add_executable( eos_vm_spec_tests main.cpp ${SPEC_TESTS} )
@@ -112,9 +87,37 @@ target_compile_definitions(eos_vm_spec_tests PUBLIC -DCATCH_CONFIG_NO_POSIX_SIGN
 
 catch_discover_tests( eos_vm_spec_tests )
 
+set(SPEC_TESTS)
+foreach(testcase
+    simd_address simd_align simd_bit_shift simd_bitwise simd_boolean simd_const
+    simd_conversions
+    simd_f32x4 simd_f32x4_arith simd_f32x4_cmp simd_f32x4_pmin_pmax simd_f32x4_rounding
+    simd_f64x2 simd_f64x2_arith simd_f64x2_cmp simd_f64x2_pmin_pmax simd_f64x2_rounding
+    simd_i8x16_arith simd_i8x16_arith2 simd_i8x16_cmp simd_i8x16_sat_arith
+    simd_i16x8_arith simd_i16x8_arith2 simd_i16x8_cmp simd_i16x8_extadd_pairwise_i8x16
+    simd_i16x8_extmul_i8x16 simd_i16x8_q15mulr_sat_s simd_i16x8_sat_arith
+    simd_i32x4_arith simd_i32x4_arith2 simd_i32x4_cmp simd_i32x4_dot_i16x8
+    simd_i32x4_extadd_pairwise_i16x8 simd_i32x4_extmul_i16x8
+    simd_i32x4_trunc_sat_f32x4 simd_i32x4_trunc_sat_f64x2
+    simd_i64x2_arith simd_i64x2_arith2 simd_i64x2_cmp simd_i64x2_extmul_i32x4
+    simd_int_to_int_extend simd_lane simd_load
+    simd_load8_lane simd_load16_lane simd_load32_lane simd_load64_lane
+    simd_load_extend simd_load_splat simd_load_zero
+    simd_splat simd_store
+    simd_store8_lane simd_store16_lane simd_store32_lane simd_store64_lane
+    )
+   add_spec_test(${testcase})
+endforeach()
+add_executable( eos_vm_simd_tests main.cpp ${SPEC_TESTS} )
+target_link_libraries( eos_vm_simd_tests eos-vm Catch2::Catch2 )
+target_include_directories( eos_vm_simd_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} )
+target_include_directories( eos_vm_simd_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include )
+target_include_directories( eos_vm_simd_tests PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/spec )
+target_compile_definitions(eos_vm_simd_tests PUBLIC -DCATCH_CONFIG_NO_POSIX_SIGNALS)
+catch_discover_tests( eos_vm_simd_tests )
+
 endif(ENABLE_SPEC_TESTS)
 
-if(0)
 add_executable(unit_tests main.cpp
                           allocator_tests.cpp
                           eosio_max_nested_structures_tests.cpp
@@ -157,8 +160,6 @@ target_link_libraries(unit_tests eos-vm Catch2::Catch2)
 # ##############
 target_compile_definitions(unit_tests PUBLIC -DCATCH_CONFIG_NO_POSIX_SIGNALS)
 
-endif()
-
 add_executable( spec_test_generator ${CMAKE_CURRENT_SOURCE_DIR}/spec_test_generator/spec_test_generator.cpp )
 
-#catch_discover_tests( unit_tests )
+catch_discover_tests( unit_tests )

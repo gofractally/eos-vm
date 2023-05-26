@@ -233,7 +233,7 @@ void check_put_ptr(B& bkend, const std::string& name) {
       int offset = next_ptr_offset();
       const T value = const_cast<T>(bkend.get_context().linear_memory() + offset);
       bkend.call("env", fun, value);
-      CHECK(global_test_value<T> == value);
+      CHECK((const void*)global_test_value<T> == (const void*)value);
    }
 }
 
@@ -244,7 +244,7 @@ void check_put_ref(B& bkend, const std::string& name) {
       int offset = next_ptr_offset();
       const auto value = &const_cast<T>(*(bkend.get_context().linear_memory() + offset));
       bkend.call("env", fun, value);
-      CHECK(global_test_value<T>.val == value);
+      CHECK((const void*)global_test_value<T>.val == (const void*)value);
    }
 }
 

@@ -337,6 +337,11 @@ namespace eosio { namespace vm {
       const void* get_addr() const { return fb.raw() + op_index; }
       const void* get_base_addr() const { return _code_segment_base; }
 
+      void set_stack_usage(std::uint64_t usage)
+      {
+         // FIXME: Implement this
+      }
+
     private:
 
       static void unimplemented() { EOS_VM_ASSERT(false, wasm_parse_exception, "Sorry, not implemented."); }
@@ -344,7 +349,7 @@ namespace eosio { namespace vm {
          if(depth_change & 0x80000000u) {
             unimplemented();
          }
-         if(rt == types::pseudo) {
+         if(rt != types::pseudo) {
             return depth_change | 0x80000000u;
          }
          return depth_change;

@@ -442,6 +442,7 @@ class null_writer {
 
    const void* get_addr() const { return nullptr; }
    const void* get_base_addr() const { return nullptr; }
+   void set_stack_usage(std::uint64_t) {}
 };
 
 }}

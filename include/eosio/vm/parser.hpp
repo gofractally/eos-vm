@@ -200,6 +200,27 @@ namespace eosio { namespace vm {
 #undef MAX_ELEMENTS
 #undef PARSER_OPTION
 
+   template <typename Options>
+   concept has_max_stack_bytes = requires(const Options& o) {
+       o.max_stack_bytes;
+   };
+
+   // Returns either max_call_depth or max_stack_bytes, depending on which
+   // on was enabled.
+   template <typename Options>
+   constexpr std::uint32_t choose_stack_limit(const Options& options)
+   {
+      if constexpr (has_max_stack_bytes<Options>)
+      {
+         static_assert(!requires{options.max_call_depth;}, "max_call_depth and max_stack_bytes are incompatible");
+         return options.max_stack_bytes;
+      }
+      else
+      {
+         return get_max_call_depth(options);
+      }
+   }
+
    }
 
    template <typename Writer, typename Options = default_options, typename DebugInfo = null_debug_info>
@@ -1619,8 +1640,10 @@ namespace eosio { namespace vm {
                default: EOS_VM_ASSERT(false, wasm_parse_exception, "Illegal instruction");
             }
          }
+         auto stack_usage = static_cast<uint64_t>(op_stack.maximum_operand_depth) + local_types.locals_count();
+         code_writer.set_stack_usage(stack_usage);
          EOS_VM_ASSERT( pc_stack.empty(), wasm_parse_exception, "function body too long" );
-         _mod->maximum_stack = std::max(_mod->maximum_stack, static_cast<uint64_t>(op_stack.maximum_operand_depth) + local_types.locals_count());
+         _mod->maximum_stack = std::max(_mod->maximum_stack, stack_usage);
       }
 
       void parse_data_segment(wasm_code_ptr& code, data_segment& ds) {

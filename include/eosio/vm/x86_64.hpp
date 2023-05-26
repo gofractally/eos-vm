@@ -32,7 +32,7 @@ namespace eosio { namespace vm {
    // - rbx holds the remaining stack frames
    //
    // - FIXME: Factor the machine instructions into a separate assembler class.
-   template<typename Context>
+   template<typename Context, bool StackLimitIsBytes>
    class machine_code_writer {
     public:
       machine_code_writer(growable_allocator& alloc, std::size_t source_bytes, module& mod) :
@@ -160,6 +160,14 @@ namespace eosio { namespace vm {
             emit_movq(rdx, *(rdi + 8));
          }
 
+         if constexpr (Context::async_backtrace())
+         {
+            emit_movd(ebx, *(rdi + 16));
+         }
+         else
+         {
+            emit_movd(ebx, *rdi);
+         }
          emit_movq(*(rbp - 16), rbx);
 
          emit(LDMXCSR, *(rbp - 4));
@@ -193,6 +201,7 @@ namespace eosio { namespace vm {
          emit_bytes(0x55);
          // movq RSP, RBP
          emit_bytes(0x48, 0x89, 0xe5);
+         emit_check_stack_limit();
          uint64_t count = 0;
          for(uint32_t i = 0; i < locals.size(); ++i) {
             count += locals[i].count;
@@ -239,6 +248,7 @@ namespace eosio { namespace vm {
 #ifndef NDEBUG
          void * epilogue_start = code;
 #endif
+         emit_check_stack_limit_end();
          if(ft.return_count != 0) {
             if(ft.return_type == types::v128) {
                emit_vmovups(*rsp, xmm0);
@@ -255,10 +265,24 @@ namespace eosio { namespace vm {
          assert((char*)code <= (char*)epilogue_start + max_epilogue_size);
       }
       static constexpr uint32_t get_depth_for_type(uint8_t type) {
-         if(type == types::v128) {
-            return 2;
-         } else {
-            return 1;
+         if constexpr (StackLimitIsBytes)
+         {
+            if (type == types::v128)
+               return 16;
+            else if (type == types::i64 || type == types::f64)
+               return 8;
+            else if (type == types::i32 || type == types::f32)
+               return 4;
+            else
+               assert(!"Unknown type");
+         }
+         else
+         {
+            if(type == types::v128) {
+               return 2;
+            } else {
+               return 1;
+            }
          }
       }
 
@@ -3715,6 +3739,21 @@ namespace eosio { namespace vm {
 
       const void* get_base_addr() const { return _code_segment_base; }
 
+      void set_stack_usage(std::uint64_t usage)
+      {
+         if constexpr (StackLimitIsBytes)
+         {
+            if (usage >= 0x7fffffff)
+            {
+               unimplemented();
+            }
+            // overwrite prologue
+            stack_usage = usage;
+            static_assert(sizeof(stack_usage) == 4);
+            std::memcpy(stack_limit_entry, &stack_usage, 4);
+         }
+      }
+
     private:
 
       enum class imm8 : uint8_t {};
@@ -3756,6 +3795,7 @@ namespace eosio { namespace vm {
          int reg;
       };
 
+      // TODO: This looks wrong!!!
       void emit_add(int32_t immediate, general_register64 dest) {
          if(immediate <= 0x7F || immediate >= -0x80) {
             emit(IA32_REX_W(0x83)/0, static_cast<imm8>(immediate), dest);
@@ -3803,6 +3843,11 @@ namespace eosio { namespace vm {
          emit_REX_prefix(false, false, false, dest & 8);
          emit_bytes(0xb8 | (dest & 7));
          emit_operand32(src);
+      }
+
+      void emit_movd(general_register32 src, disp_memory_ref dest)
+      {
+         emit(IA32(0x89), dest, src);
       }
 
       void emit_movd(general_register32 src, general_register32 dest) {
@@ -3940,9 +3985,12 @@ namespace eosio { namespace vm {
       struct Jcc { uint8_t opcode; };
 
       // When adding jcc codes, verify that the rel8/rel32 versions are 7x and 0F 8x
+      static constexpr auto DECD = IA32(0xFF)/1;
       static constexpr auto DECQ = IA32_REX_W(0xFF)/1;
+      static constexpr auto INCD = IA32(0xFF)/0;
       static constexpr auto JZ = Jcc{0x74};
       static constexpr auto JNZ = Jcc{0x75};
+      static constexpr auto JB = Jcc{0x72};
       static constexpr auto LDMXCSR = IA32(0x0f, 0xae)/2;
       static constexpr auto LEAVE = IA32(0xc9);
       static constexpr auto STMXCSR = IA32(0x0f, 0xae)/3;
@@ -4360,6 +4408,9 @@ namespace eosio { namespace vm {
       uint64_t _local_count;
       uint32_t _table_element_size;
 
+      std::uint32_t stack_usage;
+      void* stack_limit_entry = nullptr;
+
       void emit_byte(uint8_t val) { *code++ = val; }
       void emit_bytes() {}
       template<class... T>
@@ -4387,16 +4438,40 @@ namespace eosio { namespace vm {
          return result;
       }
 
+      // check_call_depth and check_stack_limit are incompatible
       void emit_check_call_depth() {
-         // decl %ebx
-         emit_bytes(0xff, 0xcb);
-         // jz stack_overflow
-         emit_bytes(0x0f, 0x84);
-         fix_branch(emit_branch_target32(), stack_overflow_handler);
+         if constexpr (!StackLimitIsBytes)
+         {
+            emit(DECD, ebx);
+            fix_branch(emit_branchcc32(JZ), stack_overflow_handler);
+         }
       }
       void emit_check_call_depth_end() {
-         // incl %ebx
-         emit_bytes(0xff, 0xc3);
+         if constexpr (!StackLimitIsBytes)
+         {
+            emit(INCD, ebx);
+         }
+      }
+
+      void emit_check_stack_limit()
+      {
+         if constexpr (StackLimitIsBytes)
+         {
+            // TODO: compress this based on max_func_local_bytes
+            emit(IA32(0x81)/5, ebx);
+            stack_limit_entry = code;
+            emit_bytes(0, 0, 0, 0);
+            // save location
+            fix_branch(emit_branchcc32(JB), stack_overflow_handler);
+         }
+      }
+
+      void emit_check_stack_limit_end()
+      {
+         if constexpr (StackLimitIsBytes)
+         {
+            emit_add(stack_usage, ebx);
+         }
       }
 
       static void unimplemented() { EOS_VM_ASSERT(false, wasm_parse_exception, "Sorry, not implemented."); }
@@ -4418,12 +4493,10 @@ namespace eosio { namespace vm {
       void emit_multipop(uint32_t count, uint8_t rt) {
          if(!is_simple_multipop(count, rt)) {
             if (rt == types::v128) {
-               assert(count >= 2u);
                emit_vmovups(*rsp, xmm0);
                // Leave room to write the result at the bottom of the stack
                count -= 2;
             } else if (rt != types::pseudo) {
-               assert(count >= 1u);
                emit_movq(*rsp, rax);
             }
             if(count & 0x70000000) {
