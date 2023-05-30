@@ -11,6 +11,7 @@
 #include <set>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -159,6 +160,18 @@ namespace eosio { namespace vm {
             maybe_consolidate_blocks(pos, next);
          }
       }
+      std::vector<std::span<const char>> span() const
+      {
+         std::vector<std::span<const char>> result;
+         {
+            std::lock_guard l{_mutex};
+            for (const auto& [base, size] : _segments)
+            {
+               result.push_back({reinterpret_cast<const char*>(base), size});
+            }
+         }
+         return result;
+      }
       static jit_allocator& instance() {
          static jit_allocator the_jit_allocator;
          return the_jit_allocator;
@@ -197,7 +210,7 @@ namespace eosio { namespace vm {
       std::set<block, by_size> allocated_blocks_by_size;
       std::map<void*, std::size_t> free_blocks;
       std::map<void*, std::size_t> allocated_blocks;
-      std::mutex _mutex;
+      mutable std::mutex _mutex;
       using blocks_by_size_t = std::set<block, by_size>;
       using blocks_t = std::map<void*, size_t>;
 
@@ -484,5 +497,10 @@ namespace eosio { namespace vm {
       inline T* create_pointer(uint32_t offset) { return reinterpret_cast<T*>(raw + offset); }
       inline int32_t get_current_page() const { return page; }
       bool is_in_region(char* p) { return p >= raw && p < raw + max_memory; }
+      std::span<const char> span() const
+      {
+         std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
+         return { raw - syspagesize, max_memory + 2 * syspagesize };
+      }
    };
 }} // namespace eosio::vm

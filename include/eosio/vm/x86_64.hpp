@@ -116,11 +116,11 @@ namespace eosio { namespace vm {
          // uint64_t count -> R9
          // uint32_t vector_result -> (RBP + 16)
          emit_push(rbp);
-         emit_movq(rsp, rbp);
+         emit_mov(rsp, rbp);
          emit_sub(16, rsp);
 
          // switch stack
-         emit(TESTQ, r8, r8);
+         emit(TEST, r8, r8);
          // cmovnz
          emit(IA32_REX_W(0x0f, 0x45), r8, rsp);
 
@@ -130,56 +130,56 @@ namespace eosio { namespace vm {
          emit(LDMXCSR, *(rbp - 8));
 
          // copy args
-         emit(TESTQ, r9, r9);
+         emit(TEST, r9, r9);
          void* loop_end = emit_branch8(JZ);
          void* loop = code;
-         emit_movq(*rdx, rax);
+         emit_mov(*rdx, rax);
          emit_add(8, rdx);
          emit_push(rax);
-         emit(DECQ, r9);
+         emit(DEC, r9);
          fix_branch8(emit_branch8(JNZ), loop);
          fix_branch8(loop_end, code);
 
          // load call depth counter
-         emit_movq(rbx, *(rbp - 16));
+         emit_mov(rbx, *(rbp - 16));
          if constexpr (Context::async_backtrace())
          {
-            emit_movd(*(rdi + 16), ebx);
+            emit_mov(*(rdi + 16), ebx);
          }
          else
          {
-            emit_movd(*rdi, ebx);
+            emit_mov(*rdi, ebx);
          }
 
          if constexpr (Context::async_backtrace()) {
-            emit_movq(rbp, *(rdi + 8));
+            emit_mov(rbp, *(rdi + 16));
          }
          emit_call(rcx);
          if constexpr (Context::async_backtrace()) {
-            emit_xord(edx, edx);
-            emit_movq(rdx, *(rdi + 8));
+            emit_xor(edx, edx);
+            emit_mov(rdx, *(rdi + 16));
          }
 
          if constexpr (Context::async_backtrace())
          {
-            emit_movd(ebx, *(rdi + 16));
+            emit_mov(ebx, *(rdi + 16));
          }
          else
          {
-            emit_movd(ebx, *rdi);
+            emit_mov(ebx, *rdi);
          }
-         emit_movq(*(rbp - 16), rbx);
+         emit_mov(*(rbp - 16), rbx);
 
          emit(LDMXCSR, *(rbp - 4));
 
-         emit_movd(*(rbp + 16), edx);
-         emit(TESTD, edx, edx);
+         emit_mov(*(rbp + 16), edx);
+         emit(TEST, edx, edx);
          void* is_vector = emit_branch8(JZ);
          emit_vpextrq(0, xmm0, rax);
          emit_vpextrq(1, xmm0, rdx);
          fix_branch8(is_vector, code);
 
-         emit_movq(rbp, rsp);
+         emit_mov(rbp, rsp);
          emit_pop(rbp);
          emit(RET);
       }
@@ -258,7 +258,7 @@ namespace eosio { namespace vm {
             }
          }
          if (_local_count > 0 || (ft.return_count != 0 && ft.return_type == types::v128)) {
-            emit_movq(rbp, rsp);
+            emit_mov(rbp, rsp);
          }
          emit_pop(rbp);
          emit(RET);
@@ -310,12 +310,13 @@ namespace eosio { namespace vm {
       }
       void* emit_else(void* if_loc) {
          auto icount = fixed_size_instr(5);
+         // We never need to adjust the stack, even if there is a return type
          void* result = emit_br(0, types::pseudo);
          fix_branch(if_loc, code);
          return result;
       }
       void* emit_br(uint32_t depth_change, uint8_t rt) {
-         auto icount = variable_size_instr(5, 17);
+         auto icount = variable_size_instr(5, 22);
          // add RSP, depth_change * 8
          emit_multipop(depth_change, rt);
          // jmp DEST
@@ -323,17 +324,18 @@ namespace eosio { namespace vm {
          return emit_branch_target32();
       }
       void* emit_br_if(uint32_t depth_change, uint8_t rt) {
-         auto icount = variable_size_instr(9, 26);
+         auto icount = variable_size_instr(9, 31);
          // pop RAX
          emit_bytes(0x58);
          // test EAX, EAX
          emit_bytes(0x85, 0xC0);
 
-         if(depth_change == 0u || (depth_change == 1u && rt != types::pseudo)) {
+         if(is_simple_multipop(depth_change, rt)) {
             // jnz DEST
             emit_bytes(0x0F, 0x85);
             return emit_branch_target32();
          } else {
+            // TODO: use rel8 instead of rel32
             // jz SKIP
             emit_bytes(0x0f, 0x84);
             void* skip = emit_branch_target32();
@@ -359,6 +361,9 @@ namespace eosio { namespace vm {
                   fix_branch(label, _this->code);
                }
                if (max - min > 1) {
+                  // Note: the total number of times this block is executed
+                  // is bounded by the number of cases.
+                  auto icount = _this->fixed_size_instr(11);
                   // Emit a comparison to the midpoint of the current range
                   uint32_t mid = min + (max - min)/2;
                   // cmp i, %mid
@@ -370,9 +375,10 @@ namespace eosio { namespace vm {
                   stack.push_back({mid,max,mid_label});
                   stack.push_back({min,mid,nullptr});
                } else {
+                  auto icount = _this->variable_size_instr(0, 22);
                   assert(min == static_cast<uint32_t>(_i));
                   _i++;
-                  if (depth_change == 0u || (depth_change == 1u && rt != types::pseudo)) {
+                  if (is_simple_multipop(depth_change, rt)) {
                      if(label) {
                         return label;
                      } else {
@@ -436,7 +442,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_call(const func_type& ft, uint32_t funcnum) {
-         auto icount = variable_size_instr(15, 23);
+         auto icount = variable_size_instr(15, 31);
          emit_check_call_depth();
          // callq TARGET
          emit_bytes(0xe8);
@@ -456,7 +462,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_call_indirect(const func_type& ft, uint32_t functypeidx) {
-         auto icount = variable_size_instr(43, 51);
+         auto icount = variable_size_instr(43, 59);
          emit_check_call_depth();
          auto& table = _mod.tables[0].table;
          functypeidx = _mod.type_aliases[functypeidx];
@@ -504,10 +510,10 @@ namespace eosio { namespace vm {
       }
 
       void emit_select(uint8_t type) {
-         auto icount = fixed_size_instr(13); // FIXME
+         auto icount = variable_size_instr(13, 20);
          if(type == types::v128) {
             emit_pop(rax);
-            emit(TESTQ, rax, rax);
+            emit(TEST, eax, eax);
             auto cond = emit_branch8(JNZ);
             emit_vmovups(*rsp, xmm0);
             emit_vmovups(xmm0, *(rsp + 16));
@@ -528,7 +534,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_get_local(uint32_t local_idx, uint8_t type) {
-         auto icount = fixed_size_instr(8);
+         auto icount = variable_size_instr(5, 17);
          // stack layout:
          //   param0    <----- %rbp + 8*(nparams + 1)
          //   param1
@@ -544,7 +550,7 @@ namespace eosio { namespace vm {
          // v128 occupies two slots
          auto addr = *(rbp + get_frame_offset(local_idx));
          if (type != types::v128) {
-            emit_movq(addr, rax);
+            emit_mov(addr, rax);
             emit_push(rax);
          } else {
             emit_vmovups(addr, xmm0);
@@ -554,10 +560,11 @@ namespace eosio { namespace vm {
       }
 
       void emit_set_local(uint32_t local_idx, uint8_t type) {
+         auto icount = variable_size_instr(5, 17);
          auto addr = *(rbp + get_frame_offset(local_idx));
          if (type != types::v128) {
             emit_pop(rax);
-            emit_movq(rax, addr);
+            emit_mov(rax, addr);
          } else {
             emit_vmovups(*rsp, xmm0);
             emit_add(16, rsp);
@@ -566,11 +573,11 @@ namespace eosio { namespace vm {
       }
 
       void emit_tee_local(uint32_t local_idx, uint8_t type) {
-         auto icount = fixed_size_instr(9); // FIXME
+         auto icount = variable_size_instr(8, 13);
          auto addr = *(rbp + get_frame_offset(local_idx));
          if (type != types::v128) {
-            emit_movq(*rsp, rax);
-            emit_movq(rax, addr);
+            emit_mov(*rsp, rax);
+            emit_mov(rax, addr);
          } else {
             emit_vmovups(*rsp, xmm0);
             emit_vmovups(xmm0, addr);
@@ -578,7 +585,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_get_global(uint32_t globalidx) {
-         auto icount = variable_size_instr(13, 14); // FIXME
+         auto icount = variable_size_instr(13, 23);
          auto& gl = _mod.globals[globalidx];
          void *ptr = &gl.current.value;
          switch(gl.type.content_type) {
@@ -613,7 +620,7 @@ namespace eosio { namespace vm {
          }
       }
       void emit_set_global(uint32_t globalidx) {
-         auto icount = fixed_size_instr(14); // FIXME
+         auto icount = variable_size_instr(14, 23);
          auto& gl = _mod.globals[globalidx];
          void *ptr = &gl.current.value;
          if(gl.type.content_type != types::v128) {
@@ -2276,99 +2283,48 @@ namespace eosio { namespace vm {
          emit_v128_loadop(VMOVQ_A, align, offset);
       }
 
-      void emit_v128_store(uint32_t /*alignment*/, uint32_t offset)
-      {
-         // movups (%rsp), %xmm0
-         emit_bytes(0x0f, 0x10, 0x04, 0x24);
-         // add $16, %rsp
-         emit_bytes(0x48, 0x83, 0xc4, 0x10);
-         emit_pop_address(offset);
-         // movups %xmm0, (%rax)
-         emit_bytes(0x0f, 0x11, 0x00);
-      }
-
-      void emit_v128_load8_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t lane)
-      {
-         emit_movups(*rsp, xmm0);
+      void emit_v128_store(uint32_t /*align*/, uint32_t offset) {
+         auto icount = simd_instr();
+         emit_vmovups(*rsp, xmm0);
          emit_add(16, rsp);
          emit_pop_address(offset);
-         // vpinsrb $lane, (%rax), %xmm0, %xmm0
-         emit_bytes(0xc4, 0xe3, 0x79, 0x20, 0x00, lane);
-         emit_sub(16, rsp);
-         emit_movups(xmm0, *rsp);
+         emit_vmovups(xmm0, *rax);
       }
 
-      void emit_v128_load16_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t lane)
-      {
-         emit_movups(*rsp, xmm0);
-         emit_add(16, rsp);
-         emit_pop_address(offset);
-         // vpinsrw $lane, (%rax), %xmm0, %xmm0
-         emit_bytes(0xc5, 0xf9, 0xc4, 0x00, lane);
-         emit_sub(16, rsp);
-         emit_movups(xmm0, *rsp);
+      void emit_v128_load8_lane(uint32_t align, uint32_t offset, uint8_t lane) {
+         emit_v128_load_laneop(VPINSRB, align, offset, lane);
       }
 
-      void emit_v128_load32_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t lane)
-      {
-         emit_movups(*rsp, xmm0);
-         emit_add(16, rsp);
-         emit_pop_address(offset);
-         // vpinsrd $lane, (%rax), %xmm0, %xmm0
-         emit_bytes(0xc4, 0xe3, 0x79, 0x22, 0x00, lane);
-         emit_sub(16, rsp);
-         emit_movups(xmm0, *rsp);
+      void emit_v128_load16_lane(uint32_t align, uint32_t offset, uint8_t lane) {
+         emit_v128_load_laneop(VPINSRW, align, offset, lane);
       }
 
-      void emit_v128_load64_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t lane)
-      {
-         emit_movups(*rsp, xmm0);
-         emit_add(16, rsp);
-         emit_pop_address(offset);
-         // vpinsrq $lane, (%rax), %xmm0, %xmm0
-         emit_bytes(0xc4, 0xe3, 0xf9, 0x22, 0x00, lane);
-         emit_sub(16, rsp);
-         emit_movups(xmm0, *rsp);
+      void emit_v128_load32_lane(uint32_t align, uint32_t offset, uint8_t lane) {
+         emit_v128_load_laneop(VPINSRD, align, offset, lane);
       }
 
-      void emit_v128_store8_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t lane)
-      {
-         emit_movups(*rsp, xmm0);
-         emit_add(16, rsp);
-         emit_pop_address(offset);
-         // vpextrb $lane, %xmm0, (%rax)
-         emit_bytes(0xc4, 0xe3, 0x79, 0x14, 0x00, lane);
+      void emit_v128_load64_lane(uint32_t align, uint32_t offset, uint8_t lane) {
+         emit_v128_load_laneop(VPINSRQ, align, offset, lane);
       }
 
-      void emit_v128_store16_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t lane)
-      {
-         emit_movups(*rsp, xmm0);
-         emit_add(16, rsp);
-         emit_pop_address(offset);
-         // vpextrw $lane, %xmm0, (%rax)
-         emit_bytes(0xc4, 0xe3, 0x79, 0x15, 0x00, lane);
+      void emit_v128_store8_lane(uint32_t align, uint32_t offset, uint8_t lane) {
+         emit_v128_store_laneop(VPEXTRB, align, offset, lane);
       }
 
-      void emit_v128_store32_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t lane)
-      {
-         emit_movups(*rsp, xmm0);
-         emit_add(16, rsp);
-         emit_pop_address(offset);
-         // vpextrd $lane, %xmm0, (%rax)
-         emit_bytes(0xc4, 0xe3, 0x79, 0x16, 0x00, lane);
+      void emit_v128_store16_lane(uint32_t align, uint32_t offset, uint8_t lane) {
+         emit_v128_store_laneop(VPEXTRW, align, offset, lane);
       }
 
-      void emit_v128_store64_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t lane)
-      {
-         emit_movups(*rsp, xmm0);
-         emit_add(16, rsp);
-         emit_pop_address(offset);
-         // vpextrq $lane, %xmm0, (%rax)
-         emit_bytes(0xc4, 0xe3, 0xf9, 0x16, 0x00, lane);
+      void emit_v128_store32_lane(uint32_t align, uint32_t offset, uint8_t lane) {
+         emit_v128_store_laneop(VPEXTRD, align, offset, lane);
       }
 
-      void emit_v128_const(v128_t value)
-      {
+      void emit_v128_store64_lane(uint32_t align, uint32_t offset, uint8_t lane) {
+         emit_v128_store_laneop(VPEXTRQ, align, offset, lane);
+      }
+
+      void emit_v128_const(v128_t value) {
+         auto icount = simd_instr();
          uint64_t low,high;
          memcpy(&high, reinterpret_cast<const char*>(&value) + 8, 8);
          memcpy(&low, &value, 8);
@@ -2378,6 +2334,7 @@ namespace eosio { namespace vm {
 
       void emit_i8x16_shuffle(const uint8_t lanes[16])
       {
+         auto icount = fixed_size_instr(72);
          auto emit_shuffle_operand = [this](const uint8_t lanes[8]) {
             for(int i = 0; i < 8; ++i)
             {
@@ -2395,241 +2352,134 @@ namespace eosio { namespace vm {
          // movabsq $lanes[0-7], %rax
          emit_bytes(0x48, 0xb8);
          emit_shuffle_operand(lanes);
-         // vmovq %rax, %xmm2
-         emit_bytes(0xc4, 0xe1, 0xf9, 0x6e, 0xd0);
+         emit_vmovq(rax, xmm2);
          // movabsq $lanes[8-15], %rax
          emit_bytes(0x48, 0xb8);
          emit_shuffle_operand(lanes + 8);
-         // vpinsrq $1, %rax, %xmm2, %xmm2
-         emit_bytes(0xc4, 0xe3, 0xe9, 0x22, 0xd0, 0x01);
+         emit(VPINSRQ, imm8{1}, rax, xmm2, xmm2);
 
-         emit_movups(*rsp, xmm0);
-         // vpshufb %xmm2, %xmm0, %xmm1
-         emit_bytes(0xc4, 0xe2, 0x79, 0x00, 0xca);
-         // vpcmpeqb %xmm0, %xmm0, %xmm0
-         emit_bytes(0xc5, 0xf9, 0x74, 0xc0);
-         // vpxor %xmm0, %xmm2, %xmm2
-         emit_bytes(0xc5, 0xe9, 0xef, 0xd0);
+         emit_vmovdqu(*rsp, xmm0);
+         emit(VPSHUFB, xmm2, xmm0, xmm1);
+         emit_const_ones(xmm0);
+         emit(VPXOR, xmm0, xmm2, xmm2);
          emit_add(16, rsp);
-         emit_movups(*rsp, xmm0);
-         // vpshufb %xmm2, %xmm0, %xmm0
-         emit_bytes(0xc4, 0xe2, 0x79, 0x00, 0xc2);
-         // vpor %xmm1, %xmm0, %xmm0
-         emit_bytes(0xc5, 0xf9, 0xeb, 0xc1);
-         emit_movups(xmm0, *rsp);
+         emit_vmovdqu(*rsp, xmm0);
+         emit(VPSHUFB, xmm2, xmm0, xmm0);
+         emit(VPOR, xmm1, xmm0, xmm0);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
-      void emit_i8x16_extract_lane_s(uint8_t l)
-      {
-         emit_movups(*rsp, xmm0);
+      void emit_i8x16_extract_lane_s(uint8_t l) {
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
-         // vpextrb $l, %xmm0, %eax
-         emit_bytes(0xc4, 0xe3, 0x79, 0x14, 0xc0, l);
-         // movsx %al, %eax
-         emit_bytes(0x0f, 0xbe, 0xc0);
+         emit_vpextrb(l, xmm0, rax);
+         emit(MOVSXB, al, eax);
          emit_push(rax);
       }
 
-      void emit_i8x16_extract_lane_u(uint8_t l)
-      {
-         emit_movups(*rsp, xmm0);
+      void emit_i8x16_extract_lane_u(uint8_t l) {
+         emit_v128_extract_laneop(VPEXTRB, l);
+      }
+
+      void emit_i8x16_replace_lane(uint8_t l) {
+         emit_v128_replace_laneop(VPINSRB, l);
+      }
+
+      void emit_i16x8_extract_lane_s(uint8_t l) {
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
-         // vpextrb $l, %xmm0, %eax
-         emit_bytes(0xc4, 0xe3, 0x79, 0x14, 0xc0, l);
+         emit_vpextrw(l, xmm0, rax);
+         emit(MOVSXW, ax, eax);
          emit_push(rax);
       }
 
-      void emit_i8x16_replace_lane(uint8_t l)
-      {
-         emit_pop(rax);
-         emit_movups(*rsp, xmm0);
-         // vpinsrb $l, %eax, %xmm0, %xmm0
-         emit_bytes(0xc4, 0xe3, 0x79, 0x20, 0xc0, l);
-         emit_movups(xmm0, *rsp);
+      void emit_i16x8_extract_lane_u(uint8_t l) {
+         emit_v128_extract_laneop(VPEXTRW, l);
       }
 
-      void emit_i16x8_extract_lane_s(uint8_t l)
-      {
-         emit_movups(*rsp, xmm0);
+      void emit_i16x8_replace_lane(uint8_t l) {
+         emit_v128_replace_laneop(VPINSRW, l);
+      }
+
+      void emit_i32x4_extract_lane(uint8_t l) {
+         emit_v128_extract_laneop(VPEXTRD, l);
+      }
+
+      void emit_i32x4_replace_lane(uint8_t l) {
+         emit_v128_replace_laneop(VPINSRD, l);
+      }
+
+      void emit_i64x2_extract_lane(uint8_t l) {
+         emit_v128_extract_laneop(VPEXTRQ, l);
+      }
+
+      void emit_i64x2_replace_lane(uint8_t l) {
+         emit_v128_replace_laneop(VPINSRQ, l);
+      }
+
+      void emit_f32x4_extract_lane(uint8_t l) {
+         emit_v128_extract_laneop(VPEXTRD, l);
+      }
+
+      void emit_f32x4_replace_lane(uint8_t l) {
+         emit_v128_replace_laneop(VPINSRD, l);
+      }
+
+      void emit_f64x2_extract_lane(uint8_t l) {
+         emit_v128_extract_laneop(VPEXTRQ, l);
+      }
+
+      void emit_f64x2_replace_lane(uint8_t l) {
+         emit_v128_replace_laneop(VPINSRQ, l);
+      }
+
+      void emit_i8x16_swizzle() {
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
-         // vpextrw $l, %xmm0, %eax
-         emit_bytes(0xc5, 0xf9, 0xc5, 0xc0, l);
-         // movsx %ax, %eax
-         emit_bytes(0x0f, 0xbf, 0xc0);
-         emit_push(rax);
-      }
-
-      void emit_i16x8_extract_lane_u(uint8_t l)
-      {
-         emit_movups(*rsp, xmm0);
-         emit_add(16, rsp);
-         // vpextrw $l, %xmm0, %eax
-         emit_bytes(0xc5, 0xf9, 0xc5, 0xc0, l);
-         emit_push(rax);
-      }
-
-      void emit_i16x8_replace_lane(uint8_t l)
-      {
-         emit_pop(rax);
-         emit_movups(*rsp, xmm0);
-         // vpinsrw $l, %eax, %xmm0, %xmm0
-         emit_bytes(0xc5, 0xf9, 0xc4, 0xc0, l);
-         emit_movups(xmm0, *rsp);
-      }
-
-      void emit_i32x4_extract_lane(uint8_t l)
-      {
-         emit_movups(*rsp, xmm0);
-         emit_add(16, rsp);
-         // vpextrd $l, %xmm0, %eax
-         emit_bytes(0xc4, 0xe3, 0x79, 0x16, 0xc0, l);
-         emit_push(rax);
-      }
-
-      void emit_i32x4_replace_lane(uint8_t l)
-      {
-         emit_pop(rax);
-         emit_movups(*rsp, xmm0);
-         // vpinsrd $l, %eax, %xmm0, %xmm0
-         emit_bytes(0xc4, 0xe3, 0x79, 0x22, 0xc0, l);
-         emit_movups(xmm0, *rsp);
-      }
-
-      void emit_i64x2_extract_lane(uint8_t l)
-      {
-         emit_movups(*rsp, xmm0);
-         emit_add(16, rsp);
-         // vpextrq $l, %xmm0, %eax
-         emit_bytes(0xc4, 0xe3, 0xf9, 0x16, 0xc0, l);
-         emit_push(rax);
-      }
-
-      void emit_i64x2_replace_lane(uint8_t l)
-      {
-         emit_pop(rax);
-         emit_movups(*rsp, xmm0);
-         // vpinsrq $l, %eax, %xmm0, %xmm0
-         emit_bytes(0xc4, 0xe3, 0xf9, 0x22, 0xc0, l);
-         emit_movups(xmm0, *rsp);
-      }
-
-      void emit_f32x4_extract_lane(uint8_t l)
-      {
-         emit_movups(*rsp, xmm0);
-         emit_add(16, rsp);
-         // vpextrd $l, %xmm0, %eax
-         emit_bytes(0xc4, 0xe3, 0x79, 0x16, 0xc0, l);
-         emit_push(rax);
-      }
-
-      void emit_f32x4_replace_lane(uint8_t l)
-      {
-         emit_pop(rax);
-         emit_movups(*rsp, xmm0);
-         // vpinsrd $l, %eax, %xmm0, %xmm0
-         emit_bytes(0xc4, 0xe3, 0x79, 0x22, 0xc0, l);
-         emit_movups(xmm0, *rsp);
-      }
-
-      void emit_f64x2_extract_lane(uint8_t l)
-      {
-         emit_movups(*rsp, xmm0);
-         emit_add(16, rsp);
-         // vpextrq $l, %xmm0, %eax
-         emit_bytes(0xc4, 0xe3, 0xf9, 0x16, 0xc0, l);
-         emit_push(rax);
-      }
-
-      void emit_f64x2_replace_lane(uint8_t l)
-      {
-         emit_pop(rax);
-         emit_movups(*rsp, xmm0);
-         // vpinsrq $l, %rax, %xmm0, %xmm0
-         emit_bytes(0xc4, 0xe3, 0xf9, 0x22, 0xc0, l);
-         emit_movups(xmm0, *rsp);
-      }
-
-      void emit_i8x16_swizzle()
-      {
-         // test x>15 and saturate to 255
-         emit_vmovups(*rsp, xmm0);
-         emit_add(16, rsp);
-         emit_movd(0x0f0f0f0f, eax);
+         emit_mov(0x70707070, eax);
          emit_vmovd(eax, xmm1);
          emit(VPSHUFD, imm8{0}, xmm1, xmm1);
-         emit(VPCMPGTB, xmm1, xmm0, xmm1);
-         emit(VPOR, xmm0, xmm1, xmm1);
-         emit_vmovups(*rsp, xmm0);
+         emit(VPADDUSB, xmm1, xmm0, xmm1);
+         emit_vmovdqu(*rsp, xmm0);
          emit(VPSHUFB, xmm1, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
-      void emit_i8x16_splat()
-      {
-         // vpbroadcastb (%rsp), %xmm0
-         emit_bytes(0xc4, 0xe2, 0x79, 0x78, 0x04, 0x24);
-         emit_sub(0x08, rsp);
-         emit_movups(xmm0, *rsp);
+      void emit_i8x16_splat() {
+         emit_v128_splatop(VPBROADCASTB);
       }
 
-      void emit_i16x8_splat()
-      {
-         // vpbroadcastw (%rsp), %xmm0
-         emit_bytes(0xc4, 0xe2, 0x79, 0x79, 0x04, 0x24);
-         emit_sub(0x08, rsp);
-         emit_movups(xmm0, *rsp);
+      void emit_i16x8_splat() {
+         emit_v128_splatop(VPBROADCASTW);
       }
 
-      void emit_i32x4_splat()
-      {
-         // vpbroadcastd (%rsp), %xmm0
-         emit_bytes(0xc4, 0xe2, 0x79, 0x58, 0x04, 0x24);
-         emit_sub(0x08, rsp);
-         emit_movups(xmm0, *rsp);
+      void emit_i32x4_splat() {
+         emit_v128_splatop(VPBROADCASTD);
       }
 
-      void emit_i64x2_splat()
-      {
-         // vpbroadcastq (%rsp), %xmm0
-         emit_bytes(0xc4, 0xe2, 0x79, 0x59, 0x04, 0x24);
-         emit_sub(0x08, rsp);
-         emit_movups(xmm0, *rsp);
+      void emit_i64x2_splat() {
+         emit_v128_splatop(VPBROADCASTQ);
       }
 
-      void emit_f32x4_splat()
-      {
-         // vpbroadcastd (%rsp), %xmm0
-         emit_bytes(0xc4, 0xe2, 0x79, 0x58, 0x04, 0x24);
-         emit_sub(0x08, rsp);
-         emit_movups(xmm0, *rsp);
+      void emit_f32x4_splat() {
+         emit_v128_splatop(VPBROADCASTD);
       }
 
-      void emit_f64x2_splat()
-      {
-         // vpbroadcastq (%rsp), %xmm0
-         emit_bytes(0xc4, 0xe2, 0x79, 0x59, 0x04, 0x24);
-         emit_sub(0x08, rsp);
-         emit_movups(xmm0, *rsp);
+      void emit_f64x2_splat() {
+         emit_v128_splatop(VPBROADCASTQ);
       }
 
-      void emit_i8x16_eq()
-      {
-         emit_vmovups(*rsp, xmm0);
-         emit_add(16, rsp);
-         // vpcmpeqb (%rsp), %xmm0, %xmm0
-         emit_VEX_128_66_0F_WIG(0x74, *rsp, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+      // ---------------- i8x16 compare ---------------------
+
+      void emit_i8x16_eq() {
+         emit_v128_irelop_cmp(VPCMPEQB, true, false);
       }
 
-      void emit_i8x16_ne()
-      {
-         emit_vmovups(*rsp, xmm0);
-         emit_add(16, rsp);
-         // vpcmpeqb (%rsp), %xmm0, %xmm0
-         emit_VEX_128_66_0F_WIG(0x74, *rsp, xmm0, xmm0);
-         emit_const_ones(xmm1);
-         emit_vpxor(xmm1, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+      void emit_i8x16_ne() {
+         emit_v128_irelop_cmp(VPCMPEQB, true, true);
       }
 
       void emit_i8x16_lt_s() {
@@ -2664,7 +2514,7 @@ namespace eosio { namespace vm {
          emit_v128_irelop_minmax(VPMINUB, VPCMPEQB, true);
       }
 
-      // i8x16 compare
+      // ---------------- i16x8 compare --------------------
 
       void emit_i16x8_eq() {
          emit_v128_irelop_cmp(VPCMPEQW, true, false);
@@ -2748,7 +2598,7 @@ namespace eosio { namespace vm {
          emit_v128_irelop_minmax(VPMINUD, VPCMPEQD, true);
       }
 
-      // i64x2 compare
+      // --------------- i64x2 compare ---------------------
 
       void emit_i64x2_eq() {
          emit_v128_irelop_cmp(VPCMPEQQ, true, false);
@@ -2826,64 +2676,52 @@ namespace eosio { namespace vm {
          emit_v128_binop_softfloat(&_eosio_f64x2_ge);
       }
 
-      // v128 logical ops
+      // --------------- v128 logical ops ----------------
 
       void emit_v128_not() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_const_ones(xmm1);
          emit(VPXOR, xmm1, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_v128_and() {
-         emit_vmovups(*rsp, xmm0);
-         emit_add(16, rsp);
-         emit(VPAND, *rsp, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_v128_binop_commutative(VPAND);
       }
 
       void emit_v128_andnot() {
-         emit_vmovups(*rsp, xmm0);
-         emit_add(16, rsp);
-         emit_vmovups(*rsp, xmm1);
-         emit(VPANDN, xmm1, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_v128_binop_r(VPANDN);
       }
 
       void emit_v128_or() {
-         emit_vmovups(*rsp, xmm0);
-         emit_add(16, rsp);
-         emit(VPOR, *rsp, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_v128_binop_commutative(VPOR);
       }
 
       void emit_v128_xor() {
-         emit_vmovups(*rsp, xmm0);
-         emit_add(16, rsp);
-         emit(VPXOR, *rsp, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_v128_binop_commutative(VPXOR);
       }
 
       void emit_v128_bitselect() {
-         emit_vmovups(*rsp, xmm2);
-         emit_vmovups(*(rsp + 16), xmm1);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm2);
+         emit_vmovdqu(*(rsp + 16), xmm1);
          emit_add(32, rsp);
-         emit_vmovups(*rsp, xmm0);
+         emit_vmovdqu(*rsp, xmm0);
          // With AVX512: VPTERNLOGD 0xAC
          emit(VPAND, xmm0, xmm2, xmm0);
          emit(VPANDN, xmm1, xmm2, xmm1);
          emit(VPOR, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_v128_any_true() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
-         // xor %eax, %eax
-         emit_bytes(0x31, 0xc0);
+         emit_xor(eax, eax);
          emit(VPTEST, xmm0, xmm0);
-         // setnz %al
-         emit_bytes(0x0f, 0x95, 0xc0);
+         emit(SETNZ, al);
          emit_push(rax);
       }
 
@@ -2892,23 +2730,23 @@ namespace eosio { namespace vm {
       }
 
       void emit_i8x16_neg() {
+         auto icount = simd_instr();
          emit_const_zero(xmm0);
          emit(VPSUBB, *rsp, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i8x16_popcnt() {
+         auto icount = simd_instr();
          static const uint8_t popcnt4[] = {0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4};
 
          // movabsq $popcnt4, %rax
          emit_bytes(0x48, 0xb8);
          emit_operand_ptr(&popcnt4);
-         emit_vmovups(*rsp, xmm0);
-         emit_vmovups(*rax, xmm3);
-         // mov $0xF, $al
-         emit_bytes(0xb0, 0x0f);
-         // vmovd %eax, %xmm2
-         emit_bytes(0xc5, 0xf9, 0x6e, 0xd0);
+         emit_vmovdqu(*rsp, xmm0);
+         emit_vmovdqu(*rax, xmm3);
+         emit_mov(0x0f, al);
+         emit_vmovd(eax, xmm2);
          emit(VPBROADCASTB, xmm2, xmm2);
          emit(VPSRLQ_c, imm8{4}, xmm0, xmm1);
          emit(VPAND, xmm2, xmm0, xmm0);
@@ -2916,63 +2754,55 @@ namespace eosio { namespace vm {
          emit(VPSHUFB, xmm0, xmm3, xmm0);
          emit(VPSHUFB, xmm1, xmm3, xmm1);
          emit(VPADDB, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i8x16_all_true() {
+         auto icount = simd_instr();
          emit_const_zero(xmm0);
          emit(VPCMPEQB, *rsp, xmm0, xmm0);
          emit_add(16, rsp);
-         // xor %eax, %eax
-         emit_bytes(0x31, 0xc0);
+         emit_xor(eax, eax);
          emit(VPTEST, xmm0, xmm0);
-         // setz %al
-         emit_bytes(0x0f, 0x94, 0xc0);
+         emit(SETZ, al);
          emit_push(rax);
       }
 
       void emit_i8x16_bitmask() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
          emit(VPMOVMSKB, xmm0, rax);
          emit_push(rax);
       }
 
       void emit_i8x16_narrow_i16x8_s() {
-         emit_vmovups(*rsp, xmm0);
-         emit_add(16, rsp);
-         emit_vmovups(*rsp, xmm1);
-         emit(VPACKSSWB, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_v128_binop(VPACKSSWB);
       }
 
       void emit_i8x16_narrow_i16x8_u() {
-         emit_vmovups(*rsp, xmm0);
-         emit_add(16, rsp);
-         emit_vmovups(*rsp, xmm1);
-         emit(VPACKUSWB, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_v128_binop(VPACKUSWB);
       }
 
       void emit_i8x16_shl() {
+         auto icount = simd_instr();
          emit_pop(rax);
-         emit_vmovups(*rsp, xmm0);
-         // and $7, %eax
-         emit_bytes(0x83, 0xe0, 0x07);
+         emit_vmovdqu(*rsp, xmm0);
+         emit_and(7, eax);
          emit_vmovd(eax, xmm2);
          emit_const_ones(xmm1);
          emit(VPSLLD, xmm2, xmm1, xmm1);
          emit(VPBROADCASTB, xmm1, xmm1);
          emit(VPSLLW, xmm2, xmm0, xmm0);
          emit(VPAND, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i8x16_shr_s() {
+         auto icount = simd_instr();
          emit_pop(rax);
-         emit_vmovups(*rsp, xmm0);
-         // and $7, %eax
-         emit_bytes(0x83, 0xe0, 0x07);
+         emit_vmovdqu(*rsp, xmm0);
+         emit_and(7, eax);
          emit_vmovd(eax, xmm2);
          emit_const_ones(xmm3);
          emit(VPSLLW_c, imm8{8}, xmm3, xmm3);
@@ -2983,14 +2813,14 @@ namespace eosio { namespace vm {
          emit(VPAND, xmm3, xmm0, xmm0);
          emit(VPOR, xmm1, xmm0, xmm0);
          emit(VPSRAW, xmm2, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i8x16_shr_u() {
+         auto icount = simd_instr();
          emit_pop(rax);
-         emit_vmovups(*rsp, xmm0);
-         // and $7, %eax
-         emit_bytes(0x83, 0xe0, 0x07);
+         emit_vmovdqu(*rsp, xmm0);
+         emit_and(7, eax);
          emit_vmovd(eax, xmm2);
          emit_const_ones(xmm1);
          emit(VPSLLW_c, imm8{8}, xmm1, xmm1);
@@ -2998,19 +2828,19 @@ namespace eosio { namespace vm {
          emit(VPBROADCASTB, xmm1, xmm1);
          emit(VPSRLW, xmm2, xmm0, xmm0);
          emit(VPANDN, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i8x16_add() {
-         emit_v128_binop_r(VPADDB);
+         emit_v128_binop_commutative(VPADDB);
       }
 
       void emit_i8x16_add_sat_s() {
-         emit_v128_binop_r(VPADDSB);
+         emit_v128_binop_commutative(VPADDSB);
       }
 
       void emit_i8x16_add_sat_u() {
-         emit_v128_binop_r(VPADDUSB);
+         emit_v128_binop_commutative(VPADDUSB);
       }
 
       void emit_i8x16_sub() {
@@ -3026,43 +2856,45 @@ namespace eosio { namespace vm {
       }
 
       void emit_i8x16_min_s() {
-         emit_v128_binop_r(VPMINSB);
+         emit_v128_binop_commutative(VPMINSB);
       }
 
       void emit_i8x16_min_u() {
-         emit_v128_binop_r(VPMINUB);
+         emit_v128_binop_commutative(VPMINUB);
       }
 
       void emit_i8x16_max_s() {
-         emit_v128_binop_r(VPMAXSB);
+         emit_v128_binop_commutative(VPMAXSB);
       }
 
       void emit_i8x16_max_u() {
-         emit_v128_binop_r(VPMAXUB);
+         emit_v128_binop_commutative(VPMAXUB);
       }
 
       void emit_i8x16_avgr_u() {
-         emit_v128_binop_r(VPAVGB);
+         emit_v128_binop_commutative(VPAVGB);
       }
 
       // i16x8 ops
 
       void emit_i16x8_extadd_pairwise_i8x16_s() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit(VPSRLDQ_c, imm8{8}, xmm0, xmm1);
          emit(VPMOVSXBW, xmm0, xmm0);
          emit(VPMOVSXBW, xmm1, xmm1);
          emit(VPHADDW, xmm1, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i16x8_extadd_pairwise_i8x16_u() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit(VPSRLDQ_c, imm8{8}, xmm0, xmm1);
          emit(VPMOVZXBW, xmm0, xmm0);
          emit(VPMOVZXBW, xmm1, xmm1);
          emit(VPHADDW, xmm1, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i16x8_abs() {
@@ -3070,35 +2902,37 @@ namespace eosio { namespace vm {
       }
 
       void emit_i16x8_neg() {
+         auto icount = simd_instr();
          emit_const_zero(xmm0);
          emit(VPSUBW, *rsp, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i16x8_q15mulr_sat_s() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
          emit(VPMULHRSW, *rsp, xmm0, xmm0);
          emit_const_ones(xmm1);
          emit(VPSLLW_c, imm8{15}, xmm1, xmm1);
          emit(VPCMPEQW, xmm1, xmm0, xmm1);
          emit(VPXOR, xmm1, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i16x8_all_true() {
+         auto icount = simd_instr();
          emit_const_zero(xmm0);
          emit(VPCMPEQW, *rsp, xmm0, xmm0);
          emit_add(16, rsp);
-         // xor %eax, %eax
-         emit_bytes(0x31, 0xc0);
+         emit_xor(eax, eax);
          emit(VPTEST, xmm0, xmm0);
-         // setz %al
-         emit_bytes(0x0f, 0x94, 0xc0);
+         emit(SETZ, al);
          emit_push(rax);
       }
 
       void emit_i16x8_bitmask() {
+         auto icount = simd_instr();
          emit_const_zero(xmm0);
          emit(VPCMPGTW, *rsp, xmm0, xmm1);
          emit(VPACKSSWB, xmm0, xmm1, xmm0);
@@ -3120,10 +2954,11 @@ namespace eosio { namespace vm {
       }
 
       void emit_i16x8_extend_high_i8x16_s() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit(VPSRLDQ_c, imm8{8}, xmm0, xmm0);
          emit(VPMOVSXBW, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i16x8_extend_low_i8x16_u() {
@@ -3131,10 +2966,11 @@ namespace eosio { namespace vm {
       }
 
       void emit_i16x8_extend_high_i8x16_u() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit(VPSRLDQ_c, imm8{8}, xmm0, xmm0);
          emit(VPMOVZXBW, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i16x8_shl() {
@@ -3150,15 +2986,15 @@ namespace eosio { namespace vm {
       }
 
       void emit_i16x8_add() {
-         emit_v128_binop_r(VPADDW);
+         emit_v128_binop_commutative(VPADDW);
       }
 
       void emit_i16x8_add_sat_s() {
-         emit_v128_binop_r(VPADDSW);
+         emit_v128_binop_commutative(VPADDSW);
       }
 
       void emit_i16x8_add_sat_u() {
-         emit_v128_binop_r(VPADDUSW);
+         emit_v128_binop_commutative(VPADDUSW);
       }
 
       void emit_i16x8_sub() {
@@ -3174,87 +3010,93 @@ namespace eosio { namespace vm {
       }
 
       void emit_i16x8_mul() {
-         emit_v128_binop_r(VPMULLW);
+         emit_v128_binop_commutative(VPMULLW);
       }
 
       void emit_i16x8_min_s() {
-         emit_v128_binop_r(VPMINSW);
+         emit_v128_binop_commutative(VPMINSW);
       }
 
       void emit_i16x8_min_u() {
-         emit_v128_binop_r(VPMINUW);
+         emit_v128_binop_commutative(VPMINUW);
       }
 
       void emit_i16x8_max_s() {
-         emit_v128_binop_r(VPMAXSW);
+         emit_v128_binop_commutative(VPMAXSW);
       }
 
       void emit_i16x8_max_u() {
-         emit_v128_binop_r(VPMAXUW);
+         emit_v128_binop_commutative(VPMAXUW);
       }
 
       void emit_i16x8_avgr_u() {
-         emit_v128_binop_r(VPAVGW);
+         emit_v128_binop_commutative(VPAVGW);
       }
 
       void emit_i16x8_extmul_low_i8x16_s() {
+         auto icount = simd_instr();
          emit(VPMOVSXBW, *rsp, xmm1);
          emit_add(16, rsp);
          emit(VPMOVSXBW, *rsp, xmm0);
          emit(VPMULLW, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i16x8_extmul_high_i8x16_s() {
-         emit_movups(*rsp, xmm1);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm1);
          emit(VPSRLDQ_c, imm8{8}, xmm1, xmm1);
          emit(VPMOVSXBW, xmm1, xmm1);
          emit_add(16, rsp);
-         emit_vmovups(*rsp, xmm0);
+         emit_vmovdqu(*rsp, xmm0);
          emit(VPSRLDQ_c, imm8{8}, xmm0, xmm0);
          emit(VPMOVSXBW, xmm0, xmm0);
          emit(VPMULLW, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i16x8_extmul_low_i8x16_u() {
+         auto icount = simd_instr();
          emit(VPMOVZXBW, *rsp, xmm1);
          emit_add(16, rsp);
          emit(VPMOVZXBW, *rsp, xmm0);
          emit(VPMULLW, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i16x8_extmul_high_i8x16_u() {
-         emit_movups(*rsp, xmm1);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm1);
          emit(VPSRLDQ_c, imm8{8}, xmm1, xmm1);
          emit(VPMOVZXBW, xmm1, xmm1);
          emit_add(16, rsp);
-         emit_vmovups(*rsp, xmm0);
+         emit_vmovdqu(*rsp, xmm0);
          emit(VPSRLDQ_c, imm8{8}, xmm0, xmm0);
          emit(VPMOVZXBW, xmm0, xmm0);
          emit(VPMULLW, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       // i32x4 ops
 
       void emit_i32x4_extadd_pairwise_i16x8_s() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit(VPSRLDQ_c, imm8{8}, xmm0, xmm1);
          emit(VPMOVSXWD, xmm0, xmm0);
          emit(VPMOVSXWD, xmm1, xmm1);
          emit(VPHADDD, xmm1, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i32x4_extadd_pairwise_i16x8_u() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit(VPSRLDQ_c, imm8{8}, xmm0, xmm1);
          emit(VPMOVZXWD, xmm0, xmm0);
          emit(VPMOVZXWD, xmm1, xmm1);
          emit(VPHADDD, xmm1, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i32x4_abs() {
@@ -3262,25 +3104,26 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32x4_neg() {
+         auto icount = simd_instr();
          emit_const_zero(xmm0);
          emit(VPSUBD, *rsp, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i32x4_all_true() {
+         auto icount = simd_instr();
          emit_const_zero(xmm0);
          emit(VPCMPEQD, *rsp, xmm0, xmm0);
          emit_add(16, rsp);
-         // xor %eax, %eax
-         emit_bytes(0x31, 0xc0);
+         emit_xor(eax, eax);
          emit(VPTEST, xmm0, xmm0);
-         // setz %al
-         emit_bytes(0x0f, 0x94, 0xc0);
+         emit(SETZ, al);
          emit_push(rax);
       }
 
       void emit_i32x4_bitmask() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
          emit(VMOVMSKPS, xmm0, rax);
          emit_push(rax);
@@ -3291,10 +3134,11 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32x4_extend_high_i16x8_s() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit(VPSRLDQ_c, imm8{8}, xmm0, xmm0);
          emit(VPMOVSXWD, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i32x4_extend_low_i16x8_u() {
@@ -3302,10 +3146,11 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32x4_extend_high_i16x8_u() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit(VPSRLDQ_c, imm8{8}, xmm0, xmm0);
          emit(VPMOVZXWD, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i32x4_shl() {
@@ -3321,7 +3166,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32x4_add() {
-         emit_v128_binop_r(VPADDD);
+         emit_v128_binop_commutative(VPADDD);
       }
 
       void emit_i32x4_sub() {
@@ -3329,100 +3174,106 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32x4_mul() {
-         emit_v128_binop_r(VPMULLD);
+         emit_v128_binop_commutative(VPMULLD);
       }
 
       void emit_i32x4_min_s() {
-         emit_v128_binop_r(VPMINSD);
+         emit_v128_binop_commutative(VPMINSD);
       }
 
       void emit_i32x4_min_u() {
-         emit_v128_binop_r(VPMINUD);
+         emit_v128_binop_commutative(VPMINUD);
       }
 
       void emit_i32x4_max_s() {
-         emit_v128_binop_r(VPMAXSD);
+         emit_v128_binop_commutative(VPMAXSD);
       }
 
       void emit_i32x4_max_u() {
-         emit_v128_binop_r(VPMAXUD);
+         emit_v128_binop_commutative(VPMAXUD);
       }
 
       void emit_i32x4_dot_i16x8_s() {
-         emit_v128_binop_r(VPMADDWD);
+         emit_v128_binop_commutative(VPMADDWD);
       }
 
       void emit_i32x4_extmul_low_i16x8_s() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
-         emit_vmovups(*rsp, xmm1);
+         emit_vmovdqu(*rsp, xmm1);
          emit(VPMOVSXWD, xmm0, xmm0);
          emit(VPMOVSXWD, xmm1, xmm1);
          emit(VPMULLD, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i32x4_extmul_high_i16x8_s() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
-         emit_vmovups(*rsp, xmm1);
+         emit_vmovdqu(*rsp, xmm1);
          emit(VPMULLW, xmm0, xmm1, xmm2);
          emit(VPMULHW, xmm0, xmm1, xmm0);
          emit(VPUNPCKHWD, xmm0, xmm2, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i32x4_extmul_low_i16x8_u() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
-         emit_vmovups(*rsp, xmm1);
+         emit_vmovdqu(*rsp, xmm1);
          emit(VPMOVZXWD, xmm0, xmm0);
          emit(VPMOVZXWD, xmm1, xmm1);
          emit(VPMULLD, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i32x4_extmul_high_i16x8_u() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
-         emit_vmovups(*rsp, xmm1);
+         emit_vmovdqu(*rsp, xmm1);
          emit(VPMULLW, xmm0, xmm1, xmm2);
          emit(VPMULHUW, xmm0, xmm1, xmm0);
          emit(VPUNPCKHWD, xmm0, xmm2, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       // i64x2 ops
 
       void emit_i64x2_abs() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_const_zero(xmm1);
          emit(VPCMPGTQ, xmm0, xmm1, xmm1);
          emit(VPXOR, xmm0, xmm1, xmm0);
          emit(VPSUBQ, xmm1, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i64x2_neg() {
+         auto icount = simd_instr();
          emit_const_zero(xmm0);
          emit(VPSUBQ, *rsp, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i64x2_all_true() {
+         auto icount = simd_instr();
          emit_const_zero(xmm0);
          emit(VPCMPEQQ, *rsp, xmm0, xmm0);
          emit_add(16, rsp);
-         // xor %eax, %eax
-         emit_bytes(0x31, 0xc0);
+         emit_xor(eax, eax);
          emit(VPTEST, xmm0, xmm0);
-         // setz %al
-         emit_bytes(0x0f, 0x94, 0xc0);
+         emit(SETZ, al);
          emit_push(rax);
       }
 
       void emit_i64x2_bitmask() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
          emit(VMOVMSKPD, xmm0, rax);
          emit_push(rax);
@@ -3433,10 +3284,11 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64x2_extend_high_i32x4_s() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit(VPSRLDQ_c, imm8{8}, xmm0, xmm0);
          emit(VPMOVSXDQ, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i64x2_extend_low_i32x4_u() {
@@ -3444,10 +3296,11 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64x2_extend_high_i32x4_u() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit(VPSRLDQ_c, imm8{8}, xmm0, xmm0);
          emit(VPMOVZXDQ, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i64x2_shl() {
@@ -3455,16 +3308,13 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64x2_shr_s() {
+         auto icount = simd_instr();
          // (x >> n) | ((0 > x) << (64 - n))
          emit_pop(rax);
-         // and $mask, %eax
-         emit_bytes(0x83, 0xe0, 0x3f);
-         // mov $64, %ecx
-         emit_bytes(0xb9);
-         emit_operand32(64);
-         // sub %eax, %ecx
-         emit_bytes(0x2b, 0xc8);
-         emit_movups(*rsp, xmm0);
+         emit_and(0x3f, eax);
+         emit_mov(64, ecx);
+         emit_sub(eax, ecx);
+         emit_vmovdqu(*rsp, xmm0);
          emit_vmovd(eax, xmm1);
          emit_vmovd(ecx, xmm3);
          emit_const_zero(xmm2);
@@ -3472,7 +3322,7 @@ namespace eosio { namespace vm {
          emit(VPSLLQ, xmm3, xmm2, xmm2);
          emit(VPSRLQ, xmm1, xmm0, xmm0);
          emit(VPOR, xmm0, xmm2, xmm0);
-         emit_movups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i64x2_shr_u() {
@@ -3480,7 +3330,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64x2_add() {
-         emit_v128_binop_r(VPADDQ);
+         emit_v128_binop_commutative(VPADDQ);
       }
 
       void emit_i64x2_sub() {
@@ -3488,9 +3338,10 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64x2_mul() {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
-         emit_vmovups(*rsp, xmm1);
+         emit_vmovdqu(*rsp, xmm1);
          emit(VPMULUDQ, xmm0, xmm1, xmm2);
          emit(VPSHUFD, imm8{0xb1}, xmm0, xmm0);
          emit(VPMULLD, xmm0, xmm1, xmm0);
@@ -3498,39 +3349,43 @@ namespace eosio { namespace vm {
          emit_const_zero(xmm1);
          emit(VPUNPCKLDQ, xmm0, xmm1, xmm0);
          emit(VPADDQ, xmm0, xmm2, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i64x2_extmul_low_i32x4_s() {
+         auto icount = simd_instr();
          emit(VPSHUFD, imm8{0x10}, *rsp, xmm0);
          emit_add(16, rsp);
          emit(VPSHUFD, imm8{0x10}, *rsp, xmm1);
          emit(VPMULDQ, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i64x2_extmul_high_i32x4_s() {
+         auto icount = simd_instr();
          emit(VPSHUFD, imm8{0x32}, *rsp, xmm0);
          emit_add(16, rsp);
          emit(VPSHUFD, imm8{0x32}, *rsp, xmm1);
          emit(VPMULDQ, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i64x2_extmul_low_i32x4_u() {
+         auto icount = simd_instr();
          emit(VPSHUFD, imm8{0x10}, *rsp, xmm0);
          emit_add(16, rsp);
          emit(VPSHUFD, imm8{0x10}, *rsp, xmm1);
          emit(VPMULUDQ, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       void emit_i64x2_extmul_high_i32x4_u() {
+         auto icount = simd_instr();
          emit(VPSHUFD, imm8{0x32}, *rsp, xmm0);
          emit_add(16, rsp);
          emit(VPSHUFD, imm8{0x32}, *rsp, xmm1);
          emit(VPMULUDQ, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       // ------------- f32x4 arithmetic -------------------
@@ -3757,6 +3612,7 @@ namespace eosio { namespace vm {
     private:
 
       enum class imm8 : uint8_t {};
+      enum class imm32 : uint32_t {};
       enum general_register64 {
           rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi,
           r8, r9, r10, r11, r12, r13, r14, r15
@@ -3765,9 +3621,23 @@ namespace eosio { namespace vm {
           eax, ecx, edx, ebx, esp, ebp, esi, edi,
           r8d, r9d, r10d, r11d, r12d, r13d, r14d, r15d
       };
+      enum general_register16 {
+          ax, cx, dx, bx, sp, bp, si, di,
+          r8w, r9w, r10w, r11w, r12w, r13w, r14w, r15w
+      };
+      enum general_register8 {
+          al, cl, dl, bl, /*ah, ch, dh, bh,*//*spl, bpl, sil, dil*/
+          r8b = 8, r9b, r10b, r11b, r12b, r13b, r14b, r15b
+          // ah, ch, dh, and bh cannot be encoded with a REX prefix
+          // spl, bpl, sil, and dil require a REX prefix.
+          // We're not using any of these registers so disable access
+          // movzx %ah, %r8d ;; Not encodable
+      };
       struct general_register {
          constexpr general_register(general_register32 reg) : reg(reg) {}
          constexpr general_register(general_register64 reg) : reg(reg) {}
+         constexpr general_register(general_register16 reg) : reg(reg) {}
+         constexpr general_register(general_register8 reg) : reg(reg) {}
          int reg;
       };
       struct simple_memory_ref { general_register64 reg; };
@@ -3790,23 +3660,37 @@ namespace eosio { namespace vm {
       struct any_register {
          constexpr any_register(general_register32 reg) : reg(reg) {}
          constexpr any_register(general_register64 reg) : reg(reg) {}
+         constexpr any_register(general_register16 reg) : reg(reg) {}
+         constexpr any_register(general_register8 reg) : reg(reg) {}
          constexpr any_register(general_register reg) : reg(reg.reg) {}
          constexpr any_register(xmm_register reg) : reg(reg) {}
          int reg;
       };
 
-      // TODO: This looks wrong!!!
       void emit_add(int32_t immediate, general_register64 dest) {
-         if(immediate <= 0x7F || immediate >= -0x80) {
-            emit(IA32_REX_W(0x83)/0, static_cast<imm8>(immediate), dest);
+         if(immediate <= 0x7F && immediate >= -0x80) {
+            emit(ADD_imm8, static_cast<imm8>(immediate), dest);
+         } else {
+            emit(ADD_imm32, static_cast<imm32>(immediate), dest);
+         }
+      }
+
+      void emit_sub(int32_t immediate, general_register64 dest) {
+         if(immediate <= 0x7F && immediate >= -0x80) {
+            emit(IA32_REX_W(0x83)/5, static_cast<imm8>(immediate), dest);
          } else {
             unimplemented();
          }
       }
-      
-      void emit_sub(int32_t immediate, general_register64 dest) {
-         if(immediate <= 0x7F || immediate >= -0x80) {
-            emit(IA32_REX_W(0x83)/5, static_cast<imm8>(immediate), dest);
+
+      void emit_sub(general_register32 src, general_register32 dest) {
+         emit(IA32_WX(0x2B), src, dest);
+      }
+
+      template<typename RM>
+      void emit_and(int32_t immediate, RM dest) {
+         if(immediate <= 0x7F && immediate >= -0x80) {
+            emit(IA32_WX(0x83)/4, static_cast<imm8>(immediate), dest);
          } else {
             unimplemented();
          }
@@ -3834,40 +3718,45 @@ namespace eosio { namespace vm {
          emit_modrm_sib_disp(mem, 3);
       }
 
+      void emit_mov(uint8_t src, general_register8 dest) {
+         emit_REX_prefix(false, false, false, dest & 7);
+         emit_bytes(0xb0 | (dest & 7), src);
+      }
+
       void emit_movd(uint32_t src, disp_memory_ref dest) {
          emit(IA32(0xc7)/0, dest);
          emit_operand32(src);
       }
 
-      void emit_movd(uint32_t src, general_register32 dest) {
+      void emit_mov(uint32_t src, general_register32 dest) {
          emit_REX_prefix(false, false, false, dest & 8);
          emit_bytes(0xb8 | (dest & 7));
          emit_operand32(src);
       }
 
-      void emit_movd(general_register32 src, disp_memory_ref dest)
+      void emit_mov(general_register32 src, disp_memory_ref dest)
       {
          emit(IA32(0x89), dest, src);
       }
 
-      void emit_movd(general_register32 src, general_register32 dest) {
-         emit(IA32(0x8b), src, dest);
+      void emit_mov(general_register32 src, general_register32 dest) {
+         emit(MOV_A, src, dest);
       }
 
-      void emit_movd(disp_memory_ref mem, general_register32 reg) {
-         emit(IA32(0x8b), mem, reg);
+      void emit_mov(disp_memory_ref mem, general_register32 reg) {
+         emit(MOV_A, mem, reg);
       }
 
-      void emit_movq(general_register64 src, general_register64 dest) {
-         emit(IA32_REX_W(0x8b), src, dest);
+      void emit_mov(general_register64 src, general_register64 dest) {
+         emit(MOV_A, src, dest);
       }
 
-      void emit_movq(disp_memory_ref mem, general_register64 reg) {
-         emit(IA32_REX_W(0x8b), mem, reg);
+      void emit_mov(disp_memory_ref mem, general_register64 reg) {
+         emit(MOV_A, mem, reg);
       }
 
-      void emit_movq(general_register64 reg, disp_memory_ref mem) {
-         emit(IA32_REX_W(0x89), mem, reg);
+      void emit_mov(general_register64 reg, disp_memory_ref mem) {
+         emit(MOV_B, mem, reg);
       }
 
       void emit_pop(general_register64 reg) {
@@ -3880,27 +3769,8 @@ namespace eosio { namespace vm {
          emit_bytes(0x50 | (reg & 7));
       }
 
-      void emit_xord(general_register32 src, general_register32 dest) {
-         emit(IA32(0x33), src, dest);
-      }
-
-      void emit_movups(simple_memory_ref mem, xmm_register reg) {
-         if(mem.reg == rsp) {
-            if(reg >= 8) {
-               emit_bytes(0x44);
-            }
-            emit_bytes(0x0f, 0x10, 0x04 | ((reg & 7) << 3), 0x24);
-         } else {
-            unimplemented();
-         }
-      }
-      
-      void emit_movups(xmm_register reg, simple_memory_ref mem) {
-         if(reg == xmm0 && mem.reg == rsp) {
-            emit_bytes(0x0f, 0x11, 0x04, 0x24);
-         } else {
-            unimplemented();
-         }
+      void emit_xor(general_register32 src, general_register32 dest) {
+         emit(XOR_A, src, dest);
       }
 
       void emit_vmovdqu(disp_memory_ref mem, xmm_register reg) {
@@ -3931,72 +3801,105 @@ namespace eosio { namespace vm {
          emit(VMOVD_A, src, dest);
       }
 
+      void emit_vmovq(general_register64 src, xmm_register dest) {
+         emit(VMOVQ_A, src, dest);
+      }
+
       template<typename T>
       void emit_vpextrb(uint8_t offset, xmm_register src, T dest) {
-         emit(VEX_128_66_0F3A_W0{0x14}, imm8{offset}, dest, src);
+         emit(VPEXTRB, imm8{offset}, dest, src);
       }
 
       template<typename T>
       void emit_vpextrw(uint8_t offset, xmm_register src, T dest) {
-         emit(VEX_128_66_0F3A_W0{0x15}, imm8{offset}, dest, src);
+         emit(VPEXTRW, imm8{offset}, dest, src);
       }
 
       template<typename T>
       void emit_vpextrd(uint8_t offset, xmm_register src, T dest) {
-         emit(VEX_128_66_0F3A_W0{0x16}, imm8{offset}, dest, src);
+         emit(VPEXTRD, imm8{offset}, dest, src);
       }
 
       template<typename T>
       void emit_vpextrq(uint8_t offset, xmm_register src, T dest) {
-         emit(VEX_128_66_0F3A_W1{0x16}, imm8{offset}, dest, src);
-      }
-
-      void emit_vpxor(xmm_register src1, xmm_register src2, xmm_register dest) {
-         emit_VEX_128_66_0F_WIG(0xef, src1, src2, dest);
+         emit(VPEXTRQ, imm8{offset}, dest, src);
       }
 
       void emit_const_zero(xmm_register reg) {
-         emit_vpxor(reg, reg, reg);
+         emit(VPXOR, reg, reg, reg);
       }
 
       void emit_const_ones(xmm_register reg) {
-         // vpcmpeqb %reg, %reg, %reg
-         emit_VEX_128_66_0F_WIG(0x74, reg, reg, reg);
+         emit(VPCMPEQB, reg, reg, reg);
       }
 
-      template<bool W, int N>
+      template<int W, int N>
       struct IA32_t { uint8_t opcode[N]; };
       template<typename Base>
       struct IA32_opext { Base base; int opext; };
-      template<bool W, int N>
+      template<int W, int N>
       inline constexpr friend IA32_opext<IA32_t<W, N>> operator/(IA32_t<W, N> base, int opext) {
          return {base, opext};
       }
 
+      template<typename Base, typename T>
+      struct IA32_imm { Base base; };
+      template<typename T, typename B>
+      static constexpr IA32_imm<B, T> add_immediate(B b) { return {b}; }
+
+      template<typename Base, typename T>
+      inline constexpr friend auto operator/(IA32_imm<Base, T> base, int opext) {
+         return add_immediate<T>(base.base/opext);
+      }
+
       template<typename... Op>
       static constexpr auto IA32(Op... op) {
-         return IA32_t<false, sizeof...(Op)>{{ static_cast<uint8_t>(op)... }};
+         return IA32_t<0, sizeof...(Op)>{{ static_cast<uint8_t>(op)... }};
       }
       template<typename... Op>
       static constexpr auto IA32_REX_W(Op... op) {
-         return IA32_t<true, sizeof...(Op)>{{ static_cast<uint8_t>(op)... }};
+         return IA32_t<1, sizeof...(Op)>{{ static_cast<uint8_t>(op)... }};
+      }
+      template<typename... Op>
+      static constexpr auto IA32_WX(Op... op) {
+         return IA32_t<-1, sizeof...(Op)>{{ static_cast<uint8_t>(op)... }};
+      }
+      template<typename... Op>
+      static constexpr auto IA32_WX_imm8(Op... op) {
+         return IA32_imm<IA32_t<-1, sizeof...(Op)>, imm8>{{{ static_cast<uint8_t>(op)... }}};
+      }
+      template<typename... Op>
+      static constexpr auto IA32_WX_imm32(Op... op) {
+         return IA32_imm<IA32_t<-1, sizeof...(Op)>, imm32>{{{ static_cast<uint8_t>(op)... }}};
       }
 
       struct Jcc { uint8_t opcode; };
 
-      // When adding jcc codes, verify that the rel8/rel32 versions are 7x and 0F 8x
+      static constexpr auto ADD_A = IA32_WX(0x03);
+      static constexpr auto ADD_B = IA32_WX(0x01);
+      static constexpr auto ADD_imm8 = IA32_WX_imm8(0x83)/0;
+      static constexpr auto ADD_imm32 = IA32_WX_imm32(0x81)/0;
+      static constexpr auto DEC = IA32_WX(0xFF)/1;
       static constexpr auto DECD = IA32(0xFF)/1;
       static constexpr auto DECQ = IA32_REX_W(0xFF)/1;
       static constexpr auto INCD = IA32(0xFF)/0;
+      // When adding jcc codes, verify that the rel8/rel32 versions are 7x and 0F 8x
       static constexpr auto JZ = Jcc{0x74};
       static constexpr auto JNZ = Jcc{0x75};
       static constexpr auto JB = Jcc{0x72};
       static constexpr auto LDMXCSR = IA32(0x0f, 0xae)/2;
       static constexpr auto LEAVE = IA32(0xc9);
+      static constexpr auto MOV_A = IA32_WX(0x8b);
+      static constexpr auto MOV_B = IA32_WX(0x89);
+      static constexpr auto MOVSXB = IA32_WX(0x0f, 0xbe);
+      static constexpr auto MOVSXW = IA32_WX(0x0f, 0xbf);
+      static constexpr auto SETZ = IA32(0x0f, 0x94);
+      static constexpr auto SETNZ = IA32(0x0f, 0x95);
       static constexpr auto STMXCSR = IA32(0x0f, 0xae)/3;
       static constexpr auto RET = IA32(0xc3);
-      static constexpr auto TESTD = IA32(0x85);
-      static constexpr auto TESTQ = IA32_REX_W(0x85);
+      static constexpr auto TEST = IA32_WX(0x85);
+      static constexpr auto XOR_A = IA32_WX(0x33);
+      //static constexpr auto XOR_B = IA32_WX_STORE(0x31);
 
       enum VEX_mmmm { mmmm_none, mmmm_0F, mmmm_0F38, mmmm_0F3A };
       enum VEX_pp { pp_none, pp_66, pp_F3, pp_F2 };
@@ -4058,6 +3961,14 @@ namespace eosio { namespace vm {
       static constexpr auto VPCMPGTW = VEX_128_66_0F_WIG{0x65};
       static constexpr auto VPCMPGTD = VEX_128_66_0F_WIG{0x66};
       static constexpr auto VPCMPGTQ = VEX_128_66_0F38_WIG{0x37};
+      static constexpr auto VPEXTRB = VEX_128_66_0F3A_W0{0x14};
+      static constexpr auto VPEXTRW = VEX_128_66_0F3A_W0{0x15};
+      static constexpr auto VPEXTRD = VEX_128_66_0F3A_W0{0x16};
+      static constexpr auto VPEXTRQ = VEX_128_66_0F3A_W1{0x16};
+      static constexpr auto VPINSRB = VEX_128_66_0F3A_W0{0x20};
+      static constexpr auto VPINSRW = VEX_128_66_0F_W0{0xc4};
+      static constexpr auto VPINSRD = VEX_128_66_0F3A_W0{0x22};
+      static constexpr auto VPINSRQ = VEX_128_66_0F3A_W1{0x22};
       static constexpr auto VPHADDW = VEX_128_66_0F38_WIG{0x01};
       static constexpr auto VPHADDD = VEX_128_66_0F38_WIG{0x02};
       static constexpr auto VPMADDWD = VEX_128_66_0F_WIG{0xf5};
@@ -4174,23 +4085,47 @@ namespace eosio { namespace vm {
          emit_bytes(0xc0 | ((reg & 7) << 3) | (r_m.reg & 7));
       }
 
-      template<bool W, int N>
+      template<int W>
+      static constexpr bool get_operand_size(general_register32) { return W == 1; }
+      template<int W>
+      static constexpr bool get_operand_size(general_register64) { return W != 0; }
+      template<int W, typename RM>
+      static constexpr bool get_operand_size(RM) {
+         static_assert(W != -1);
+         return W != 0;
+      }
+
+      template<int W, typename RM>
+      static constexpr bool get_operand_size(RM, general_register32) { return W == 1; }
+      template<int W, typename RM>
+      static constexpr bool get_operand_size(RM, general_register64) { return W != 0; }
+      template<int W, typename RM>
+      static constexpr bool get_operand_size(RM r_m, int) {
+         return get_operand_size<W>(r_m);
+      }
+
+      template<int W, int N>
       void emit(IA32_t<W, N> opcode) {
+         static_assert(W == 0 || W == 1);
          emit_REX_prefix(W, false, false, false);
          for(int i = 0; i < N; ++i) {
             emit_bytes(opcode.opcode[i]);
          }
       }
-      template<bool W, int N, typename RM>
-      void emit(IA32_t<W, N> opcode, RM r_m, int reg) {
-         emit_REX_prefix(W, r_m, reg);
+      template<int W, int N, typename RM>
+      void emit(IA32_t<W, N> opcode, RM r_m) {
+         emit(opcode, r_m, 0);
+      }
+      template<int W, int N, typename RM, typename Reg>
+      void emit(IA32_t<W, N> opcode, RM r_m, Reg reg) {
+         emit_REX_prefix(get_operand_size<W>(r_m, reg), r_m, reg);
          for(int i = 0; i < N; ++i) {
             emit_bytes(opcode.opcode[i]);
          }
          emit_modrm_sib_disp(r_m, reg);
       }
-      template<bool W, int N, typename RM>
-      void emit(IA32_t<W, N> opcode, imm8 imm, RM r_m, int reg) {
+      template<int W, int N, typename RM, typename Reg>
+      void emit(IA32_t<W, N> opcode, imm8 imm, RM r_m, Reg reg) {
          emit(opcode, r_m, reg);
          emit_bytes(static_cast<uint8_t>(imm));
       }
@@ -4201,6 +4136,11 @@ namespace eosio { namespace vm {
       template<typename T, typename RM>
       void emit(IA32_opext<T> opcode, imm8 imm, RM r_m) {
          emit(opcode.base, imm, r_m, opcode.opext);
+      }
+      template<typename T, typename I, typename... U>
+      void emit(IA32_imm<T, I> opcode, I imm, U... u) {
+         emit(opcode.base, u...);
+         emit_operand(imm);
       }
 
       void* emit_branch8(Jcc opcode) {
@@ -4296,18 +4236,16 @@ namespace eosio { namespace vm {
       }
 
       template<int Sz, VEX_pp pp, VEX_mmmm mmmm, int W>
-      void emit(VEX<Sz, pp, mmmm, W> opcode, xmm_register src1, xmm_register src2, xmm_register dest) {
-         emit_VEX_prefix(dest & 8, false, src1 & 8, mmmm, W, src2, Sz == 256, pp);
+      void emit(VEX<Sz, pp, mmmm, W> opcode, any_register src1, xmm_register src2, xmm_register dest) {
+         emit_VEX_prefix(dest & 8, false, src1.reg & 8, mmmm, W, src2, Sz == 256, pp);
          emit_bytes(opcode.opcode);
          emit_modrm_sib_disp(src1, dest);
       }
 
-      void emit_VEX_128_66_0F_WIG(uint8_t opcode, simple_memory_ref src1, xmm_register src2, xmm_register dest) {
-         emit(VEX_128_66_0F_WIG{opcode}, src1, src2, dest);
-      }
-      
-      void emit_VEX_128_66_0F_WIG(uint8_t opcode, xmm_register src1, xmm_register src2, xmm_register dest) {
-         emit(VEX_128_66_0F_WIG{opcode}, src1, src2, dest);
+      template<int Sz, VEX_pp pp, VEX_mmmm mmmm, int W, typename R_M>
+      void emit(VEX<Sz, pp, mmmm, W> opcode, imm8 imm, R_M src1, xmm_register src2, xmm_register dest) {
+         emit(opcode, src1, src2, dest);
+         emit_byte(static_cast<uint8_t>(imm));
       }
 
       auto fixed_size_instr(std::size_t expected_bytes) {
@@ -4328,6 +4266,11 @@ namespace eosio { namespace vm {
       }
       auto softfloat_instr(std::size_t hard_expected, std::size_t soft_expected, std::size_t softbt_expected) {
          return fixed_size_instr(use_softfloat?(Context::async_backtrace()?softbt_expected:soft_expected):hard_expected);
+      }
+      auto simd_instr() {
+         // SIMD instructions use at least 2-bytes, so 64 gives an
+         // amplification factor of 32, which is safely below other limits.
+         return variable_size_instr(0, 64);
       }
 
       struct function_parameters {
@@ -4418,6 +4361,8 @@ namespace eosio { namespace vm {
          emit_byte(val0);
          emit_bytes(vals...);
       }
+      void emit_operand(imm8 val) { emit_byte(static_cast<uint8_t>(val)); }
+      void emit_operand(imm32 val) { emit_operand32(static_cast<uint32_t>(val)); }
       void emit_operand16(uint16_t val) { memcpy(code, &val, sizeof(val)); code += sizeof(val); }
       void emit_operand32(uint32_t val) { memcpy(code, &val, sizeof(val)); code += sizeof(val); }
       void emit_operand64(uint64_t val) { memcpy(code, &val, sizeof(val)); code += sizeof(val); }
@@ -4442,6 +4387,7 @@ namespace eosio { namespace vm {
       void emit_check_call_depth() {
          if constexpr (!StackLimitIsBytes)
          {
+            auto icount = fixed_size_instr(8);
             emit(DECD, ebx);
             fix_branch(emit_branchcc32(JZ), stack_overflow_handler);
          }
@@ -4449,6 +4395,7 @@ namespace eosio { namespace vm {
       void emit_check_call_depth_end() {
          if constexpr (!StackLimitIsBytes)
          {
+            auto icount = fixed_size_instr(2);
             emit(INCD, ebx);
          }
       }
@@ -4476,7 +4423,7 @@ namespace eosio { namespace vm {
 
       static void unimplemented() { EOS_VM_ASSERT(false, wasm_parse_exception, "Sorry, not implemented."); }
 
-      bool is_simple_multipop(uint32_t count, uint8_t rt) {
+      static constexpr bool is_simple_multipop(uint32_t count, uint8_t rt) {
          switch(rt) {
          case types::pseudo:
             return count == 0;
@@ -4491,22 +4438,22 @@ namespace eosio { namespace vm {
 
       // clobbers %rax or %xmm0 if rt is not void
       void emit_multipop(uint32_t count, uint8_t rt) {
+         auto icount = variable_size_instr(0, 17);
          if(!is_simple_multipop(count, rt)) {
             if (rt == types::v128) {
                emit_vmovups(*rsp, xmm0);
                // Leave room to write the result at the bottom of the stack
                count -= 2;
             } else if (rt != types::pseudo) {
-               emit_movq(*rsp, rax);
+               emit_mov(*rsp, rax);
             }
             if(count & 0x70000000) {
                // This code is probably unreachable.
                // int3
                emit_bytes(0xCC);
+               return;
             }
-            // add depth_change*8, %rsp
-            emit_bytes(0x48, 0x81, 0xc4); // TODO: Prefer imm8 where appropriate
-            emit_operand32(count * 8); // FIXME: handle overflow
+            emit_add(count * 8, rsp);
             if (rt == types::v128) {
                emit_vmovups(xmm0, *rsp);
             } else if (rt != types::pseudo) {
@@ -4516,6 +4463,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_multipop(const func_type& ft) {
+         auto icount = variable_size_instr(0, 7);
          uint32_t total_size = 0;
          for(uint32_t i = 0; i < ft.param_types.size(); ++i) {
             if(ft.param_types[i] == v128) {
@@ -4527,7 +4475,9 @@ namespace eosio { namespace vm {
                unimplemented();
             }
          }
-         emit_add(total_size, rsp);
+         if(total_size != 0) {
+            emit_add(total_size, rsp);
+         }
       }
 
       // pops an i32 wasm address off the stack
@@ -4602,6 +4552,7 @@ namespace eosio { namespace vm {
 
       template<typename Op>
       void emit_v128_loadop(Op op, uint32_t /*align*/, uint32_t offset) {
+         auto icount = simd_instr();
          emit_pop_address(offset);
          emit(op, *rax, xmm0);
          emit_sub(16, rsp);
@@ -4609,11 +4560,57 @@ namespace eosio { namespace vm {
       }
 
       template<typename Op>
+      void emit_v128_load_laneop(Op op, uint32_t /*align*/, uint32_t offset, uint8_t lane) {
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
+         emit_add(16, rsp);
+         emit_pop_address(offset);
+         emit(op, imm8{lane}, *rax, xmm0, xmm0);
+         emit_sub(16, rsp);
+         emit_vmovdqu(xmm0, *rsp);
+      }
+
+      template<typename Op>
+      void emit_v128_store_laneop(Op op, uint32_t /*align*/, uint32_t offset, uint8_t lane) {
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
+         emit_add(16, rsp);
+         emit_pop_address(offset);
+         emit(op, imm8{lane}, *rax, xmm0);
+      }
+
+      template<typename Op>
+      void emit_v128_extract_laneop(Op op, uint8_t l) {
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
+         emit_add(16, rsp);
+         emit(op, imm8{l}, rax, xmm0);
+         emit_push(rax);
+      }
+
+      template<typename Op>
+      void emit_v128_replace_laneop(Op op, uint8_t l) {
+         auto icount = simd_instr();
+         emit_pop(rax);
+         emit_vmovdqu(*rsp, xmm0);
+         emit(op, imm8{l}, rax, xmm0, xmm0);
+         emit_vmovdqu(xmm0, *rsp);
+      }
+
+      template<typename Op>
+      void emit_v128_splatop(Op op) {
+         emit(op, *rsp, xmm0);
+         emit_sub(8, rsp);
+         emit_vmovdqu(xmm0, *rsp);
+      }
+
+      template<typename Op>
       void emit_v128_irelop_subsat(Op opcode, bool switch_params, bool flip_result) {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
          if(switch_params) {
-            emit_vmovups(*rsp, xmm1);
+            emit_vmovdqu(*rsp, xmm1);
             // vpsubusb %xmm0, %xmm1, %xmm0
             emit(opcode, xmm0, xmm1, xmm0);
          } else {
@@ -4627,7 +4624,7 @@ namespace eosio { namespace vm {
             // vpcmpeqb %xmm1, %xmm0, %xmm0
             emit(VPCMPEQB, xmm1, xmm0, xmm0);
          }
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       // !(op(a,b) == b)
@@ -4635,7 +4632,8 @@ namespace eosio { namespace vm {
       // min -> lt
       template<typename Op, typename Eq>
       void emit_v128_irelop_minmax(Op opcode, Eq eq, bool flip_result) {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
          // vp[min/max]us[b/w/d/q] (%rsp), xmm0, xmm1
          emit(opcode, *rsp, xmm0, xmm1);
@@ -4644,16 +4642,17 @@ namespace eosio { namespace vm {
             emit_const_zero(xmm1);
             emit(VPCMPEQB, xmm1, xmm0, xmm0);
          }
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       // Note: for commutative functions switch_params=true is more efficient
       template<typename Op>
       void emit_v128_irelop_cmp(Op opcode, bool switch_params, bool flip_result) {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
          if(!switch_params) {
-            emit_vmovups(*rsp, xmm1);
+            emit_vmovdqu(*rsp, xmm1);
             // OP %xmm0, %xmm1, %xmm0
             emit(opcode, xmm0, xmm1, xmm0);
          } else {
@@ -4662,43 +4661,52 @@ namespace eosio { namespace vm {
          }
          if(flip_result) {
             emit_const_ones(xmm1);
-            emit_vpxor(xmm1, xmm0, xmm0);
+            emit(VPXOR, xmm1, xmm0, xmm0);
          }
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       template<typename Op>
       void emit_v128_shiftop(Op opcode, uint8_t mask) {
+         auto icount = simd_instr();
          emit_pop(rax);
          // and $mask, %eax
          emit_bytes(0x83, 0xe0, mask);
-         emit_movups(*rsp, xmm0);
+         emit_vmovdqu(*rsp, xmm0);
          emit_vmovd(eax, xmm1);
          emit(opcode, xmm1, xmm0, xmm0);
-         emit_movups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       template<typename Op>
       void emit_v128_unop(Op opcode) {
+         auto icount = simd_instr();
          emit(opcode, *rsp, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       template<typename Op>
       void emit_v128_binop(Op opcode) {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
-         emit_vmovups(*rsp, xmm1);
+         emit_vmovdqu(*rsp, xmm1);
          emit(opcode, xmm0, xmm1, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
       }
 
       template<typename Op>
       void emit_v128_binop_r(Op opcode) {
-         emit_vmovups(*rsp, xmm0);
+         auto icount = simd_instr();
+         emit_vmovdqu(*rsp, xmm0);
          emit_add(16, rsp);
          emit(opcode, *rsp, xmm0, xmm0);
-         emit_vmovups(xmm0, *rsp);
+         emit_vmovdqu(xmm0, *rsp);
+      }
+
+      template<typename Op>
+      void emit_v128_binop_commutative(Op opcode) {
+         emit_v128_binop_r(opcode);
       }
 
       template<typename T, typename U>
@@ -5004,8 +5012,8 @@ namespace eosio { namespace vm {
          int32_t extra = emit_setup_backtrace();
          emit_push(rdi);
          emit_push(rsi);
-         emit_movq(*(rsp + (16 + extra)), rdi);
-         emit_movq(*(rsp + (24 + extra)), rsi);
+         emit_mov(*(rsp + (16 + extra)), rdi);
+         emit_mov(*(rsp + (24 + extra)), rsi);
          emit_align_stack(rax);
          // movabsq $softfloatfun, %rax
          emit_bytes(0x48, 0xb8);
@@ -5016,18 +5024,18 @@ namespace eosio { namespace vm {
          emit_pop(rsi);
          emit_pop(rdi);
          emit_restore_backtrace(); // FIXME: clobbers rdx
-         emit_movq(rax, *rsp);
-         emit_movq(rdx, *(rsp + 8));
+         emit_mov(rax, *rsp);
+         emit_mov(rdx, *(rsp + 8));
       }
 
       void emit_v128_binop_softfloat(v128_t (*softfloatfun)(v128_t, v128_t)) {
          int32_t extra = emit_setup_backtrace();
          emit_push(rdi);
          emit_push(rsi);
-         emit_movq(*(rsp + (16 + extra)), rdx);
-         emit_movq(*(rsp + (24 + extra)), rcx);
-         emit_movq(*(rsp + (32 + extra)), rdi);
-         emit_movq(*(rsp + (40 + extra)), rsi);
+         emit_mov(*(rsp + (16 + extra)), rdx);
+         emit_mov(*(rsp + (24 + extra)), rcx);
+         emit_mov(*(rsp + (32 + extra)), rdi);
+         emit_mov(*(rsp + (40 + extra)), rsi);
          emit_align_stack(rax);
          // movabsq $softfloatfun, %rax
          emit_bytes(0x48, 0xb8);
@@ -5039,8 +5047,8 @@ namespace eosio { namespace vm {
          emit_pop(rdi);
          emit_restore_backtrace_basic(); // FIXME: clobbers rdx
          emit_add(16 + extra, rsp);
-         emit_movq(rax, *rsp);
-         emit_movq(rdx, *(rsp + 8));
+         emit_mov(rax, *rsp);
+         emit_mov(rdx, *(rsp + 8));
       }
 
       void* emit_error_handler(void (*handler)()) {
