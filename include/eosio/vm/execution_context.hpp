@@ -466,7 +466,8 @@ namespace eosio { namespace vm {
 
       execution_context(module& m, uint32_t max_call_depth)
        : base_type(m), _base_allocator{max_call_depth*sizeof(activation_frame)},
-         _as{max_call_depth, _base_allocator}, _halt(exit_t{}) {}
+         _as{max_call_depth, _base_allocator}, _halt(exit_t{}),
+         _remaining_call_depth{max_call_depth} {}
 
       void set_max_call_depth(uint32_t max_call_depth) {
          static_assert(std::is_trivially_move_assignable_v<call_stack>, "This is seriously broken if call_stack move assignment might use the existing memory");
@@ -478,6 +479,7 @@ namespace eosio { namespace vm {
             _base_allocator.index = 0;
             _as = call_stack{max_call_depth, _base_allocator};
          }
+         _remaining_call_depth = max_call_depth;
       }
 
       inline void call(uint32_t index) {
@@ -528,11 +530,17 @@ namespace eosio { namespace vm {
          if constexpr (!Should_Exit)
             return_pc = _state.pc + 1;
 
+         {
+            std::uint32_t frame_size = _mod.code[index - _mod.get_imported_functions_size()].stack_size;
+            EOS_VM_ASSERT (frame_size <= this->_remaining_call_depth, wasm_interpreter_exception, "stack overflow");
+            this->_remaining_call_depth -= frame_size;
+         }
+
          _as.push( activation_frame{ return_pc, _last_op_index } );
          _last_op_index = get_operand_stack().size() - _mod.get_function_type(index).param_types.size();
       }
 
-      inline void apply_pop_call(uint32_t num_locals, uint16_t return_count) {
+      inline void apply_pop_call(uint32_t num_locals, uint16_t return_count, std::uint32_t frame_size) {
          const auto& af = _as.pop();
          _state.pc = af.pc;
          _last_op_index = af.last_op_index;
@@ -540,6 +548,9 @@ namespace eosio { namespace vm {
             compact_operand(get_operand_stack().size() - num_locals - 1);
          else
             eat_operands(get_operand_stack().size() - num_locals);
+         {
+            this->_remaining_call_depth += frame_size;
+         }
       }
       inline operand_stack_elem  pop_operand() { return get_operand_stack().pop(); }
       inline operand_stack_elem& peek_operand(size_t i = 0) { return get_operand_stack().peek(i); }
@@ -846,5 +857,6 @@ namespace eosio { namespace vm {
       call_stack                      _as = { _base_allocator };
       opcode                          _halt;
       host_type*                      _host = nullptr;
+      uint32_t                        _remaining_call_depth;
    };
 }} // namespace eosio::vm

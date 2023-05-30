@@ -265,24 +265,10 @@ namespace eosio { namespace vm {
          assert((char*)code <= (char*)epilogue_start + max_epilogue_size);
       }
       static constexpr uint32_t get_depth_for_type(uint8_t type) {
-         if constexpr (StackLimitIsBytes)
-         {
-            if (type == types::v128)
-               return 16;
-            else if (type == types::i64 || type == types::f64)
-               return 8;
-            else if (type == types::i32 || type == types::f32)
-               return 4;
-            else
-               assert(!"Unknown type");
-         }
-         else
-         {
-            if(type == types::v128) {
-               return 2;
-            } else {
-               return 1;
-            }
+         if(type == types::v128) {
+            return 2;
+         } else {
+            return 1;
          }
       }
 
@@ -3598,6 +3584,8 @@ namespace eosio { namespace vm {
       {
          if constexpr (StackLimitIsBytes)
          {
+            // Add the base frame overhead
+            usage += 16;
             if (usage >= 0x7fffffff)
             {
                unimplemented();
@@ -3668,6 +3656,14 @@ namespace eosio { namespace vm {
       };
 
       void emit_add(int32_t immediate, general_register64 dest) {
+         if(immediate <= 0x7F && immediate >= -0x80) {
+            emit(ADD_imm8, static_cast<imm8>(immediate), dest);
+         } else {
+            emit(ADD_imm32, static_cast<imm32>(immediate), dest);
+         }
+      }
+
+      void emit_add(int32_t immediate, general_register32 dest) {
          if(immediate <= 0x7F && immediate >= -0x80) {
             emit(ADD_imm8, static_cast<imm8>(immediate), dest);
          } else {
@@ -4417,7 +4413,7 @@ namespace eosio { namespace vm {
       {
          if constexpr (StackLimitIsBytes)
          {
-            emit_add(stack_usage, ebx);
+            emit_add(static_cast<std::uint32_t>(stack_usage), ebx);
          }
       }
 

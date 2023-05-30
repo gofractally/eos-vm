@@ -576,10 +576,11 @@
    struct EOS_VM_OPCODE_T(name) {                                                                                      \
       EOS_VM_OPCODE_T(name)() {}                                                                                       \
       EOS_VM_OPCODE_T(name)(uint32_t data) : data(data) {}                                                             \
-      EOS_VM_OPCODE_T(name)(uint32_t d, uint32_t pc, uint16_t i, uint16_t oi)                                          \
-        : data(d), pc(pc), index(i), op_index(oi) {}                                                                   \
+      EOS_VM_OPCODE_T(name)(uint32_t d, uint32_t pc, uint32_t stacksz, uint16_t i, uint16_t oi)                        \
+          : data(d), pc(pc), stacksz(stacksz), index(i), op_index(oi) {}                                               \
       uint32_t data     = 0;                                                                                           \
       uint32_t pc       = 0;                                                                                           \
+      uint32_t stacksz  = 0;                                                                                           \
       uint16_t index    = 0;                                                                                           \
       uint16_t op_index = 0;                                                                                           \
       static constexpr uint8_t opcode = code;                                                                          \

@@ -221,6 +221,23 @@ namespace eosio { namespace vm {
       }
    }
 
+   // max_stack_bytes depends on max_func_local_bytes and uses the
+   // same accounting.
+   template<typename Options>
+   struct max_stack_usage_calculator
+   {
+      void update(const max_func_local_bytes_stack_checker<Options>&) {}
+   };
+   template<has_max_stack_bytes Options>
+   struct max_stack_usage_calculator<Options>
+   {
+      void update(const max_func_local_bytes_stack_checker<Options>& x)
+      {
+         _max = std::max(x._count, _max);
+      }
+      decltype(std::declval<Options>().max_stack_bytes) _max = 0;
+   };
+
    }
 
    template <typename Writer, typename Options = default_options, typename DebugInfo = null_debug_info>
@@ -663,13 +680,16 @@ namespace eosio { namespace vm {
       static constexpr uint8_t any_type = 0x82;
       struct operand_stack_type_tracker {
          explicit operand_stack_type_tracker(const detail::max_func_local_bytes_stack_checker<Options> local_bytes_checker, const Options& options)
-          : local_bytes_checker(local_bytes_checker), options(options) {}
+          : local_bytes_checker(local_bytes_checker), options(options) {
+            stack_usage.update(local_bytes_checker);
+         }
          std::vector<uint8_t> state = { scope_tag };
          static constexpr uint8_t unreachable_tag = 0x80;
          static constexpr uint8_t scope_tag = 0x81;
          uint32_t operand_depth = 0;
          uint32_t maximum_operand_depth = 0;
          detail::max_func_local_bytes_stack_checker<Options> local_bytes_checker;
+         detail::max_stack_usage_calculator<Options> stack_usage;
          const Options& options;
          void push(uint8_t type) {
             assert(type != unreachable_tag && type != scope_tag);
@@ -679,6 +699,7 @@ namespace eosio { namespace vm {
             maximum_operand_depth = std::max(operand_depth, maximum_operand_depth);
             state.push_back(type);
             local_bytes_checker.push_stack(options, type);
+            stack_usage.update(local_bytes_checker);
          }
          void pop(uint8_t expected) {
             assert(expected != unreachable_tag && expected != scope_tag);
@@ -1640,10 +1661,12 @@ namespace eosio { namespace vm {
                default: EOS_VM_ASSERT(false, wasm_parse_exception, "Illegal instruction");
             }
          }
-         auto stack_usage = static_cast<uint64_t>(op_stack.maximum_operand_depth) + local_types.locals_count();
-         code_writer.set_stack_usage(stack_usage);
+         if constexpr (detail::has_max_stack_bytes<Options>)
+         {
+            code_writer.set_stack_usage(op_stack.stack_usage._max);
+         }
          EOS_VM_ASSERT( pc_stack.empty(), wasm_parse_exception, "function body too long" );
-         _mod->maximum_stack = std::max(_mod->maximum_stack, stack_usage);
+         _mod->maximum_stack = std::max(_mod->maximum_stack, static_cast<uint64_t>(op_stack.maximum_operand_depth) + local_types.locals_count());
       }
 
       void parse_data_segment(wasm_code_ptr& code, data_segment& ds) {

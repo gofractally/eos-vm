@@ -325,7 +325,7 @@ namespace eosio { namespace vm {
          for(uint32_t i = 0; i < locals.size(); ++i) {
             locals_count += locals[i].count;
          }
-         fb[fb.size() - 1] = return_t{ static_cast<uint32_t>(locals_count + ft.param_types.size()), ft.return_count, 0, 0 };
+         fb[fb.size() - 1] = return_t{ static_cast<uint32_t>(locals_count + ft.param_types.size()), ft.return_count, stack_usage, 0, 0 };
       }
 
       void finalize(function_body& body) {
@@ -334,6 +334,7 @@ namespace eosio { namespace vm {
          body.code = fb.raw();
          body.size = op_index;
          _base_offset += body.size;
+         body.stack_size = stack_usage;
       }
 
       const void* get_addr() const { return fb.raw() + op_index; }
@@ -341,7 +342,12 @@ namespace eosio { namespace vm {
 
       void set_stack_usage(std::uint64_t usage)
       {
-         // FIXME: Implement this
+         usage += 16;
+         if (usage > 0xFFFFFFFFu)
+         {
+            unimplemented();
+         }
+         stack_usage = usage;
       }
 
     private:
@@ -363,6 +369,7 @@ namespace eosio { namespace vm {
       guarded_vector<opcode> fb;
       module* _mod;
       std::size_t _base_offset = 0;
+      std::uint32_t stack_usage = 0;
    };
 
 }}

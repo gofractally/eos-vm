@@ -141,6 +141,7 @@ add_executable(unit_tests main.cpp
                           max_nested_structures_tests.cpp
                           max_pages_tests.cpp
                           max_section_elements_tests.cpp
+                          max_stack_bytes_tests.cpp
                           max_table_elements_tests.cpp
                           null_tests.cpp
                           reentry_tests.cpp

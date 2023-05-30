@@ -142,6 +142,7 @@ namespace eosio { namespace vm {
       guarded_vector<local_entry> locals;
       opcode*                     code;
       std::size_t                 jit_code_offset;
+      std::uint32_t               stack_size = 0;
    };
 
    struct data_segment {
