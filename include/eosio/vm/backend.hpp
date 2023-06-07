@@ -113,6 +113,11 @@ namespace eosio { namespace vm {
       }
 
       template <typename... Args>
+      inline auto operator()(stack_manager& alt_stack, host_t& host, const std::string_view& mod, const std::string_view& func, Args... args) {
+         return call(alt_stack, host, mod, func, args...);
+      }
+
+      template <typename... Args>
       inline auto operator()(host_t& host, const std::string_view& mod, const std::string_view& func, Args... args) {
          return call(host, mod, func, args...);
       }
@@ -138,6 +143,14 @@ namespace eosio { namespace vm {
          return *this;
       }
 
+      inline backend& initialize(stack_manager& alt_stack, host_t* host=nullptr) {
+         if (memory_alloc) {
+            ctx.reset();
+            ctx.execute_start(alt_stack, host, interpret_visitor(ctx));
+         }
+         return *this;
+      }
+
       inline backend& initialize(host_t& host) {
          return initialize(&host);
       }
@@ -158,6 +171,16 @@ namespace eosio { namespace vm {
             ctx.execute(host, debug_visitor(ctx), func_index, args...);
          } else {
             ctx.execute(host, interpret_visitor(ctx), func_index, args...);
+         }
+         return true;
+      }
+
+      template <typename... Args>
+      inline bool call(stack_manager& alt_stack, host_t& host, const std::string_view& mod, const std::string_view& func, Args... args) {
+         if constexpr (eos_vm_debug) {
+            ctx.execute(alt_stack, &host, debug_visitor(ctx), func, args...);
+         } else {
+            ctx.execute(alt_stack, &host, interpret_visitor(ctx), func, args...);
          }
          return true;
       }

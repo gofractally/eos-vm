@@ -396,6 +396,7 @@ namespace eosio { namespace vm {
          }
          EOS_VM_ASSERT(_mod->code.size() == _mod->functions.size(), wasm_parse_exception, "code section must have the same size as the function section" );
 
+         _mod->stack_limit_is_bytes = detail::has_max_stack_bytes<Options>;
          debug.set(std::move(imap));
          debug.relocate(_allocator.get_code_start());
       }

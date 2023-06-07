@@ -52,8 +52,8 @@ namespace eosio { namespace vm {
    // regular program stack, does nothing and returns nullptr.
    class stack_allocator {
     public:
-      explicit stack_allocator(std::size_t min_size) {
-         if(min_size > 4*1024*1024) {
+      explicit stack_allocator(std::size_t min_size, std::size_t available = 4*1024*1024) {
+         if(min_size > available) {
             std::size_t pagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
             _size = ((min_size + pagesize - 1) & ~(pagesize - 1)) + 4*1024*1024;
             int flags = MAP_PRIVATE | MAP_ANONYMOUS;
@@ -61,6 +61,7 @@ namespace eosio { namespace vm {
             flags |= MAP_STACK;
 #endif
             _ptr = ::mmap(nullptr, _size, PROT_READ | PROT_WRITE, flags, -1, 0);
+            EOS_VM_ASSERT(_ptr != MAP_FAILED, wasm_bad_alloc, "Failed to allocate stack");
          }
       }
       ~stack_allocator() {

@@ -80,6 +80,43 @@ namespace eosio { namespace vm {
       using host_invoker_t = typename host_invoker<HF>::type;
    }
 
+   template<typename T>
+   struct local {
+      local(T& loc) : location(&loc), value(loc) {}
+      ~local() { *location = std::move(value); }
+      T* location;
+      T value;
+   };
+
+   //
+   struct stack_manager {
+      static constexpr std::size_t default_stack_size = 4*1024*1024;
+      static constexpr std::size_t untracked_stack_size = 4*1024*1024;
+      // refers to the current stack
+      stack_manager() = default;
+      decltype(auto) execute(std::size_t sz, auto f)
+      {
+         local saved{*this};
+         auto p = reinterpret_cast<std::uintptr_t>(__builtin_frame_address(0));
+         if (base == 0 && size == 0)
+         {
+            base = p - default_stack_size;
+            size = default_stack_size;
+         }
+
+         std::size_t available_stack = (p >= base && p <= base + size) ? p - base : 0;
+         stack_allocator alt_stack{sz, available_stack};
+         if (alt_stack.top())
+         {
+            size = sz;
+            base = reinterpret_cast<std::uintptr_t>(alt_stack.top()) - sz;
+         }
+         return f(alt_stack);
+      }
+      std::uintptr_t base = 0;
+      std::size_t size = 0;
+   };
+
    template<typename Derived, typename Host>
    class execution_context_base {
       using host_type  = detail::host_type_t<Host>;
@@ -155,9 +192,22 @@ namespace eosio { namespace vm {
       }
 
       template <typename Visitor, typename... Args>
+      inline std::optional<operand_stack_elem> execute(stack_manager& alt_stack, host_type* host, Visitor&& visitor, const std::string_view func,
+                                               Args... args) {
+         uint32_t func_index = _mod.get_exported_function(func);
+         return derived().execute(alt_stack, host, std::forward<Visitor>(visitor), func_index, std::forward<Args>(args)...);
+      }
+
+      template <typename Visitor, typename... Args>
       inline void execute_start(host_type* host, Visitor&& visitor) {
          if (_mod.start != std::numeric_limits<uint32_t>::max())
             derived().execute(host, std::forward<Visitor>(visitor), _mod.start);
+      }
+
+      template <typename Visitor, typename... Args>
+      inline void execute_start(stack_manager& alt_stack, host_type* host, Visitor&& visitor) {
+         if (_mod.start != std::numeric_limits<uint32_t>::max())
+            derived().execute(alt_stack, host, std::forward<Visitor>(visitor), _mod.start);
       }
 
     protected:
@@ -273,8 +323,34 @@ namespace eosio { namespace vm {
          get_operand_stack().eat(0);
       }
 
+      std::size_t get_maximum_stack_size()
+      {
+         if (_mod.stack_limit_is_bytes)
+         {
+            return this->_remaining_call_depth * 2;
+         }
+         else
+         {
+            return (_mod.maximum_stack + 2 /*frame ptr + return ptr*/) * (this->_remaining_call_depth + 1) * sizeof(native_value);
+         }
+      }
+
       template <typename... Args>
-      inline std::optional<operand_stack_elem> execute(host_type* host, jit_visitor, uint32_t func_index, Args... args) {
+      inline std::optional<operand_stack_elem> execute(host_type* host, jit_visitor vis, uint32_t func_index, Args... args)
+      {
+         stack_allocator alt_stack(get_maximum_stack_size());
+         return execute(alt_stack, host, vis, func_index, args...);
+      }
+      template <typename... Args>
+      inline std::optional<operand_stack_elem> execute(stack_manager& alloc, host_type* host, jit_visitor vis, uint32_t func_index, Args... args)
+      {
+         return alloc.execute(get_maximum_stack_size(), [&](stack_allocator& alt_stack){
+            return execute(alt_stack, host, vis, func_index, args...);
+         });
+      }
+
+      template <typename... Args>
+      inline std::optional<operand_stack_elem> execute(stack_allocator& alt_stack, host_type* host, jit_visitor, uint32_t func_index, Args... args) {
          auto saved_host = _host;
          auto saved_os_size = get_operand_stack().size();
          auto g = scope_guard([&](){ _host = saved_host; get_operand_stack().eat(saved_os_size); });
@@ -296,10 +372,6 @@ namespace eosio { namespace vm {
                std::reverse(args_raw + 0, args_raw + args_count);
                result.scalar = call_host_function(args_raw, func_index);
             } else {
-               std::size_t maximum_stack_usage =
-                  (_mod.maximum_stack + 2 /*frame ptr + return ptr*/) * (this->_remaining_call_depth + 1) +
-                 args_count + 4 /* scratch space */;
-               stack_allocator alt_stack(maximum_stack_usage * sizeof(native_value));
                // reserve 24 bytes for data accessed by inline assembly
                void* stack = alt_stack.top();
                if(stack) {

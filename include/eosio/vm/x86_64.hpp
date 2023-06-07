@@ -59,7 +59,7 @@ namespace eosio { namespace vm {
 
          // emit host functions
          const uint32_t num_imported = mod.get_imported_functions_size();
-         const std::size_t host_functions_size = (40 + 10 * Context::async_backtrace()) * num_imported;
+         const std::size_t host_functions_size = (42 + 10 * Context::async_backtrace()) * num_imported;
          _code_start = _mod.allocator.alloc<unsigned char>(host_functions_size);
          _code_end = _code_start + host_functions_size;
          // code already set
@@ -160,14 +160,6 @@ namespace eosio { namespace vm {
             emit_mov(rdx, *(rdi + 16));
          }
 
-         if constexpr (Context::async_backtrace())
-         {
-            emit_mov(ebx, *(rdi + 16));
-         }
-         else
-         {
-            emit_mov(ebx, *rdi);
-         }
          emit_mov(*(rbp - 16), rbx);
 
          emit(LDMXCSR, *(rbp - 4));
@@ -184,8 +176,8 @@ namespace eosio { namespace vm {
          emit(RET);
       }
 
-      static constexpr std::size_t max_prologue_size = 21;
-      static constexpr std::size_t max_epilogue_size = 10;
+      static constexpr std::size_t max_prologue_size = 33;
+      static constexpr std::size_t max_epilogue_size = 16;
       void emit_prologue(const func_type& /*ft*/, const guarded_vector<local_entry>& locals, uint32_t funcnum) {
          _ft = &_mod.types[_mod.functions[funcnum]];
          _params = function_parameters{_ft};
@@ -5099,6 +5091,7 @@ namespace eosio { namespace vm {
          // lea 24(%rsp), %rsi
          emit_bytes(0x48, 0x8d, 0x74, 0x24, 0x18 + extra);
          emit_align_stack();
+         emit_mov(ebx, ecx);
          // movabsq $call_host_function, %rax
          emit_bytes(0x48, 0xb8);
          emit_operand_ptr(&call_host_function);
@@ -5154,11 +5147,14 @@ namespace eosio { namespace vm {
 
       bool is_host_function(uint32_t funcnum) { return funcnum < _mod.get_imported_functions_size(); }
 
-      static native_value call_host_function(Context* context /*rdi*/, native_value* stack /*rsi*/, uint32_t idx /*edx*/) {
+      static native_value call_host_function(Context* context /*rdi*/, native_value* stack /*rsi*/, uint32_t idx /*edx*/, uint32_t remaining_stack) {
          // It's currently unsafe to throw through a jit frame, because we don't set up
          // the exception tables for them.
          native_value result;
          vm::longjmp_on_exception([&]() {
+            auto saved = context->_remaining_call_depth;
+            context->_remaining_call_depth = remaining_stack;
+            scope_guard g{[&](){ context->_remaining_call_depth = saved; }};
             result = context->call_host_function(stack, idx);
          });
          return result;
