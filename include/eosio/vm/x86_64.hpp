@@ -152,12 +152,12 @@ namespace eosio { namespace vm {
          }
 
          if constexpr (Context::async_backtrace()) {
-            emit_mov(rbp, *(rdi + 16));
+            emit_mov(rbp, *(rdi + 8));
          }
          emit_call(rcx);
          if constexpr (Context::async_backtrace()) {
             emit_xor(edx, edx);
-            emit_mov(rdx, *(rdi + 16));
+            emit_mov(rdx, *(rdi + 8));
          }
 
          emit_mov(*(rbp - 16), rbx);
