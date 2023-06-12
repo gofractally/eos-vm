@@ -311,6 +311,16 @@ namespace eosio { namespace vm {
 
 #undef NUMERIC_OP
 
+      void emit_memory_copy()
+      {
+         fb[op_index++] = memory_copy_t{};
+      }
+
+      void emit_memory_fill()
+      {
+         fb[op_index++] = memory_fill_t{};
+      }
+
       void emit_error() { fb[op_index++] = error_t{}; }
       
       void fix_branch(uint32_t* branch, uint32_t target) { if(branch) *branch = _base_offset + target; }

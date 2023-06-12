@@ -196,6 +196,7 @@ namespace eosio { namespace vm {
    PARSER_OPTION(parse_custom_section_name, false, bool);
 
    PARSER_OPTION(enable_simd, true, bool)
+   PARSER_OPTION(enable_bulk_memory, true, bool)
 
 #undef MAX_ELEMENTS
 #undef PARSER_OPTION
@@ -1656,6 +1657,34 @@ namespace eosio { namespace vm {
 #undef INPUTS_1
 #undef INPUTS_0
 
+                     default: EOS_VM_ASSERT(false, wasm_parse_exception, "Illegal instruction");
+                  }
+               } break;
+               case opcodes::ext_prefix: {
+                  switch(parse_varuint32(code))
+                  {
+                     case ext_opcodes::memory_copy:
+                        EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
+                        EOS_VM_ASSERT(_mod->memories.size() != 0, wasm_parse_exception, "memory.copy requires memory");
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        EOS_VM_ASSERT(*code == 0, wasm_parse_exception, "memory.copy must end with 0x00 0x00");
+                        code++;
+                        EOS_VM_ASSERT(*code == 0, wasm_parse_exception, "memory.copy must end with 0x00 0x00");
+                        code++;
+                        code_writer.emit_memory_copy();
+                        break;
+                     case ext_opcodes::memory_fill:
+                        EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
+                        EOS_VM_ASSERT(_mod->memories.size() != 0, wasm_parse_exception, "memory.fill requires memory");
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        EOS_VM_ASSERT(*code == 0, wasm_parse_exception, "memory.fill must end with 0x00");
+                        code++;
+                        code_writer.emit_memory_fill();
+                        break;
                      default: EOS_VM_ASSERT(false, wasm_parse_exception, "Illegal instruction");
                   }
                } break;

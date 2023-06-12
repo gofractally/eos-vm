@@ -214,6 +214,7 @@
 #define EOS_VM_EXIT_OP(opcode_macro)            \
    opcode_macro(exit, 0xC0)
 #define EOS_VM_EXTENDED_OPS(opcode_macro)       \
+   opcode_macro(ext_prefix, 0xFC)               \
    opcode_macro(vector_prefix, 0xFD)
 #define EOS_VM_EMPTY_OPS(opcode_macro)          \
    opcode_macro(empty0xC1, 0xC1)                \
@@ -275,10 +276,13 @@
    opcode_macro(empty0xF9, 0xF9)                \
    opcode_macro(empty0xFA, 0xFA)                \
    opcode_macro(empty0xFB, 0xFB)                \
-   opcode_macro(empty0xFC, 0xFC)                \
    opcode_macro(empty0xFE, 0xFE)
 #define EOS_VM_ERROR_OPS(opcode_macro)          \
    opcode_macro(error, 0xFF)
+
+#define EOS_VM_EXT_OPS(opcode_macro)            \
+   opcode_macro(memory_copy, 10)                \
+   opcode_macro(memory_fill, 11)
 
 #define EOS_VM_VEC_MEMORY_OPS(opcode_macro)     \
    opcode_macro(v128_load, 0)                   \

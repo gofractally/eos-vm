@@ -3534,6 +3534,72 @@ namespace eosio { namespace vm {
 
       void emit_error() { unimplemented(); }
 
+      // bulk memory
+
+      void emit_memory_fill() {
+         auto icount = fixed_size_instr(18);
+         emit_pop(rcx);
+         emit_mov(rdi, r8);
+         emit_pop(rax);
+         emit_pop(rdi);
+         emit_add(rsi, rdi);
+
+         // validate memory
+         emit_mov(*(rcx + rdi - 1), dl);
+
+         // rep stosb
+         emit_bytes(0xf3);
+         emit(IA32(0xaa));
+
+         emit_mov(r8, rdi);
+      }
+      void emit_memory_copy() {
+         auto icount = fixed_size_instr(60);
+         emit_pop(rcx);
+         emit_mov(rsi, r8);
+         emit_mov(rdi, r9);
+         emit_pop(rsi);
+         emit_pop(rdi);
+         emit_add(r8, rsi);
+         emit_add(r8, rdi);
+
+         // TODO: reorder branches to help branch prediction
+
+         // %rax = dest - src
+         emit_mov(rdi, rax);
+         emit_sub(rsi, rax);
+         auto cmp1 = emit_branch8(JBE);
+
+         // Validate dest
+         emit_mov(*(rcx + rdi - 1), dl);
+
+         emit(CMP, rcx, rax);
+         auto cmp2 = emit_branch8(JAE);
+
+         emit(LEA, *(rcx + rsi - 1), rsi);
+         emit(LEA, *(rcx + rdi - 1), rdi);
+         emit(STD);
+         emit_bytes(0xf3);
+         emit(IA32(0xa4));
+         emit(CLD);
+
+         emit(JMP_8);
+         auto end = emit_branch_target8();
+         fix_branch8(cmp1, code);
+         // Validate src
+         emit_mov(*(rcx + rsi - 1), dl);
+         fix_branch8(cmp2, code);
+
+         // rep movsb
+         emit_bytes(0xf3);
+         emit(IA32(0xa4));
+
+         fix_branch8(end, code);
+
+         emit_mov(r8, rsi);
+         emit_mov(r9, rdi);
+      }
+
       // --------------- random  ------------------------
       static void fix_branch(void* branch, void* target) {
          auto branch_ = static_cast<uint8_t*>(branch);
@@ -3633,6 +3699,17 @@ namespace eosio { namespace vm {
          int32_t offset;
       };
       inline friend disp_memory_ref operator*(register_add_expr expr) { return { expr.reg, expr.offset }; }
+      struct double_register_expr { general_register64 reg1; general_register64 reg2; int32_t offset; };
+      friend double_register_expr operator+(general_register64 reg1, general_register64 reg2) { return { reg1, reg2, 0 }; }
+      friend double_register_expr operator+(double_register_expr expr, int32_t offset) { return {expr.reg1, expr.reg2, expr.offset + offset}; }
+      friend double_register_expr operator-(double_register_expr expr, int32_t offset) { return {expr.reg1, expr.reg2, expr.offset - offset}; }
+      struct sib_memory_ref
+      {
+         general_register64 reg1;
+         general_register64 reg2;
+         int32_t offset;
+      };
+      friend sib_memory_ref operator*(double_register_expr expr) { return { expr.reg1, expr.reg2, expr.offset }; }
       enum xmm_register {
           xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7,
           xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15
@@ -3663,6 +3740,10 @@ namespace eosio { namespace vm {
          }
       }
 
+      void emit_add(general_register64 src, general_register64 dest) {
+         emit(ADD_A, src, dest);
+      }
+
       void emit_sub(int32_t immediate, general_register64 dest) {
          if(immediate <= 0x7F && immediate >= -0x80) {
             emit(IA32_REX_W(0x83)/5, static_cast<imm8>(immediate), dest);
@@ -3672,7 +3753,11 @@ namespace eosio { namespace vm {
       }
 
       void emit_sub(general_register32 src, general_register32 dest) {
-         emit(IA32_WX(0x2B), src, dest);
+         emit(SUB_A, src, dest);
+      }
+
+      void emit_sub(general_register64 src, general_register64 dest) {
+         emit(SUB_A, src, dest);
       }
 
       template<typename RM>
@@ -3745,6 +3830,10 @@ namespace eosio { namespace vm {
 
       void emit_mov(general_register64 reg, disp_memory_ref mem) {
          emit(MOV_B, mem, reg);
+      }
+
+      void emit_mov(sib_memory_ref mem, general_register8 reg) {
+         emit(MOVB_A, mem, reg);
       }
 
       void emit_pop(general_register64 reg) {
@@ -3867,23 +3956,35 @@ namespace eosio { namespace vm {
       static constexpr auto ADD_B = IA32_WX(0x01);
       static constexpr auto ADD_imm8 = IA32_WX_imm8(0x83)/0;
       static constexpr auto ADD_imm32 = IA32_WX_imm32(0x81)/0;
+      static constexpr auto CLD = IA32(0xFC);
+      static constexpr auto CMP = IA32_WX(0x3b);
       static constexpr auto DEC = IA32_WX(0xFF)/1;
       static constexpr auto DECD = IA32(0xFF)/1;
       static constexpr auto DECQ = IA32_REX_W(0xFF)/1;
       static constexpr auto INCD = IA32(0xFF)/0;
       // When adding jcc codes, verify that the rel8/rel32 versions are 7x and 0F 8x
+      static constexpr auto JA = Jcc{0x77};
+      static constexpr auto JAE = Jcc{0x73};
+      static constexpr auto JBE = Jcc{0x76};
       static constexpr auto JZ = Jcc{0x74};
       static constexpr auto JNZ = Jcc{0x75};
       static constexpr auto JB = Jcc{0x72};
+      static constexpr auto JMP_8 = IA32(0xeb);
+      static constexpr auto JMP_32 = IA32(0xe9);
       static constexpr auto LDMXCSR = IA32(0x0f, 0xae)/2;
+      static constexpr auto LEA = IA32_WX(0x8d);
       static constexpr auto LEAVE = IA32(0xc9);
+      static constexpr auto MOVB_A = IA32(0x8a);
       static constexpr auto MOV_A = IA32_WX(0x8b);
       static constexpr auto MOV_B = IA32_WX(0x89);
       static constexpr auto MOVSXB = IA32_WX(0x0f, 0xbe);
       static constexpr auto MOVSXW = IA32_WX(0x0f, 0xbf);
+      static constexpr auto NEG = IA32_WX(0xf7)/3;
       static constexpr auto SETZ = IA32(0x0f, 0x94);
       static constexpr auto SETNZ = IA32(0x0f, 0x95);
+      static constexpr auto STD = IA32(0xFD);
       static constexpr auto STMXCSR = IA32(0x0f, 0xae)/3;
+      static constexpr auto SUB_A = IA32_WX(0x2b);
       static constexpr auto RET = IA32(0xc3);
       static constexpr auto TEST = IA32_WX(0x85);
       static constexpr auto XOR_A = IA32_WX(0x33);
@@ -4032,11 +4133,29 @@ namespace eosio { namespace vm {
          emit_REX_prefix(W, reg & 8, false, mem.reg & 8);
       }
 
+      void emit_REX_prefix(bool W, sib_memory_ref mem, int reg)
+      {
+         emit_REX_prefix(W, reg & 8, mem.reg1 & 8, mem.reg2 & 8);
+      }
+
       void emit_VEX_prefix(bool R, bool X, bool B, VEX_mmmm mmmm, bool W, int vvvv, bool L, VEX_pp pp) {
          if(X || B || (mmmm != mmmm_0F) || W) {
             emit_bytes(0xc4, (!R << 7) | (!X << 6) | (!B << 5) | mmmm, (W << 7) | ((vvvv ^ 0xF) << 3) | (L << 2) | pp);
          } else {
             emit_bytes(0xc5, (!R << 7) | ((vvvv ^ 0xF) << 3) | (L << 2) | pp);
+         }
+      }
+
+      void emit_modrm_sib_disp(sib_memory_ref mem, int reg) {
+         if (mem.reg1 == rsp || mem.reg2 == rbp) unimplemented();
+         auto sib = ((mem.reg1 & 7) << 3) | (mem.reg2 & 7);
+         if(mem.offset == 0) {
+            emit_bytes(0x00 | ((reg & 7) << 3) | 0x4, sib);
+         } else if(mem.offset >= -0x80 && mem.offset <= 0x7f) {
+            emit_bytes(0x40 | ((reg & 7) << 3) | 0x4, sib, mem.offset);
+         } else {
+            emit_bytes(0x80 | ((reg & 7) << 3) | 0x4, sib);
+            emit_operand32(mem.offset);
          }
       }
 
