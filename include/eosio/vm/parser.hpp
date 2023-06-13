@@ -236,7 +236,7 @@ namespace eosio { namespace vm {
       {
          _max = std::max(x._count, _max);
       }
-      decltype(std::declval<Options>().max_stack_bytes) _max = 0;
+      std::decay_t<decltype(std::declval<Options>().max_stack_bytes)> _max = 0;
    };
 
    }
