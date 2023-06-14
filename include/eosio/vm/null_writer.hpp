@@ -435,6 +435,8 @@ class null_writer {
    void emit_f32x4_demote_f64x2_zero() {}
    void emit_f64x2_promote_low_f32x4() {}
 
+   void emit_memory_init(std::uint32_t) {}
+   void emit_data_drop(std::uint32_t) {}
    void emit_memory_copy() {}
    void emit_memory_fill() {}
 

@@ -2432,6 +2432,17 @@ namespace eosio { namespace vm {
       [[gnu::always_inline]] inline void operator()(const f64x2_promote_low_f32x4_t&) {
          v128_unop(&_eosio_f64x2_promote_low_f32x4);
       }
+      [[gnu::always_inline]] inline void operator()(const memory_init_t& op) {
+         const auto& size = context.pop_operand();
+         const auto& src = context.pop_operand();
+         const auto& dst = context.pop_operand();
+         context.inc_pc();
+         context.init_linear_memory(op.index, dst.to_ui32(), src.to_ui32(), size.to_ui32());
+      }
+      [[gnu::always_inline]] inline void operator()(const data_drop_t& op) {
+         context.inc_pc();
+         context.drop_data(op.index);
+      }
       [[gnu::always_inline]] inline void operator()(const memory_copy_t&) {
          auto& size = context.peek_operand(0);
          auto& src = context.peek_operand(1);

@@ -168,13 +168,21 @@ namespace eosio { namespace vm {
             _wasm_alloc->reset();
 
          for (uint32_t i = 0; i < _mod.data.size(); i++) {
-            const auto& data_seg = _mod.data[i];
+            auto& data_seg = _mod.data[i];
             uint32_t offset = data_seg.offset.value.i32; // force to unsigned
-            auto available_memory =  _mod.memories[0].limits.initial * static_cast<uint64_t>(page_size);
-            auto required_memory = static_cast<uint64_t>(offset) + data_seg.data.size();
-            EOS_VM_ASSERT(required_memory <= available_memory, wasm_memory_exception, "data out of range");
-            auto addr = _linear_memory + offset;
-            memcpy((char*)(addr), data_seg.data.raw(), data_seg.data.size());
+            if (data_seg.passive)
+            {
+               data_seg.dropped = false;
+            }
+            else
+            {
+               auto available_memory =  _mod.memories[0].limits.initial * static_cast<uint64_t>(page_size);
+               auto required_memory = static_cast<uint64_t>(offset) + data_seg.data.size();
+               EOS_VM_ASSERT(required_memory <= available_memory, wasm_memory_exception, "data out of range");
+               auto addr = _linear_memory + offset;
+               memcpy((char*)(addr), data_seg.data.raw(), data_seg.data.size());
+               data_seg.dropped = true;
+            }
          }
 
          // reset the mutable globals
@@ -182,6 +190,24 @@ namespace eosio { namespace vm {
             if (_mod.globals[i].type.mutability)
                _mod.globals[i].current = _mod.globals[i].init;
          }
+      }
+
+      void init_linear_memory(uint32_t x, uint32_t d, uint32_t s, uint32_t n)
+      {
+         assert(x < _mod.data.size());
+         const auto& data_seg = _mod.data[x];
+         auto data_len = data_seg.dropped? 0 : data_seg.data.size();
+         if (std::uint64_t{s} + n > data_len)
+            throw_<wasm_memory_exception>("data out of range");
+         void* dest = get_interface().template validate_pointer<unsigned char>(d, n);
+         std::memcpy(dest, data_seg.data.raw() + s, n);
+      }
+
+      void drop_data(uint32_t x)
+      {
+         assert(x < _mod.data.size());
+         auto& data_seg = _mod.data[x];
+         data_seg.dropped = true;
       }
 
       template <typename Visitor, typename... Args>
@@ -867,6 +893,7 @@ namespace eosio { namespace vm {
             EOS_VM_CONVERSION_OPS(CREATE_TABLE_ENTRY)
             EOS_VM_EXIT_OP(CREATE_TABLE_ENTRY)
             EOS_VM_EMPTY_OPS(CREATE_TABLE_ENTRY)
+            EOS_VM_DATA_OPS(CREATE_TABLE_ENTRY)
             EOS_VM_EXT_OPS(CREATE_TABLE_ENTRY)
             EOS_VM_VEC_MEMORY_OPS(CREATE_TABLE_ENTRY)
             EOS_VM_VEC_LANE_MEMORY_OPS(CREATE_TABLE_ENTRY)
@@ -898,7 +925,8 @@ namespace eosio { namespace vm {
              EOS_VM_CONVERSION_OPS(CREATE_LABEL);
              EOS_VM_EXIT_OP(CREATE_EXIT_LABEL);
              EOS_VM_EMPTY_OPS(CREATE_EMPTY_LABEL);
-             EOS_VM_EXT_OPS(CREATE_LABEL)
+             EOS_VM_DATA_OPS(CREATE_LABEL);
+             EOS_VM_EXT_OPS(CREATE_LABEL);
              EOS_VM_VEC_MEMORY_OPS(CREATE_LABEL);
              EOS_VM_VEC_LANE_MEMORY_OPS(CREATE_LABEL);
              EOS_VM_VEC_CONSTANT_OPS(CREATE_LABEL);

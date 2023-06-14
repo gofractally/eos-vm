@@ -352,20 +352,31 @@ namespace eosio { namespace vm {
          return mod;
       }
 
+      static constexpr auto make_section_order() {
+         std::array<std::uint8_t, section_id::num_of_elems> result;
+         std::uint8_t i = 1;
+         for (std::uint8_t sec : {type_section, import_section, function_section, table_section, memory_section, global_section, export_section, start_section, element_section, data_count_section, code_section, data_section}) {
+            result[sec] = i++;
+         }
+         return result;
+      }
+
       void parse_module(wasm_code_ptr& code_ptr, size_t sz, module& mod, DebugInfo& debug) {
          _mod = &mod;
          EOS_VM_ASSERT(parse_magic(code_ptr) == constants::magic, wasm_parse_exception, "magic number did not match");
          EOS_VM_ASSERT(parse_version(code_ptr) == constants::version, wasm_parse_exception,
                        "version number did not match");
          uint8_t highest_section_id = 0;
+         constexpr auto order = make_section_order();
          for (;;) {
             if (code_ptr.offset() == sz)
                break;
             auto id = parse_section_id(code_ptr);
             auto len = parse_section_payload_len(code_ptr);
 
-            EOS_VM_ASSERT(id == 0 || id > highest_section_id, wasm_parse_exception, "section out of order");
-            highest_section_id = std::max(highest_section_id, id);
+            EOS_VM_ASSERT(id < order.size(), wasm_parse_exception, "invalid section id");
+            EOS_VM_ASSERT(id == 0 || order[id] > highest_section_id, wasm_parse_exception, "section out of order");
+            highest_section_id = std::max(highest_section_id, order[id]);
 
             auto section_guard = code_ptr.scoped_consume_items(len);
 
@@ -392,6 +403,7 @@ namespace eosio { namespace vm {
                   break;
                case section_id::code_section: parse_section<section_id::code_section>(code_ptr, mod.code); break;
                case section_id::data_section: parse_section<section_id::data_section>(code_ptr, mod.data); break;
+               case section_id::data_count_section: parse_section<section_id::data_count_section>(code_ptr, _datacount); break;
                default: EOS_VM_ASSERT(false, wasm_parse_exception, "error invalid section id");
             }
          }
@@ -1663,6 +1675,26 @@ namespace eosio { namespace vm {
                case opcodes::ext_prefix: {
                   switch(parse_varuint32(code))
                   {
+                     case ext_opcodes::memory_init: {
+                        EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
+                        EOS_VM_ASSERT(_mod->memories.size() != 0, wasm_parse_exception, "memory.init requires memory");
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        auto x = parse_varuint32(code);
+                        EOS_VM_ASSERT(!!_datacount, wasm_parse_exception, "memory.init requires datacount section");
+                        EOS_VM_ASSERT(x < *_datacount, wasm_parse_exception, "data segment does not exist");
+                        EOS_VM_ASSERT(*code == 0, wasm_parse_exception, "memory.init must end with 0x00");
+                        code++;
+                        code_writer.emit_memory_init(x);
+                     } break;
+                     case ext_opcodes::data_drop: {
+                        EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
+                        auto x = parse_varuint32(code);
+                        EOS_VM_ASSERT(!!_datacount, wasm_parse_exception, "data.drop requires datacount section");
+                        EOS_VM_ASSERT(x < *_datacount, wasm_parse_exception, "data segment does not exist");
+                        code_writer.emit_data_drop(x);
+                     } break;
                      case ext_opcodes::memory_copy:
                         EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
                         EOS_VM_ASSERT(_mod->memories.size() != 0, wasm_parse_exception, "memory.copy requires memory");
@@ -1702,7 +1734,26 @@ namespace eosio { namespace vm {
       void parse_data_segment(wasm_code_ptr& code, data_segment& ds) {
          EOS_VM_ASSERT(_mod->memories.size() != 0, wasm_parse_exception, "data requires memory");
          ds.index = parse_varuint32(code);
-         parse_init_expr(code, ds.offset, types::i32);
+         if (ds.index == 0 || !detail::get_enable_bulk_memory(_options))
+         {
+            ds.passive = false;
+            parse_init_expr(code, ds.offset, types::i32);
+         }
+         else if (ds.index == 1)
+         {
+            ds.passive = true;
+         }
+         else if (ds.index == 2)
+         {
+            ds.passive = false;
+            ds.index = parse_varuint32(code);
+            parse_init_expr(code, ds.offset, types::i32);
+            EOS_VM_ASSERT(ds.index < _mod->memories.size(), wasm_parse_exception, "Data uses nonexistent memory");
+         }
+         else
+         {
+            EOS_VM_ASSERT(false, wasm_parse_exception, "Unexpected flag for data");
+         }
          auto len =  parse_varuint32(code);
          EOS_VM_ASSERT(len <= detail::get_max_data_segment_bytes(_options), wasm_parse_exception, "data segment too large.");
          EOS_VM_ASSERT(static_cast<uint64_t>(static_cast<uint32_t>(ds.offset.value.i32)) + len <= detail::get_max_linear_memory_init(_options),
@@ -1807,6 +1858,15 @@ namespace eosio { namespace vm {
                                 vec<typename std::enable_if_t<id == section_id::data_section, data_segment>>& elems) {
          parse_section_impl(code, elems, detail::get_max_data_section_elements(_options),
                             [&](wasm_code_ptr& code, data_segment& ds, std::size_t /*idx*/) { parse_data_segment(code, ds); });
+         if (_datacount) {
+            EOS_VM_ASSERT(*_datacount == elems.size(), wasm_parse_exception, "data count does not match data");
+         }
+      }
+      template <uint8_t id>
+      requires (id == section_id::data_count_section)
+      inline void parse_section(wasm_code_ptr& code, std::optional<std::uint32_t>& n)
+      {
+         n = parse_varuint32(code);
       }
 
       template <size_t N>
@@ -1851,6 +1911,7 @@ namespace eosio { namespace vm {
       std::vector<std::pair<wasm_code_ptr, detail::max_func_local_bytes_stack_checker<Options>>>  _function_bodies;
       detail::max_mutable_globals_checker<Options> _globals_checker;
       detail::eosio_max_nested_structures_checker<Options> _nested_checker;
+      std::optional<std::uint32_t> _datacount;
       typename DebugInfo::builder imap;
    };
 }} // namespace eosio::vm

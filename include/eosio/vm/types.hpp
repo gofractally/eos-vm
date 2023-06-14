@@ -148,6 +148,8 @@ namespace eosio { namespace vm {
    struct data_segment {
       uint32_t                index;
       init_expr               offset;
+      bool                    passive;
+      bool                    dropped;
       guarded_vector<uint8_t> data;
    };
 

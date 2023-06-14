@@ -801,6 +801,43 @@ namespace eosio { namespace vm {
          // push %rax
          emit_bytes(0x50);
       }
+      void emit_memory_init(std::uint32_t x) {
+         auto icount = variable_size_instr(25, 43);
+         emit_pop(r8);
+         emit_pop(rcx);
+         emit_pop(rdx);
+         emit_setup_backtrace();
+         emit_push(rdi);
+         emit_push(rsi);
+         emit_mov(x, esi);
+
+         // movabsq $drop_data, %rax
+         emit_bytes(0x48, 0xb8);
+         emit_operand_ptr(&init_memory);
+         // call *%rax
+         emit_bytes(0xff, 0xd0);
+
+         emit_pop(rsi);
+         emit_pop(rdi);
+         emit_restore_backtrace();
+      }
+      void emit_data_drop(std::uint32_t x) {
+         auto icount = variable_size_instr(21, 39);
+         emit_setup_backtrace();
+         emit_push(rdi);
+         emit_push(rsi);
+         emit_mov(x, esi);
+
+         // movabsq $drop_data, %rax
+         emit_bytes(0x48, 0xb8);
+         emit_operand_ptr(&drop_data);
+         // call *%rax
+         emit_bytes(0xff, 0xd0);
+
+         emit_pop(rsi);
+         emit_pop(rdi);
+         emit_restore_backtrace();
+      }
 
       void emit_i32_const(uint32_t value) {
          auto icount = fixed_size_instr(6);
@@ -5285,6 +5322,14 @@ namespace eosio { namespace vm {
 
       static int32_t grow_memory(Context* context /*rdi*/, int32_t pages) {
          return context->grow_linear_memory(pages);
+      }
+
+      static void init_memory(Context* context /*rdi*/, uint32_t x /*esi*/, uint32_t d /*edx*/, uint32_t s /*ecx*/, uint32_t n /*r8d*/) {
+         context->init_linear_memory(x, d, s, n);
+      }
+
+      static void drop_data(Context* context /*rdi*/, uint32_t x /*esi*/) {
+         context->drop_data(x);
       }
 
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>( "unreachable" ); }

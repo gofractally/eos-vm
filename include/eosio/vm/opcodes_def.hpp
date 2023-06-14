@@ -280,6 +280,10 @@
 #define EOS_VM_ERROR_OPS(opcode_macro)          \
    opcode_macro(error, 0xFF)
 
+#define EOS_VM_DATA_OPS(opcode_macro)           \
+   opcode_macro(memory_init, 8)                 \
+   opcode_macro(data_drop, 9)
+
 #define EOS_VM_EXT_OPS(opcode_macro)            \
    opcode_macro(memory_copy, 10)                \
    opcode_macro(memory_fill, 11)
@@ -677,6 +681,12 @@
          uint64_t ui;                                                                                                  \
          double   f;                                                                                                   \
       } data;                                                                                                          \
+      static constexpr uint8_t opcode = code;                                                                          \
+   };
+
+#define EOS_VM_CREATE_DATA_TYPES(name, code)                                                                           \
+   struct EOS_VM_OPCODE_T(name) {                                                                                      \
+      uint32_t index;                                                                                                  \
       static constexpr uint8_t opcode = code;                                                                          \
    };
 
