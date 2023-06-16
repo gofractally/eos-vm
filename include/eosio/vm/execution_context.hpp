@@ -122,7 +122,11 @@ namespace eosio { namespace vm {
       using host_type  = detail::host_type_t<Host>;
     public:
       Derived& derived() { return static_cast<Derived&>(*this); }
-      execution_context_base(module& m) : _mod(m) {}
+      execution_context_base(module& m) : _mod(m) {
+         if (_mod.indirect_table(0)) {
+            _alt_table.reset(new table_entry[_mod.tables[0].limits.initial]);
+         }
+      }
 
       inline int32_t grow_linear_memory(int32_t pages) {
          const int32_t sz = _wasm_alloc->get_current_page();
@@ -168,13 +172,18 @@ namespace eosio { namespace vm {
             _wasm_alloc->reset();
 
          for (uint32_t i = 0; i < _mod.data.size(); i++) {
-            const auto& data_seg = _mod.data[i];
+            auto& data_seg = _mod.data[i];
             uint32_t offset = data_seg.offset.value.i32; // force to unsigned
-            auto available_memory =  _mod.memories[0].limits.initial * static_cast<uint64_t>(page_size);
-            auto required_memory = static_cast<uint64_t>(offset) + data_seg.data.size();
-            EOS_VM_ASSERT(required_memory <= available_memory, wasm_memory_exception, "data out of range");
-            auto addr = _linear_memory + offset;
-            memcpy((char*)(addr), data_seg.data.raw(), data_seg.data.size());
+            if (data_seg.passive) {
+               data_seg.dropped = false;
+            } else {
+               auto available_memory =  _mod.memories[0].limits.initial * static_cast<uint64_t>(page_size);
+               auto required_memory = static_cast<uint64_t>(offset) + data_seg.data.size();
+               EOS_VM_ASSERT(required_memory <= available_memory, wasm_memory_exception, "data out of range");
+               auto addr = _linear_memory + offset;
+               memcpy((char*)(addr), data_seg.data.raw(), data_seg.data.size());
+               data_seg.dropped = true;
+            }
          }
 
          // reset the mutable globals
@@ -182,6 +191,79 @@ namespace eosio { namespace vm {
             if (_mod.globals[i].type.mutability)
                _mod.globals[i].current = _mod.globals[i].init;
          }
+
+         // reset the table
+         if (_mod.tables.size() != 0) {
+            char* table_location = _linear_memory + wasm_allocator::table_offset();
+            table_entry* table_start;
+            if (_mod.indirect_table(0)) {
+               table_start = _alt_table.get();
+               std::memcpy(table_location, &table_start, sizeof(table_start));
+            } else {
+               table_start = new (table_location) table_entry[_mod.tables[0].limits.initial];
+            }
+            std::memset(table_start, 0xff, _mod.tables[0].limits.initial * sizeof(table_entry));
+            for (uint32_t i = 0; i < _mod.elements.size(); ++i) {
+               auto& elem_seg = _mod.elements[i];
+               if (elem_seg.mode == elem_mode::passive) {
+                  elem_seg.dropped = false;
+               } else if (elem_seg.mode == elem_mode::declarative) {
+                  elem_seg.dropped = true;
+               } else {
+                  uint32_t offset = elem_seg.offset.value.i32;
+                  EOS_VM_ASSERT(static_cast<std::uint64_t>(offset) + elem_seg.elems.size() <= _mod.tables[0].limits.initial, wasm_memory_exception, "elem out of range");
+                  std::memcpy(table_start + offset, elem_seg.elems.raw(), elem_seg.elems.size() * sizeof(table_entry));
+                  elem_seg.dropped = true;
+               }
+            }
+         }
+      }
+
+      void init_linear_memory(uint32_t x, uint32_t d, uint32_t s, uint32_t n) {
+         assert(x < _mod.data.size());
+         const auto& data_seg = _mod.data[x];
+         auto data_len = data_seg.dropped? 0 : data_seg.data.size();
+         if (std::uint64_t{s} + n > data_len)
+            throw_<wasm_memory_exception>("data out of range");
+         void* dest = get_interface().template validate_pointer<unsigned char>(d, n);
+         std::memcpy(dest, data_seg.data.raw() + s, n);
+      }
+
+      void drop_data(uint32_t x) {
+         assert(x < _mod.data.size());
+         auto& data_seg = _mod.data[x];
+         data_seg.dropped = true;
+      }
+
+      table_entry* get_table_base() {
+         if (_mod.indirect_table(0)) {
+            return (*reinterpret_cast<table_entry**>(linear_memory() + wasm_allocator::table_offset()));
+         } else {
+            return reinterpret_cast<table_entry*>(linear_memory() + wasm_allocator::table_offset());
+         }
+      }
+
+      void init_table(uint32_t x, uint32_t d, uint32_t s, uint32_t n) {
+         assert(x < _mod.elements.size());
+         const auto& elem_seg = _mod.elements[x];
+         auto elem_len = elem_seg.dropped? 0 : elem_seg.elems.size();
+         if (std::uint64_t{s} + n > elem_len)
+            throw_<wasm_memory_exception>("elem out of range");
+         if (std::uint64_t{d} + n > _mod.tables[0].limits.initial)
+            throw_<wasm_memory_exception>("wasm memory out-of-bounds");
+         std::memcpy(get_table_base() + d, elem_seg.elems.raw() + s, n * sizeof(table_entry));
+      }
+
+      void drop_elem(uint32_t x) {
+         assert(x < _mod.elements.size());
+         auto& elem_seg = _mod.elements[x];
+         elem_seg.dropped = true;
+      }
+
+      table_entry* get_table_ptr(uint32_t base, uint32_t size) {
+         if (std::uint64_t{base} + size > _mod.tables[0].limits.initial)
+            throw_<wasm_memory_exception>("table out of range");
+         return get_table_base() + base;
       }
 
       template <typename Visitor, typename... Args>
@@ -239,6 +321,7 @@ namespace eosio { namespace vm {
       detail::host_invoker_t<Host>    _rhf;
       std::error_code                 _error_code;
       operand_stack                   _os;
+      std::unique_ptr<table_entry[]>  _alt_table;
    };
 
    struct jit_visitor { template<typename T> jit_visitor(T&&) {} };
@@ -586,7 +669,10 @@ namespace eosio { namespace vm {
          std::cout << " }\n";
       }
 
-      inline uint32_t       table_elem(uint32_t i) { return _mod.tables[0].table[i]; }
+      inline uint32_t       table_elem(uint32_t i) {
+         EOS_VM_ASSERT(i < _mod.tables[0].limits.initial, wasm_interpreter_exception, "table index out of range");
+         return this->get_table_base()[i].index;
+      }
       inline void           push_operand(operand_stack_elem el) { get_operand_stack().push(std::move(el)); }
       inline operand_stack_elem get_operand(uint32_t index) const { return get_operand_stack().get(_last_op_index + index); }
       inline void           eat_operands(uint32_t index) { get_operand_stack().eat(index); }
@@ -867,6 +953,8 @@ namespace eosio { namespace vm {
             EOS_VM_CONVERSION_OPS(CREATE_TABLE_ENTRY)
             EOS_VM_EXIT_OP(CREATE_TABLE_ENTRY)
             EOS_VM_EMPTY_OPS(CREATE_TABLE_ENTRY)
+            EOS_VM_DATA_OPS(CREATE_TABLE_ENTRY)
+            EOS_VM_EXT_OPS(CREATE_TABLE_ENTRY)
             EOS_VM_VEC_MEMORY_OPS(CREATE_TABLE_ENTRY)
             EOS_VM_VEC_LANE_MEMORY_OPS(CREATE_TABLE_ENTRY)
             EOS_VM_VEC_CONSTANT_OPS(CREATE_TABLE_ENTRY)
@@ -897,6 +985,8 @@ namespace eosio { namespace vm {
              EOS_VM_CONVERSION_OPS(CREATE_LABEL);
              EOS_VM_EXIT_OP(CREATE_EXIT_LABEL);
              EOS_VM_EMPTY_OPS(CREATE_EMPTY_LABEL);
+             EOS_VM_DATA_OPS(CREATE_LABEL);
+             EOS_VM_EXT_OPS(CREATE_LABEL);
              EOS_VM_VEC_MEMORY_OPS(CREATE_LABEL);
              EOS_VM_VEC_LANE_MEMORY_OPS(CREATE_LABEL);
              EOS_VM_VEC_CONSTANT_OPS(CREATE_LABEL);

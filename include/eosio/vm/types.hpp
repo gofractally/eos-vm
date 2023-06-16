@@ -17,7 +17,7 @@
 #include <vector>
 
 namespace eosio { namespace vm {
-   enum types { i32 = 0x7f, i64 = 0x7e, f32 = 0x7d, f64 = 0x7c, v128 = 0x7b, anyfunc = 0x70, func = 0x60, pseudo = 0x40, ret_void };
+   enum types { i32 = 0x7f, i64 = 0x7e, f32 = 0x7d, f64 = 0x7c, v128 = 0x7b, anyfunc = 0x70, funcref = anyfunc, func = 0x60, pseudo = 0x40, ret_void };
 
    enum external_kind { Function = 0, Table = 1, Memory = 2, Global = 3 };
 
@@ -79,9 +79,15 @@ namespace eosio { namespace vm {
    };
 
    struct table_type {
-      elem_type                element_type;
-      resizable_limits         limits;
-      guarded_vector<uint32_t> table;
+      elem_type        element_type;
+      resizable_limits limits;
+   };
+
+   struct table_entry {
+      std::uint32_t type;
+      std::uint32_t index;
+      // The code writer is responsible for filling this field
+      const void*   code_ptr;
    };
 
    struct memory_type {
@@ -109,10 +115,14 @@ namespace eosio { namespace vm {
       uint32_t                index;
    };
 
+   enum class elem_mode { active, passive, declarative };
+
    struct elem_segment {
-      uint32_t                 index;
-      init_expr                offset;
-      guarded_vector<uint32_t> elems;
+      uint32_t                    index;
+      init_expr                   offset;
+      elem_mode                   mode;
+      bool                        dropped;
+      guarded_vector<table_entry> elems;
    };
 
    struct local_entry {
@@ -148,6 +158,8 @@ namespace eosio { namespace vm {
    struct data_segment {
       uint32_t                index;
       init_expr               offset;
+      bool                    passive;
+      bool                    dropped;
       guarded_vector<uint8_t> data;
    };
 
@@ -244,6 +256,10 @@ namespace eosio { namespace vm {
             }
          }
          return index;
+      }
+
+      bool indirect_table(std::size_t i) {
+         return i < tables.size() && (tables[i].limits.initial * sizeof(table_entry) > wasm_allocator::table_size());
       }
 
       void normalize_types() {

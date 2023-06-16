@@ -2432,6 +2432,103 @@ namespace eosio { namespace vm {
       [[gnu::always_inline]] inline void operator()(const f64x2_promote_low_f32x4_t&) {
          v128_unop(&_eosio_f64x2_promote_low_f32x4);
       }
+      [[gnu::always_inline]] inline void operator()(const memory_init_t& op) {
+         const auto& size = context.pop_operand();
+         const auto& src = context.pop_operand();
+         const auto& dst = context.pop_operand();
+         context.inc_pc();
+         context.init_linear_memory(op.index, dst.to_ui32(), src.to_ui32(), size.to_ui32());
+      }
+      [[gnu::always_inline]] inline void operator()(const data_drop_t& op) {
+         context.inc_pc();
+         context.drop_data(op.index);
+      }
+      [[gnu::always_inline]] inline void operator()(const memory_copy_t&) {
+         auto& size = context.peek_operand(0);
+         auto& src = context.peek_operand(1);
+         auto& dst = context.peek_operand(2);
+         auto interface = context.get_interface();
+         auto s = reinterpret_cast<const std::uint8_t*>(interface.template validate_pointer<std::uint8_t>(src.to_ui32(), size.to_ui32()));
+         auto d = reinterpret_cast<std::uint8_t*>(interface.template validate_pointer<std::uint8_t>(dst.to_ui32(), size.to_ui32()));
+         if (size.to_ui32() == 0)
+         {
+            context.pop_operand();
+            context.pop_operand();
+            context.pop_operand();
+            context.inc_pc();
+         }
+         else if (dst.to_ui32() <= src.to_ui32())
+         {
+            write_unaligned(d, read_unaligned<std::uint8_t>(s));
+            size = i32_const_t{size.to_ui32() - 1};
+            src = i32_const_t{src.to_ui32() + 1};
+            dst = i32_const_t{dst.to_ui32() + 1};
+         }
+         else
+         {
+            auto n = size.to_ui32();
+            write_unaligned(d + (n - 1), read_unaligned<std::uint8_t>(s + (n - 1)));
+            size = i32_const_t{size.to_ui32() - 1};
+         }
+      }
+      [[gnu::always_inline]] inline void operator()(const memory_fill_t&) {
+         auto& size = context.peek_operand(0);
+         auto& src = context.peek_operand(1);
+         auto& dst = context.peek_operand(2);
+         auto interface = context.get_interface();
+         auto d = interface.template validate_pointer<std::uint8_t>(dst.to_ui32(), size.to_ui32());
+         if (size.to_ui32() == 0)
+         {
+            context.pop_operand();
+            context.pop_operand();
+            context.pop_operand();
+            context.inc_pc();
+         }
+         else
+         {
+            write_unaligned(d, static_cast<std::uint8_t>(src.to_ui32()));
+            size = i32_const_t{size.to_ui32() - 1};
+            dst = i32_const_t{dst.to_ui32() + 1};
+         }
+      }
+      [[gnu::always_inline]] inline void operator()(const table_init_t& op) {
+         const auto& size = context.pop_operand();
+         const auto& src = context.pop_operand();
+         const auto& dst = context.pop_operand();
+         context.inc_pc();
+         context.init_table(op.index, dst.to_ui32(), src.to_ui32(), size.to_ui32());
+      }
+      [[gnu::always_inline]] inline void operator()(const elem_drop_t& op) {
+         context.inc_pc();
+         context.drop_elem(op.index);
+      }
+      [[gnu::always_inline]] inline void operator()(const table_copy_t&) {
+         auto& size = context.peek_operand(0);
+         auto& src = context.peek_operand(1);
+         auto& dst = context.peek_operand(2);
+         auto s = context.get_table_ptr(src.to_ui32(), size.to_ui32());
+         auto d = context.get_table_ptr(dst.to_ui32(), size.to_ui32());
+         if (size.to_ui32() == 0)
+         {
+            context.pop_operand();
+            context.pop_operand();
+            context.pop_operand();
+            context.inc_pc();
+         }
+         else if (dst.to_ui32() <= src.to_ui32())
+         {
+            *d = *s;
+            size = i32_const_t{size.to_ui32() - 1};
+            src = i32_const_t{src.to_ui32() + 1};
+            dst = i32_const_t{dst.to_ui32() + 1};
+         }
+         else
+         {
+            auto n = size.to_ui32();
+            d[n - 1] = s[n - 1];
+            size = i32_const_t{size.to_ui32() - 1};
+         }
+      }
    };
 
 }} // namespace eosio::vm

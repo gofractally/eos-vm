@@ -311,6 +311,41 @@ namespace eosio { namespace vm {
 
 #undef NUMERIC_OP
 
+      void emit_memory_init(std::uint32_t x)
+      {
+         fb[op_index++] = memory_init_t{x};
+      }
+
+      void emit_data_drop(std::uint32_t x)
+      {
+         fb[op_index++] = data_drop_t{x};
+      }
+
+      void emit_memory_copy()
+      {
+         fb[op_index++] = memory_copy_t{};
+      }
+
+      void emit_memory_fill()
+      {
+         fb[op_index++] = memory_fill_t{};
+      }
+
+      void emit_table_init(std::uint32_t x)
+      {
+         fb[op_index++] = table_init_t{x};
+      }
+
+      void emit_elem_drop(std::uint32_t x)
+      {
+         fb[op_index++] = elem_drop_t{x};
+      }
+
+      void emit_table_copy()
+      {
+         fb[op_index++] = table_copy_t{};
+      }
+
       void emit_error() { fb[op_index++] = error_t{}; }
       
       void fix_branch(uint32_t* branch, uint32_t target) { if(branch) *branch = _base_offset + target; }

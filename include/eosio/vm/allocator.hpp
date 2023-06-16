@@ -424,8 +424,24 @@ namespace eosio { namespace vm {
     private:
       char*   raw       = nullptr;
       int32_t page      = 0;
+      static std::size_t syspagesize() {
+         static const std::size_t result = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
+         return result;
+      }
+      static std::size_t prefix_size() {
+         return table_size() + syspagesize();
+      }
+      static std::size_t suffix_size() {
+         return syspagesize();
+      }
 
     public:
+      static std::int32_t table_offset() {
+         return -static_cast<std::int32_t>(prefix_size());
+      }
+      static std::size_t table_size() {
+         return syspagesize();
+      }
       template <typename T>
       void alloc(size_t size = 1 /*in pages*/) {
          if (size == 0) return;
@@ -447,17 +463,15 @@ namespace eosio { namespace vm {
          EOS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
       }
       void free() {
-         std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
-         munmap(raw - syspagesize, max_memory + 2*syspagesize);
+         ::munmap(raw - prefix_size(), max_memory + prefix_size() + suffix_size());
       }
       wasm_allocator() {
-         std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
-         raw  = (char*)mmap(NULL, max_memory + 2*syspagesize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+         raw  = (char*)::mmap(NULL, max_memory + prefix_size() + suffix_size(), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
          EOS_VM_ASSERT( raw != MAP_FAILED, wasm_bad_alloc, "mmap failed to alloca pages" );
-         int err = mprotect(raw, syspagesize, PROT_READ);
+         int err = ::mprotect(raw, table_size(), PROT_READ | PROT_WRITE);
          EOS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
-         raw += syspagesize;
-         page = 0;
+         raw += prefix_size();
+         page = -1;
       }
       // Initializes the memory controlled by the allocator.
       //
@@ -467,8 +481,7 @@ namespace eosio { namespace vm {
          if (page >= 0) {
             memset(raw, '\0', page_size * page); // zero the memory
          } else {
-            std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
-            int err = mprotect(raw - syspagesize, syspagesize, PROT_READ);
+            int err = ::mprotect(raw - syspagesize(), syspagesize(), PROT_READ);
             EOS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
             page = 0;
          }
@@ -482,9 +495,8 @@ namespace eosio { namespace vm {
       // Signal no memory defined
       void reset() {
          if (page >= 0) {
-            std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
             memset(raw, '\0', page_size * page); // zero the memory
-            int err = mprotect(raw - syspagesize, page_size * page + syspagesize, PROT_NONE);
+            int err = ::mprotect(raw - syspagesize(), page_size * page + syspagesize(), PROT_NONE);
             EOS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
          }
          page = -1;
@@ -500,8 +512,7 @@ namespace eosio { namespace vm {
       bool is_in_region(char* p) { return p >= raw && p < raw + max_memory; }
       std::span<const char> span() const
       {
-         std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
-         return { raw - syspagesize, max_memory + 2 * syspagesize };
+         return { raw - prefix_size(), max_memory + prefix_size() + suffix_size() };
       }
    };
 }} // namespace eosio::vm

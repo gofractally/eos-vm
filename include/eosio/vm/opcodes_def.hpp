@@ -213,7 +213,12 @@
    opcode_macro(f64_reinterpret_i64, 0xBF)
 #define EOS_VM_EXIT_OP(opcode_macro)            \
    opcode_macro(exit, 0xC0)
+#define EOS_VM_REF_OPS(opcode_macro)            \
+   opcode_macro(ref_null, 0xD0)                 \
+   opcode_macro(ref_is_null, 0xD1)              \
+   opcode_macro(ref_func, 0xD2)
 #define EOS_VM_EXTENDED_OPS(opcode_macro)       \
+   opcode_macro(ext_prefix, 0xFC)               \
    opcode_macro(vector_prefix, 0xFD)
 #define EOS_VM_EMPTY_OPS(opcode_macro)          \
    opcode_macro(empty0xC1, 0xC1)                \
@@ -231,9 +236,6 @@
    opcode_macro(empty0xCD, 0xCD)                \
    opcode_macro(empty0xCE, 0xCE)                \
    opcode_macro(empty0xCF, 0xCF)                \
-   opcode_macro(empty0xD0, 0xD0)                \
-   opcode_macro(empty0xD1, 0xD1)                \
-   opcode_macro(empty0xD2, 0xD2)                \
    opcode_macro(empty0xD3, 0xD3)                \
    opcode_macro(empty0xD4, 0xD4)                \
    opcode_macro(empty0xD5, 0xD5)                \
@@ -275,10 +277,20 @@
    opcode_macro(empty0xF9, 0xF9)                \
    opcode_macro(empty0xFA, 0xFA)                \
    opcode_macro(empty0xFB, 0xFB)                \
-   opcode_macro(empty0xFC, 0xFC)                \
    opcode_macro(empty0xFE, 0xFE)
 #define EOS_VM_ERROR_OPS(opcode_macro)          \
    opcode_macro(error, 0xFF)
+
+#define EOS_VM_DATA_OPS(opcode_macro)           \
+   opcode_macro(memory_init, 8)                 \
+   opcode_macro(data_drop, 9)                   \
+   opcode_macro(table_init, 12)                 \
+   opcode_macro(elem_drop, 13)
+
+#define EOS_VM_EXT_OPS(opcode_macro)            \
+   opcode_macro(memory_copy, 10)                \
+   opcode_macro(memory_fill, 11)                \
+   opcode_macro(table_copy, 14)
 
 #define EOS_VM_VEC_MEMORY_OPS(opcode_macro)     \
    opcode_macro(v128_load, 0)                   \
@@ -673,6 +685,12 @@
          uint64_t ui;                                                                                                  \
          double   f;                                                                                                   \
       } data;                                                                                                          \
+      static constexpr uint8_t opcode = code;                                                                          \
+   };
+
+#define EOS_VM_CREATE_DATA_TYPES(name, code)                                                                           \
+   struct EOS_VM_OPCODE_T(name) {                                                                                      \
+      uint32_t index;                                                                                                  \
       static constexpr uint8_t opcode = code;                                                                          \
    };
 

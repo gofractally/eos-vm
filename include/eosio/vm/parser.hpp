@@ -196,6 +196,7 @@ namespace eosio { namespace vm {
    PARSER_OPTION(parse_custom_section_name, false, bool);
 
    PARSER_OPTION(enable_simd, true, bool)
+   PARSER_OPTION(enable_bulk_memory, true, bool)
 
 #undef MAX_ELEMENTS
 #undef PARSER_OPTION
@@ -351,20 +352,31 @@ namespace eosio { namespace vm {
          return mod;
       }
 
+      static constexpr auto make_section_order() {
+         std::array<std::uint8_t, section_id::num_of_elems> result;
+         std::uint8_t i = 1;
+         for (std::uint8_t sec : {type_section, import_section, function_section, table_section, memory_section, global_section, export_section, start_section, element_section, data_count_section, code_section, data_section}) {
+            result[sec] = i++;
+         }
+         return result;
+      }
+
       void parse_module(wasm_code_ptr& code_ptr, size_t sz, module& mod, DebugInfo& debug) {
          _mod = &mod;
          EOS_VM_ASSERT(parse_magic(code_ptr) == constants::magic, wasm_parse_exception, "magic number did not match");
          EOS_VM_ASSERT(parse_version(code_ptr) == constants::version, wasm_parse_exception,
                        "version number did not match");
          uint8_t highest_section_id = 0;
+         constexpr auto order = make_section_order();
          for (;;) {
             if (code_ptr.offset() == sz)
                break;
             auto id = parse_section_id(code_ptr);
             auto len = parse_section_payload_len(code_ptr);
 
-            EOS_VM_ASSERT(id == 0 || id > highest_section_id, wasm_parse_exception, "section out of order");
-            highest_section_id = std::max(highest_section_id, id);
+            EOS_VM_ASSERT(id < order.size(), wasm_parse_exception, "invalid section id");
+            EOS_VM_ASSERT(id == 0 || order[id] > highest_section_id, wasm_parse_exception, "section out of order");
+            highest_section_id = std::max(highest_section_id, order[id]);
 
             auto section_guard = code_ptr.scoped_consume_items(len);
 
@@ -391,6 +403,7 @@ namespace eosio { namespace vm {
                   break;
                case section_id::code_section: parse_section<section_id::code_section>(code_ptr, mod.code); break;
                case section_id::data_section: parse_section<section_id::data_section>(code_ptr, mod.data); break;
+               case section_id::data_count_section: parse_section<section_id::data_count_section>(code_ptr, _datacount); break;
                default: EOS_VM_ASSERT(false, wasm_parse_exception, "error invalid section id");
             }
          }
@@ -501,8 +514,6 @@ namespace eosio { namespace vm {
             EOS_VM_ASSERT(tt.limits.initial <= tt.limits.maximum, wasm_parse_exception, "table max size less than min size");
          }
          EOS_VM_ASSERT(tt.limits.initial <= detail::get_max_table_elements(_options), wasm_parse_exception, "table size exceeds limit");
-         tt.table = decltype(tt.table){ _allocator, tt.limits.initial };
-         for (uint32_t i = 0; i < tt.limits.initial; i++) tt.table[i] = std::numeric_limits<uint32_t>::max();
       }
 
       void parse_global_variable(wasm_code_ptr& code, global_variable& gv) {
@@ -572,29 +583,71 @@ namespace eosio { namespace vm {
 
       void parse_elem_segment(wasm_code_ptr& code, elem_segment& es) {
          table_type* tt = nullptr;
-         for (std::size_t i = 0; i < _mod->tables.size(); i++) {
-            if (_mod->tables[i].element_type == types::anyfunc)
-               tt = &(_mod->tables[i]);
+         std::uint32_t flags = parse_varuint32(code);
+         EOS_VM_ASSERT(es.index == 0 || detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
+         EOS_VM_ASSERT(es.index <= 7, wasm_parse_exception, "Illegal flags for elem");
+         if (flags == 2 || flags == 6) {
+            es.index = parse_varuint32(code);
+         } else {
+            es.index = 0;
          }
-         EOS_VM_ASSERT(tt != nullptr, wasm_parse_exception, "table not declared");
-         es.index = parse_varuint32(code);
-         EOS_VM_ASSERT(es.index == 0, wasm_parse_exception, "only table index of 0 is supported");
-         parse_init_expr(code, es.offset, types::i32);
+         if ((flags & 1) == 0) {
+            parse_init_expr(code, es.offset, types::i32);
+            es.mode = elem_mode::active;
+            EOS_VM_ASSERT(es.index < _mod->tables.size(), wasm_parse_exception, "wrong table in elem");
+            tt = &_mod->tables[es.index];
+         } else {
+            if (flags & 2) {
+               es.mode = elem_mode::declarative;
+            } else {
+               es.mode = elem_mode::passive;
+            }
+         }
+         if (flags == 1 || flags == 2 || flags == 3) {
+            auto elemkind = *code++;
+            EOS_VM_ASSERT(elemkind == 0x00, wasm_parse_exception, "elemkind must be funcref");
+         } else if (flags == 5 || flags == 6 || flags == 7) {
+            auto reftype = *code++;
+            // externref requires reference types, which we do not support
+            EOS_VM_ASSERT(reftype == types::funcref, wasm_parse_exception, "elem type must be funcref");
+         }
+         EOS_VM_ASSERT(!tt || tt->element_type == types::anyfunc, wasm_parse_exception, "elem type does not match table type");
          uint32_t           size  = parse_varuint32(code);
          EOS_VM_ASSERT(size <= detail::get_max_element_segment_elements(_options), wasm_parse_exception, "elem segment too large");
          decltype(es.elems) elems = { _allocator, size };
-         for (uint32_t i = 0; i < size; i++) {
-            uint32_t index                     = parse_varuint32(code);
-            elems.at(i)                        = index;
-            EOS_VM_ASSERT(index < _mod->get_functions_total(), wasm_parse_exception,  "elem for undefined function");
-         }
-         uint32_t offset = static_cast<uint32_t>(es.offset.value.i32);
-         if ( static_cast<uint64_t>(size) + offset <= tt->table.size() ) {
-            std::memcpy(tt->table.raw() + offset, elems.raw(), size * sizeof(uint32_t));
+         if (flags & 4) {
+            for (uint32_t i = 0; i < size; i++) {
+               parse_elem_expr(code, elems.at(i));
+            }
          } else {
-            _mod->error = "elem out of range";
+            for (uint32_t i = 0; i < size; i++) {
+               uint32_t index    = parse_varuint32(code);
+               elems.at(i).type  = _mod->fast_functions[index];
+               elems.at(i).index = index;
+               EOS_VM_ASSERT(index < _mod->get_functions_total(), wasm_parse_exception,  "elem for undefined function");
+            }
          }
          es.elems = std::move(elems);
+      }
+
+      void parse_elem_expr(wasm_code_ptr& code, table_entry& te) {
+         auto opcode = *code++;
+         switch (opcode) {
+            case opcodes::ref_null:
+               te.type = te.index = std::numeric_limits<std::uint32_t>::max();
+               EOS_VM_ASSERT(*code == types::funcref, wasm_parse_exception, "Unknown type for elem");
+               ++code;
+               break;
+            case opcodes::ref_func:
+               te.index = parse_varuint32(code);
+               EOS_VM_ASSERT(te.index < _mod->get_functions_total(), wasm_parse_exception, "elem for undefined function");
+               te.type = _mod->fast_functions[te.index];
+               break;
+            default:
+               EOS_VM_ASSERT(false, wasm_parse_exception,
+                             "elem expression can only acception ref.null and ref.func");
+         }
+         EOS_VM_ASSERT((*code++) == opcodes::end, wasm_parse_exception, "no end op found");
       }
 
       void parse_init_expr(wasm_code_ptr& code, init_expr& ie, uint8_t type) {
@@ -1659,6 +1712,83 @@ namespace eosio { namespace vm {
                      default: EOS_VM_ASSERT(false, wasm_parse_exception, "Illegal instruction");
                   }
                } break;
+               case opcodes::ext_prefix: {
+                  switch(parse_varuint32(code))
+                  {
+                     case ext_opcodes::memory_init: {
+                        EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
+                        EOS_VM_ASSERT(_mod->memories.size() != 0, wasm_parse_exception, "memory.init requires memory");
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        auto x = parse_varuint32(code);
+                        EOS_VM_ASSERT(!!_datacount, wasm_parse_exception, "memory.init requires datacount section");
+                        EOS_VM_ASSERT(x < *_datacount, wasm_parse_exception, "data segment does not exist");
+                        EOS_VM_ASSERT(*code == 0, wasm_parse_exception, "memory.init must end with 0x00");
+                        code++;
+                        code_writer.emit_memory_init(x);
+                     } break;
+                     case ext_opcodes::data_drop: {
+                        EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
+                        auto x = parse_varuint32(code);
+                        EOS_VM_ASSERT(!!_datacount, wasm_parse_exception, "data.drop requires datacount section");
+                        EOS_VM_ASSERT(x < *_datacount, wasm_parse_exception, "data segment does not exist");
+                        code_writer.emit_data_drop(x);
+                     } break;
+                     case ext_opcodes::memory_copy:
+                        EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
+                        EOS_VM_ASSERT(_mod->memories.size() != 0, wasm_parse_exception, "memory.copy requires memory");
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        EOS_VM_ASSERT(*code == 0, wasm_parse_exception, "memory.copy must end with 0x00 0x00");
+                        code++;
+                        EOS_VM_ASSERT(*code == 0, wasm_parse_exception, "memory.copy must end with 0x00 0x00");
+                        code++;
+                        code_writer.emit_memory_copy();
+                        break;
+                     case ext_opcodes::memory_fill:
+                        EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
+                        EOS_VM_ASSERT(_mod->memories.size() != 0, wasm_parse_exception, "memory.fill requires memory");
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        EOS_VM_ASSERT(*code == 0, wasm_parse_exception, "memory.fill must end with 0x00");
+                        code++;
+                        code_writer.emit_memory_fill();
+                        break;
+                     case ext_opcodes::table_init: {
+                        EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
+                        EOS_VM_ASSERT(_mod->tables.size() != 0, wasm_parse_exception, "table.init requires table");
+                        auto x = parse_varuint32(code);
+                        EOS_VM_ASSERT(*code == 0, wasm_parse_exception, "table.init must end with 0x00");
+                        ++code;
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        code_writer.emit_table_init(x);
+                     } break;
+                     case ext_opcodes::elem_drop: {
+                        EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
+                        auto x = parse_varuint32(code);
+                        EOS_VM_ASSERT(x < _mod->elements.size(), wasm_parse_exception, "elem segment does not exist");
+                        code_writer.emit_elem_drop(x);
+                     } break;
+                     case ext_opcodes::table_copy:
+                        EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
+                        EOS_VM_ASSERT(_mod->tables.size() != 0, wasm_parse_exception, "table.copy requires table");
+                        EOS_VM_ASSERT(*code == 0, wasm_parse_exception, "table.copy must end with 0x00 0x00");
+                        ++code;
+                        EOS_VM_ASSERT(*code == 0, wasm_parse_exception, "table.copy must end with 0x00 0x00");
+                        ++code;
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        op_stack.pop(types::i32);
+                        code_writer.emit_table_copy();
+                        break;
+                     default: EOS_VM_ASSERT(false, wasm_parse_exception, "Illegal instruction");
+                  }
+               } break;
                default: EOS_VM_ASSERT(false, wasm_parse_exception, "Illegal instruction");
             }
          }
@@ -1671,9 +1801,29 @@ namespace eosio { namespace vm {
       }
 
       void parse_data_segment(wasm_code_ptr& code, data_segment& ds) {
-         EOS_VM_ASSERT(_mod->memories.size() != 0, wasm_parse_exception, "data requires memory");
          ds.index = parse_varuint32(code);
-         parse_init_expr(code, ds.offset, types::i32);
+         if (ds.index == 0 || !detail::get_enable_bulk_memory(_options))
+         {
+            ds.passive = false;
+            parse_init_expr(code, ds.offset, types::i32);
+            EOS_VM_ASSERT(_mod->memories.size() != 0, wasm_parse_exception, "data requires memory");
+         }
+         else if (ds.index == 1)
+         {
+            ds.passive = true;
+            ds.offset = {.opcode = opcodes::i32_const, .value = {.i32 = 0}};
+         }
+         else if (ds.index == 2)
+         {
+            ds.passive = false;
+            ds.index = parse_varuint32(code);
+            parse_init_expr(code, ds.offset, types::i32);
+            EOS_VM_ASSERT(ds.index < _mod->memories.size(), wasm_parse_exception, "Data uses nonexistent memory");
+         }
+         else
+         {
+            EOS_VM_ASSERT(false, wasm_parse_exception, "Unexpected flag for data");
+         }
          auto len =  parse_varuint32(code);
          EOS_VM_ASSERT(len <= detail::get_max_data_segment_bytes(_options), wasm_parse_exception, "data segment too large.");
          EOS_VM_ASSERT(static_cast<uint64_t>(static_cast<uint32_t>(ds.offset.value.i32)) + len <= detail::get_max_linear_memory_init(_options),
@@ -1778,6 +1928,15 @@ namespace eosio { namespace vm {
                                 vec<typename std::enable_if_t<id == section_id::data_section, data_segment>>& elems) {
          parse_section_impl(code, elems, detail::get_max_data_section_elements(_options),
                             [&](wasm_code_ptr& code, data_segment& ds, std::size_t /*idx*/) { parse_data_segment(code, ds); });
+         if (_datacount) {
+            EOS_VM_ASSERT(*_datacount == elems.size(), wasm_parse_exception, "data count does not match data");
+         }
+      }
+      template <uint8_t id>
+      requires (id == section_id::data_count_section)
+      inline void parse_section(wasm_code_ptr& code, std::optional<std::uint32_t>& n)
+      {
+         n = parse_varuint32(code);
       }
 
       template <size_t N>
@@ -1822,6 +1981,7 @@ namespace eosio { namespace vm {
       std::vector<std::pair<wasm_code_ptr, detail::max_func_local_bytes_stack_checker<Options>>>  _function_bodies;
       detail::max_mutable_globals_checker<Options> _globals_checker;
       detail::eosio_max_nested_structures_checker<Options> _nested_checker;
+      std::optional<std::uint32_t> _datacount;
       typename DebugInfo::builder imap;
    };
 }} // namespace eosio::vm

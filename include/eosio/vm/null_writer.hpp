@@ -435,6 +435,14 @@ class null_writer {
    void emit_f32x4_demote_f64x2_zero() {}
    void emit_f64x2_promote_low_f32x4() {}
 
+   void emit_memory_init(std::uint32_t) {}
+   void emit_data_drop(std::uint32_t) {}
+   void emit_memory_copy() {}
+   void emit_memory_fill() {}
+   void emit_table_init(std::uint32_t) {}
+   void emit_elem_drop(std::uint32_t) {}
+   void emit_table_copy() {}
+
    void fix_branch(branch_t, label_t) {}
    void emit_prologue(const func_type& /*ft*/, const guarded_vector<local_entry>& /*locals*/, uint32_t /*idx*/) {}
    void emit_epilogue(const func_type& /*ft*/, const guarded_vector<local_entry>& /*locals*/, uint32_t /*idx*/) {}
