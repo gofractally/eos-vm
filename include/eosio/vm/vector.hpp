@@ -83,6 +83,11 @@ namespace eosio { namespace vm {
               _index = size-1;
             }
 
+            constexpr inline T* begin() { return _data; }
+            constexpr inline const T* begin() const { return _data; }
+            constexpr inline T* end() { return _data + _size; }
+            constexpr inline const T* end() const { return _data + _size; }
+
          private:
             size_t _size  = 0;
             Allocator* _allocator = nullptr;

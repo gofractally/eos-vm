@@ -44,7 +44,7 @@ namespace eosio { namespace vm {
          assert(code <= _code_end);
          _mod.allocator.reclaim(code, _code_end - code);
 
-         const std::size_t code_size = 4 * 16; // 4 error handlers, each is 16 bytes.
+         const std::size_t code_size = 5 * 16; // 5 error handlers, each is 16 bytes.
          _code_start = _mod.allocator.alloc<unsigned char>(code_size);
          _code_end = _code_start + code_size;
          code = _code_start;
@@ -54,6 +54,7 @@ namespace eosio { namespace vm {
          call_indirect_handler = emit_error_handler(&on_call_indirect_error);
          type_error_handler = emit_error_handler(&on_type_error);
          stack_overflow_handler = emit_error_handler(&on_stack_overflow);
+         memory_handler = emit_error_handler(&on_memory_error);
 
          assert(code == _code_end); // verify that the manual instruction count is correct
 
@@ -68,44 +69,22 @@ namespace eosio { namespace vm {
             emit_host_call(i);
          }
          assert(code == _code_end);
-
-         jmp_table = code;
-         if (_mod.tables.size() > 0) {
-            // Each function table entry consumes exactly 17 bytes (counted
-            // manually).  The size must be constant, so that call_indirect
-            // can use random access
-            _table_element_size = 17;
-            const std::size_t table_size = _table_element_size*_mod.tables[0].table.size();
-            _code_start = _mod.allocator.alloc<unsigned char>(table_size);
-            _code_end = _code_start + table_size;
-            // code already set
-            for(uint32_t i = 0; i < _mod.tables[0].table.size(); ++i) {
-               uint32_t fn_idx = _mod.tables[0].table[i];
-               if (fn_idx < _mod.fast_functions.size()) {
-                  // cmp _mod.fast_functions[fn_idx], %edx
-                  emit_bytes(0x81, 0xfa);
-                  emit_operand32(_mod.fast_functions[fn_idx]);
-                  // je fn
-                  emit_bytes(0x0f, 0x84);
-                  register_call(emit_branch_target32(), fn_idx);
-                  // jmp ERROR
-                  emit_bytes(0xe9);
-                  fix_branch(emit_branch_target32(), type_error_handler);
+      }
+      ~machine_code_writer() {
+         _mod.allocator.end_code<true>(_code_segment_base);
+         for (auto& elem : _mod.elements) {
+            for (auto& entry : elem.elems) {
+               void* addr;
+               if (entry.index < _mod.fast_functions.size()) {
+                  addr = std::get<void*>(_function_relocations[entry.index]);
                } else {
-                  // jmp ERROR
-                  emit_bytes(0xe9);
-                  // default for out-of-range functions
-                  fix_branch(emit_branch_target32(), call_indirect_handler);
-                  // padding
-                  emit_bytes(0xcc, 0xcc, 0xcc, 0xcc);
-                  emit_bytes(0xcc, 0xcc, 0xcc, 0xcc);
-                  emit_bytes(0xcc, 0xcc, 0xcc, 0xcc);
+                  addr = call_indirect_handler;
                }
+               std::size_t offset = static_cast<char*>(addr) - static_cast<char*>(_code_segment_base);
+               entry.code_ptr = _mod.allocator._code_base + offset;
             }
-            assert(code == _code_end);
          }
       }
-      ~machine_code_writer() { _mod.allocator.end_code<true>(_code_segment_base); }
 
       void emit_sysv_abi_interface() {
          // jit_execution_context* context -> RDI
@@ -427,54 +406,32 @@ namespace eosio { namespace vm {
          void * branch = emit_branch_target32();
          emit_multipop(ft);
          register_call(branch, funcnum);
-         if(ft.return_count != 0) {
-            if(ft.return_type == v128) {
-               emit_sub(16, rsp);
-               emit_vmovups(xmm0, *rsp);
-            } else {
-               // pushq %rax
-               emit_bytes(0x50);
-            }
-         }
          emit_check_call_depth_end();
       }
 
-      void emit_call_indirect(const func_type& ft, uint32_t functypeidx) {
-         auto icount = variable_size_instr(43, 59);
+      void emit_call_indirect(const func_type& ft, uint32_t functypeidx)
+      {
+         auto icount = variable_size_instr(37, 64);
          emit_check_call_depth();
-         auto& table = _mod.tables[0].table;
+         std::uint32_t table_size = _mod.tables[0].limits.initial;
          functypeidx = _mod.type_aliases[functypeidx];
-         // pop %rax
-         emit_bytes(0x58);
-         // cmp $size, %rax
-         emit_bytes(0x48, 0x3d);
-         emit_operand32(table.size());
-         // jae ERROR
-         emit_bytes(0x0f, 0x83);
-         fix_branch(emit_branch_target32(), call_indirect_handler);
-         // leaq table(%rip), %rdx
-         emit_bytes(0x48, 0x8d, 0x15);
-         fix_branch(emit_branch_target32(), jmp_table);
-         // imul $17, %eax, %eax
-         assert(_table_element_size <= 127); // must fit in 8-bit signed value for imul
-         emit_bytes(0x6b, 0xc0, _table_element_size);
-         // addq %rdx, %rax
-         emit_bytes(0x48, 0x01, 0xd0);
-         // mov $funtypeidx, %edx
-         emit_bytes(0xba);
-         emit_operand32(functypeidx);
-         // callq *%rax
-         emit_bytes(0xff, 0xd0);
-         emit_multipop(ft);
-         if(ft.return_count != 0){
-            if(ft.return_type == v128) {
-               emit_sub(16, rsp);
-               emit_vmovups(xmm0, *rsp);
-            } else {
-               // pushq %rax
-               emit_bytes(0x50);
-            }
+         emit_pop(rax);
+         emit_cmp(table_size, eax);
+         fix_branch(emit_branchcc32(JAE), call_indirect_handler);
+         emit(SHL_imm8, imm8{4}, rax);
+         if (_mod.indirect_table(0))
+         {
+            emit_mov(*(rsi + wasm_allocator::table_offset()), rcx);
+            emit_add(rcx, rax);
          }
+         else
+         {
+            emit(LEA, *(rax + rsi + wasm_allocator::table_offset()), rax);
+         }
+         emit_cmp(functypeidx, *dword_ptr(rax));
+         fix_branch(emit_branchcc32(JNE), type_error_handler);
+         emit(CALL, *(rax + 8));
+         emit_multipop(ft);
          emit_check_call_depth_end();
       }
 
@@ -831,6 +788,43 @@ namespace eosio { namespace vm {
          // movabsq $drop_data, %rax
          emit_bytes(0x48, 0xb8);
          emit_operand_ptr(&drop_data);
+         // call *%rax
+         emit_bytes(0xff, 0xd0);
+
+         emit_pop(rsi);
+         emit_pop(rdi);
+         emit_restore_backtrace();
+      }
+      void emit_table_init(std::uint32_t x) {
+         auto icount = variable_size_instr(25, 43);
+         emit_pop(r8);
+         emit_pop(rcx);
+         emit_pop(rdx);
+         emit_setup_backtrace();
+         emit_push(rdi);
+         emit_push(rsi);
+         emit_mov(x, esi);
+
+         // movabsq $drop_data, %rax
+         emit_bytes(0x48, 0xb8);
+         emit_operand_ptr(&init_table);
+         // call *%rax
+         emit_bytes(0xff, 0xd0);
+
+         emit_pop(rsi);
+         emit_pop(rdi);
+         emit_restore_backtrace();
+      }
+      void emit_elem_drop(std::uint32_t x) {
+         auto icount = variable_size_instr(21, 39);
+         emit_setup_backtrace();
+         emit_push(rdi);
+         emit_push(rsi);
+         emit_mov(x, esi);
+
+         // movabsq $drop_data, %rax
+         emit_bytes(0x48, 0xb8);
+         emit_operand_ptr(&drop_elem);
          // call *%rax
          emit_bytes(0xff, 0xd0);
 
@@ -3637,6 +3631,66 @@ namespace eosio { namespace vm {
          emit_mov(r9, rdi);
       }
 
+      void emit_table_copy() {
+         auto icount = fixed_size_instr(97);
+         emit_pop(rcx);
+         emit_mov(rsi, r8);
+         emit_mov(rdi, r9);
+         emit_pop(rsi);
+         emit_pop(rdi);
+
+         // Check bounds
+         emit_mov(_mod.tables[0].limits.initial, eax);
+         emit_sub(rcx, rax);
+         emit_cmp(rax, rsi);
+         fix_branch(emit_branchcc32(JG), memory_handler);
+         emit_cmp(rax, rdi);
+         fix_branch(emit_branchcc32(JG), memory_handler);
+
+         // convert indices to pointers and size to bytes
+         static_assert(sizeof(table_entry) == 16);
+         if (_mod.indirect_table(0)) {
+            emit_mov(*(r8 + wasm_allocator::table_offset()), rax);
+         } else {
+            emit(LEA, *(r8 + wasm_allocator::table_offset()), rax);
+         }
+         emit(SHL_imm8, imm8{4}, rsi);
+         emit(SHL_imm8, imm8{4}, rdi);
+         emit(SHL_imm8, imm8{4}, rcx);
+         emit_add(rax, rsi);
+         emit_add(rax, rdi);
+
+         // check for overlap
+         emit_mov(rdi, rax);
+         emit_sub(rsi, rax);
+         auto cmp1 = emit_branch8(JBE);
+         emit(CMP, rcx, rax);
+         auto cmp2 = emit_branch8(JAE);
+
+         // reverse copy
+         emit(LEA, *(rcx + rsi - 1), rsi);
+         emit(LEA, *(rcx + rdi - 1), rdi);
+         emit(STD);
+         emit_bytes(0xf3);
+         emit(IA32(0xa4));
+         emit(CLD);
+
+         emit(JMP_8);
+         auto end = emit_branch_target8();
+         fix_branch8(cmp1, code);
+         fix_branch8(cmp2, code);
+
+         // forward copy
+         // rep movsb
+         emit_bytes(0xf3);
+         emit(IA32(0xa4));
+
+         fix_branch8(end, code);
+
+         emit_mov(r8, rsi);
+         emit_mov(r9, rdi);
+      }
+
       // --------------- random  ------------------------
       static void fix_branch(void* branch, void* target) {
          auto branch_ = static_cast<uint8_t*>(branch);
@@ -3747,6 +3801,20 @@ namespace eosio { namespace vm {
          int32_t offset;
       };
       friend sib_memory_ref operator*(double_register_expr expr) { return { expr.reg1, expr.reg2, expr.offset }; }
+      template <typename T, int Sz>
+      struct sized_memory_ref {
+         T value;
+      };
+      template <typename T>
+      static sized_memory_ref<T, 4> dword_ptr(const T& expr)
+      {
+         return { expr };
+      }
+      template <typename T, int Sz>
+      friend auto operator*(const sized_memory_ref<T, Sz>& expr)
+      {
+         return sized_memory_ref<decltype(*expr.value), Sz>{*expr.value};
+      }
       enum xmm_register {
           xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7,
           xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15
@@ -3795,6 +3863,23 @@ namespace eosio { namespace vm {
 
       void emit_sub(general_register64 src, general_register64 dest) {
          emit(SUB_A, src, dest);
+      }
+
+      void emit_cmp(general_register32 src, general_register32 dest) {
+         emit(CMP, src, dest);
+      }
+
+      void emit_cmp(general_register64 src, general_register64 dest) {
+         emit(CMP, src, dest);
+      }
+
+      template<typename RM>
+      void emit_cmp(int32_t immediate, RM dest) {
+         if(immediate <= 0x7F && immediate >= -0x80) {
+            emit(CMP_imm8, static_cast<imm8>(immediate), dest);
+         } else {
+            emit(CMP_imm32, static_cast<imm32>(immediate), dest);
+         }
       }
 
       template<typename RM>
@@ -3993,8 +4078,11 @@ namespace eosio { namespace vm {
       static constexpr auto ADD_B = IA32_WX(0x01);
       static constexpr auto ADD_imm8 = IA32_WX_imm8(0x83)/0;
       static constexpr auto ADD_imm32 = IA32_WX_imm32(0x81)/0;
+      static constexpr auto CALL = IA32(0xff)/2;
       static constexpr auto CLD = IA32(0xFC);
       static constexpr auto CMP = IA32_WX(0x3b);
+      static constexpr auto CMP_imm8 = IA32_WX_imm8(0x83)/7;
+      static constexpr auto CMP_imm32 = IA32_WX_imm32(0x81)/7;
       static constexpr auto DEC = IA32_WX(0xFF)/1;
       static constexpr auto DECD = IA32(0xFF)/1;
       static constexpr auto DECQ = IA32_REX_W(0xFF)/1;
@@ -4003,9 +4091,12 @@ namespace eosio { namespace vm {
       static constexpr auto JA = Jcc{0x77};
       static constexpr auto JAE = Jcc{0x73};
       static constexpr auto JBE = Jcc{0x76};
+      static constexpr auto JNE = Jcc{0x75};
       static constexpr auto JZ = Jcc{0x74};
       static constexpr auto JNZ = Jcc{0x75};
       static constexpr auto JB = Jcc{0x72};
+      static constexpr auto JGE = Jcc{0x7d};
+      static constexpr auto JG = Jcc{0x7f};
       static constexpr auto JMP_8 = IA32(0xeb);
       static constexpr auto JMP_32 = IA32(0xe9);
       static constexpr auto LDMXCSR = IA32(0x0f, 0xae)/2;
@@ -4019,6 +4110,7 @@ namespace eosio { namespace vm {
       static constexpr auto NEG = IA32_WX(0xf7)/3;
       static constexpr auto SETZ = IA32(0x0f, 0x94);
       static constexpr auto SETNZ = IA32(0x0f, 0x95);
+      static constexpr auto SHL_imm8 = IA32_WX(0xc1)/4;
       static constexpr auto STD = IA32(0xFD);
       static constexpr auto STMXCSR = IA32(0x0f, 0xae)/3;
       static constexpr auto SUB_A = IA32_WX(0x2b);
@@ -4175,6 +4267,12 @@ namespace eosio { namespace vm {
          emit_REX_prefix(W, reg & 8, mem.reg1 & 8, mem.reg2 & 8);
       }
 
+      template <typename T, int Sz>
+      void emit_REX_prefix(bool W, sized_memory_ref<T, Sz> mem, int reg)
+      {
+         emit_REX_prefix(W, mem.value, reg);
+      }
+
       void emit_VEX_prefix(bool R, bool X, bool B, VEX_mmmm mmmm, bool W, int vvvv, bool L, VEX_pp pp) {
          if(X || B || (mmmm != mmmm_0F) || W) {
             emit_bytes(0xc4, (!R << 7) | (!X << 6) | (!B << 5) | mmmm, (W << 7) | ((vvvv ^ 0xF) << 3) | (L << 2) | pp);
@@ -4229,10 +4327,19 @@ namespace eosio { namespace vm {
          emit_bytes(0xc0 | ((reg & 7) << 3) | (r_m.reg & 7));
       }
 
+      template<typename T, int Sz>
+      void emit_modrm_sib_disp(sized_memory_ref<T, Sz> mem, int reg) {
+         emit_modrm_sib_disp(mem.value, reg);
+      }
+
       template<int W>
       static constexpr bool get_operand_size(general_register32) { return W == 1; }
       template<int W>
       static constexpr bool get_operand_size(general_register64) { return W != 0; }
+      template<int W, typename T>
+      static constexpr bool get_operand_size(sized_memory_ref<T, 4>) { return W == 1; }
+      template<int W, typename T>
+      static constexpr bool get_operand_size(sized_memory_ref<T, 8>) { return W != 0; }
       template<int W, typename RM>
       static constexpr bool get_operand_size(RM) {
          static_assert(W != -1);
@@ -4491,7 +4598,7 @@ namespace eosio { namespace vm {
       void* call_indirect_handler;
       void* type_error_handler;
       void* stack_overflow_handler;
-      void* jmp_table;
+      void* memory_handler;
       uint64_t _local_count;
       uint32_t _table_element_size;
 
@@ -4581,6 +4688,7 @@ namespace eosio { namespace vm {
       }
 
       // clobbers %rax or %xmm0 if rt is not void
+      // count includes the return value
       void emit_multipop(uint32_t count, uint8_t rt) {
          auto icount = variable_size_instr(0, 17);
          if(!is_simple_multipop(count, rt)) {
@@ -4606,8 +4714,10 @@ namespace eosio { namespace vm {
          }
       }
 
+      // \pre the result (if any) is in %rax or %xmm0
+      // \post the result (if any) is at the top of the stack
       void emit_multipop(const func_type& ft) {
-         auto icount = variable_size_instr(0, 7);
+         auto icount = variable_size_instr(0, 12);
          uint32_t total_size = 0;
          for(uint32_t i = 0; i < ft.param_types.size(); ++i) {
             if(ft.param_types[i] == v128) {
@@ -4619,8 +4729,19 @@ namespace eosio { namespace vm {
                unimplemented();
             }
          }
-         if(total_size != 0) {
-            emit_add(total_size, rsp);
+         if (ft.return_count && ft.return_type == types::v128) {
+            if (total_size != 16)
+            {
+               emit_add(total_size - 16, rsp);
+            }
+            emit_vmovups(xmm0, *rsp);
+         } else {
+            if(total_size != 0) {
+               emit_add(total_size, rsp);
+            }
+            if (ft.return_count != 0) {
+               emit_push(rax);
+            }
          }
       }
 
@@ -5332,6 +5453,15 @@ namespace eosio { namespace vm {
          context->drop_data(x);
       }
 
+      static void init_table(Context* context /*rdi*/, uint32_t x /*esi*/, uint32_t d /*edx*/, uint32_t s /*ecx*/, uint32_t n /*r8d*/) {
+         context->init_table(x, d, s, n);
+      }
+
+      static void drop_elem(Context* context /*rdi*/, uint32_t x /*esi*/) {
+         context->drop_elem(x);
+      }
+
+      static void on_memory_error() { throw_<wasm_memory_exception>("wasm memory out-of-bounds"); }
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>( "unreachable" ); }
       static void on_fp_error() { vm::throw_<wasm_interpreter_exception>( "floating point error" ); }
       static void on_call_indirect_error() { vm::throw_<wasm_interpreter_exception>( "call_indirect out of range" ); }
