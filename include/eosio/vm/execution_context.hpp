@@ -671,12 +671,7 @@ namespace eosio { namespace vm {
 
       inline uint32_t       table_elem(uint32_t i) {
          EOS_VM_ASSERT(i < _mod.tables[0].limits.initial, wasm_interpreter_exception, "table index out of range");
-         if (_mod.indirect_table(0))
-         {
-            return (*reinterpret_cast<table_entry**>(linear_memory() + wasm_allocator::table_offset()))[i].index;
-         } else {
-            return reinterpret_cast<table_entry*>(linear_memory() + wasm_allocator::table_offset())[i].index;
-         }
+         return this->get_table_base()[i].index;
       }
       inline void           push_operand(operand_stack_elem el) { get_operand_stack().push(std::move(el)); }
       inline operand_stack_elem get_operand(uint32_t index) const { return get_operand_stack().get(_last_op_index + index); }
