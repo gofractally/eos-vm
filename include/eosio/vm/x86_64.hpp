@@ -1953,6 +1953,18 @@ namespace eosio { namespace vm {
          fix_branch(emit_branch_target32(), fpe_handler);
       }
 
+      void emit_i32_extend8_s() {
+         auto icount = fixed_size_instr(7);
+         emit(MOVSXB, *rsp, eax);
+         emit_mov(eax, *rsp);
+      }
+
+      void emit_i32_extend16_s() {
+         auto icount = fixed_size_instr(7);
+         emit(MOVSXW, *rsp, eax);
+         emit_mov(eax, *rsp);
+      }
+
       void emit_i64_extend_s_i32() {
          auto icount = fixed_size_instr(8);
          // movslq (%rsp), %rax
@@ -1962,6 +1974,24 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_extend_u_i32() { /* Nothing to do */ }
+
+      void emit_i64_extend8_s() {
+         auto icount = fixed_size_instr(9);
+         emit(MOVSXB, *rsp, rax);
+         emit_mov(rax, *rsp);
+      }
+
+      void emit_i64_extend16_s() {
+         auto icount = fixed_size_instr(9);
+         emit(MOVSXW, *rsp, rax);
+         emit_mov(rax, *rsp);
+      }
+
+      void emit_i64_extend32_s() {
+         auto icount = fixed_size_instr(7);
+         emit(MOVSXD, *rsp, rax);
+         emit_mov(rax, *rsp);
+      }
       
       void emit_i64_trunc_s_f32() {
          auto icount = softfloat_instr(35, 37, 55);
@@ -4107,6 +4137,7 @@ namespace eosio { namespace vm {
       static constexpr auto MOV_B = IA32_WX(0x89);
       static constexpr auto MOVSXB = IA32_WX(0x0f, 0xbe);
       static constexpr auto MOVSXW = IA32_WX(0x0f, 0xbf);
+      static constexpr auto MOVSXD = IA32_WX(0x63);
       static constexpr auto NEG = IA32_WX(0xf7)/3;
       static constexpr auto SETZ = IA32(0x0f, 0x94);
       static constexpr auto SETNZ = IA32(0x0f, 0x95);

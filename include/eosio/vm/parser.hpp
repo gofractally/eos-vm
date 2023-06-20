@@ -197,6 +197,7 @@ namespace eosio { namespace vm {
 
    PARSER_OPTION(enable_simd, true, bool)
    PARSER_OPTION(enable_bulk_memory, true, bool)
+   PARSER_OPTION(enable_sign_ext, true, bool)
 
 #undef MAX_ELEMENTS
 #undef PARSER_OPTION
@@ -1333,6 +1334,21 @@ namespace eosio { namespace vm {
 #undef UNOP
 #undef BINOP
                    
+#define EXTENDOP(dst, opname)                                           \
+               case opcodes::dst ## _ ## opname:                        \
+                  check_in_bounds();                                    \
+                  EOS_VM_ASSERT(detail::get_enable_sign_ext(_options), wasm_parse_exception, "Sign-extension operators not enabled"); \
+                  code_writer.emit_ ## dst ## _ ## opname();            \
+                  op_stack.pop(types::dst);                             \
+                  op_stack.push(types::dst);                            \
+                  break;
+
+               EXTENDOP(i32, extend8_s)
+               EXTENDOP(i32, extend16_s)
+               EXTENDOP(i64, extend8_s)
+               EXTENDOP(i64, extend16_s)
+               EXTENDOP(i64, extend32_s)
+
                case opcodes::vector_prefix: {
                   EOS_VM_ASSERT(detail::get_enable_simd(_options), wasm_parse_exception, "SIMD not enabled");
                   switch(parse_varuint32(code))

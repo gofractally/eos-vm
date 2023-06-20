@@ -198,6 +198,12 @@ class null_writer {
    void emit_f32_reinterpret_i32() {}
    void emit_f64_reinterpret_i64() {}
 
+   void emit_i32_extend8_s() {}
+   void emit_i32_extend16_s() {}
+   void emit_i64_extend8_s() {}
+   void emit_i64_extend16_s() {}
+   void emit_i64_extend32_s() {}
+
    void emit_v128_load(uint32_t /*offset*/, uint32_t /*alignment*/) {}
    void emit_v128_load8x8_s(uint32_t /*offset*/, uint32_t /*alignment*/) {}
    void emit_v128_load8x8_u(uint32_t /*offset*/, uint32_t /*alignment*/) {}
