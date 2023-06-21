@@ -184,7 +184,12 @@
    opcode_macro(f64_div, 0xA3)                  \
    opcode_macro(f64_min, 0xA4)                  \
    opcode_macro(f64_max, 0xA5)                  \
-   opcode_macro(f64_copysign, 0xA6)
+   opcode_macro(f64_copysign, 0xA6)             \
+   opcode_macro(i32_extend8_s, 0xC0)            \
+   opcode_macro(i32_extend16_s, 0xC1)           \
+   opcode_macro(i64_extend8_s, 0xC2)            \
+   opcode_macro(i64_extend16_s, 0xC3)           \
+   opcode_macro(i64_extend32_s, 0xC4)
 #define EOS_VM_CONVERSION_OPS(opcode_macro)     \
    opcode_macro(i32_wrap_i64, 0xA7)             \
    opcode_macro(i32_trunc_s_f32, 0xA8)          \
@@ -212,7 +217,7 @@
    opcode_macro(f32_reinterpret_i32, 0xBE)      \
    opcode_macro(f64_reinterpret_i64, 0xBF)
 #define EOS_VM_EXIT_OP(opcode_macro)            \
-   opcode_macro(exit, 0xC0)
+   opcode_macro(exit, 0xE0)
 #define EOS_VM_REF_OPS(opcode_macro)            \
    opcode_macro(ref_null, 0xD0)                 \
    opcode_macro(ref_is_null, 0xD1)              \
@@ -221,10 +226,6 @@
    opcode_macro(ext_prefix, 0xFC)               \
    opcode_macro(vector_prefix, 0xFD)
 #define EOS_VM_EMPTY_OPS(opcode_macro)          \
-   opcode_macro(empty0xC1, 0xC1)                \
-   opcode_macro(empty0xC2, 0xC2)                \
-   opcode_macro(empty0xC3, 0xC3)                \
-   opcode_macro(empty0xC4, 0xC4)                \
    opcode_macro(empty0xC5, 0xC5)                \
    opcode_macro(empty0xC6, 0xC6)                \
    opcode_macro(empty0xC7, 0xC7)                \
@@ -249,7 +250,6 @@
    opcode_macro(empty0xDD, 0xDD)                \
    opcode_macro(empty0xDE, 0xDE)                \
    opcode_macro(empty0xDF, 0xDF)                \
-   opcode_macro(empty0xE0, 0xE0)                \
    opcode_macro(empty0xE1, 0xE1)                \
    opcode_macro(empty0xE2, 0xE2)                \
    opcode_macro(empty0xE3, 0xE3)                \
