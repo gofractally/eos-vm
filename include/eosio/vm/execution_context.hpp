@@ -367,6 +367,8 @@ namespace eosio { namespace vm {
          this->_remaining_call_depth = max_call_depth;
       }
 
+      std::uint32_t get_remaining_call_depth() const { return this->_remaining_call_depth; }
+
       inline native_value call_host_function(native_value* stack, uint32_t index) {
          const auto& ft = _mod.get_function_type(index);
          uint32_t num_params = ft.param_types.size();
@@ -620,22 +622,14 @@ namespace eosio { namespace vm {
       using base_type::get_interface;
 
       execution_context(module& m, uint32_t max_call_depth)
-       : base_type(m), _base_allocator{max_call_depth*sizeof(activation_frame)},
-         _as{max_call_depth, _base_allocator}, _halt(exit_t{}),
+         : base_type(m), _as{}, _halt(exit_t{}),
          _remaining_call_depth{max_call_depth} {}
 
       void set_max_call_depth(uint32_t max_call_depth) {
-         static_assert(std::is_trivially_move_assignable_v<call_stack>, "This is seriously broken if call_stack move assignment might use the existing memory");
-         std::size_t mem_size = max_call_depth*sizeof(activation_frame);
-         if(mem_size > _base_allocator.mem_size) {
-            _base_allocator = bounded_allocator{mem_size};
-            _as = call_stack{max_call_depth, _base_allocator};
-         } else if (max_call_depth != _as.capacity()){
-            _base_allocator.index = 0;
-            _as = call_stack{max_call_depth, _base_allocator};
-         }
          _remaining_call_depth = max_call_depth;
       }
+
+      std::uint32_t get_remaining_call_depth() const { return _remaining_call_depth; }
 
       inline void call(uint32_t index) {
          // TODO validate index is valid
@@ -827,9 +821,20 @@ namespace eosio { namespace vm {
       }
 
       template <typename Visitor, typename... Args>
+      inline std::optional<operand_stack_elem> execute(stack_manager&, host_type* host, Visitor&& visitor, const std::string_view func,
+                                                       Args... args) {
+         return execute(host, std::forward<Visitor>(visitor), func, std::forward<Args>(args)...);
+      }
+
+      template <typename Visitor, typename... Args>
       inline void execute_start(host_type* host, Visitor&& visitor) {
          if (_mod.start != std::numeric_limits<uint32_t>::max())
             execute(host, std::forward<Visitor>(visitor), _mod.start);
+      }
+
+      template <typename Visitor>
+      inline void execute_start(stack_manager&, host_type* host, Visitor&& visitor) {
+         execute_start(host, std::forward<Visitor>(visitor));
       }
 
       template <typename Visitor, typename... Args>
@@ -1011,12 +1016,9 @@ namespace eosio { namespace vm {
          bool     exiting          = false;
       };
 
-      bounded_allocator _base_allocator = {
-         (constants::max_call_depth + 1) * sizeof(activation_frame)
-      };
       execution_state _state;
       uint32_t                        _last_op_index    = 0;
-      call_stack                      _as = { _base_allocator };
+      call_stack                      _as;
       opcode                          _halt;
       host_type*                      _host = nullptr;
       uint32_t                        _remaining_call_depth;
