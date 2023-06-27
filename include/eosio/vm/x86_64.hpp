@@ -18,7 +18,34 @@
 
 namespace eosio { namespace vm {
 
+   struct instruction_counter {
+      template<int line>
+      static std::uint64_t* ptr() {
+         static std::uint64_t value = 0;
+         static auto register_ = data().insert({line, &value});
+         return &value;
+      }
+      static std::map<int, std::uint64_t*>& data() {
+         static std::map<int, std::uint64_t*> result;
+         return result;
+      }
+      static void print() {
+         std::uint64_t total = 0;
+         for(auto [line, count] : data()) {
+            if(*count != 0) {
+               printf("%d %lu\n", line, *count);
+            }
+            total += *count;
+         }
+         printf("total: %lu\n", total);
+      }
+   };
 
+#if 0
+#define COUNT_INSTR() do { emit_mov(instruction_counter::ptr<__LINE__>(), rax); emit(INC, *qword_ptr(rax)); } while(0)
+#else
+#define COUNT_INSTR() ((void)0)
+#endif
 
    // Random notes:
    // - branch instructions return the address that will need to be updated
@@ -244,18 +271,20 @@ namespace eosio { namespace vm {
       }
 
       void emit_unreachable() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(16);
          emit_error_handler(&on_unreachable);
       }
       void emit_nop() {}
-      void* emit_end() { return code; }
+      void* emit_end() { set_branch_target(); return code; }
       void* emit_return(uint32_t depth_change, uint8_t rt) {
          // Return is defined as equivalent to branching to the outermost label
          return emit_br(depth_change, rt);
       }
       void emit_block() {}
-      void* emit_loop() { return code; }
+      void* emit_loop() { set_branch_target(); return code; }
       void* emit_if() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(9);
          // pop RAX
          emit_bytes(0x58);
@@ -266,13 +295,16 @@ namespace eosio { namespace vm {
          return emit_branch_target32();
       }
       void* emit_else(void* if_loc) {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          // We never need to adjust the stack, even if there is a return type
          void* result = emit_br(0, types::pseudo);
          fix_branch(if_loc, code);
+         set_branch_target();
          return result;
       }
       void* emit_br(uint32_t depth_change, uint8_t rt) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(5, 22);
          // add RSP, depth_change * 8
          emit_multipop(depth_change, rt);
@@ -281,6 +313,7 @@ namespace eosio { namespace vm {
          return emit_branch_target32();
       }
       void* emit_br_if(uint32_t depth_change, uint8_t rt) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(9, 31);
          // pop RAX
          emit_bytes(0x58);
@@ -372,6 +405,7 @@ namespace eosio { namespace vm {
          std::vector<stack_item> stack;
       };
       br_table_generator emit_br_table(uint32_t table_size) {
+         COUNT_INSTR();
          // pop %rax
          emit_bytes(0x58);
          // Increase the size by one to account for the default.
@@ -399,6 +433,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_call(const func_type& ft, uint32_t funcnum) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(15, 31);
          emit_check_call_depth();
          // callq TARGET
@@ -411,6 +446,7 @@ namespace eosio { namespace vm {
 
       void emit_call_indirect(const func_type& ft, uint32_t functypeidx)
       {
+         COUNT_INSTR();
          auto icount = variable_size_instr(37, 64);
          emit_check_call_depth();
          std::uint32_t table_size = _mod.tables[0].limits.initial;
@@ -436,6 +472,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_drop(uint8_t type) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(1, 4);
          if(type == types::v128) {
             emit_add(16, rsp);
@@ -445,6 +482,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_select(uint8_t type) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(13, 20);
          if(type == types::v128) {
             emit_pop(rax);
@@ -469,6 +507,8 @@ namespace eosio { namespace vm {
       }
 
       void emit_get_local(uint32_t local_idx, uint8_t type) {
+         auto start = code;
+         COUNT_INSTR();
          auto icount = variable_size_instr(5, 17);
          // stack layout:
          //   param0    <----- %rbp + 8*(nparams + 1)
@@ -487,6 +527,7 @@ namespace eosio { namespace vm {
          if (type != types::v128) {
             emit_mov(addr, rax);
             emit_push(rax);
+            push_recent_op(start, get_local_op{addr});
          } else {
             emit_vmovups(addr, xmm0);
             emit_sub(16, rsp);
@@ -495,6 +536,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_set_local(uint32_t local_idx, uint8_t type) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(5, 17);
          auto addr = *(rbp + get_frame_offset(local_idx));
          if (type != types::v128) {
@@ -508,6 +550,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_tee_local(uint32_t local_idx, uint8_t type) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(8, 13);
          auto addr = *(rbp + get_frame_offset(local_idx));
          if (type != types::v128) {
@@ -520,6 +563,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_get_global(uint32_t globalidx) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(13, 23);
          auto& gl = _mod.globals[globalidx];
          void *ptr = &gl.current.value;
@@ -555,6 +599,7 @@ namespace eosio { namespace vm {
          }
       }
       void emit_set_global(uint32_t globalidx) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(14, 23);
          auto& gl = _mod.globals[globalidx];
          void *ptr = &gl.current.value;
@@ -577,144 +622,172 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_load(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(7, 15);
          // movl (RAX), EAX
-         emit_load_impl(offset, 0x8b, 0x00);
+         //emit_load_impl(offset, 0x8b, 0x00);
+         emit_load_impl2(offset, MOV_A, eax);
       }
 
       void emit_i64_load(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(8, 16);
          // movq (RAX), RAX
          emit_load_impl(offset, 0x48, 0x8b, 0x00);
       }
 
       void emit_f32_load(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(7, 15);
          // movl (RAX), EAX
          emit_load_impl(offset, 0x8b, 0x00);
       }
 
       void emit_f64_load(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(8, 16);
          // movq (RAX), RAX
          emit_load_impl(offset, 0x48, 0x8b, 0x00);
       }
 
       void emit_i32_load8_s(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(8, 16);
          // movsbl (RAX), EAX; 
          emit_load_impl(offset, 0x0F, 0xbe, 0x00);
       }
 
       void emit_i32_load16_s(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(8, 16);
          // movswl (RAX), EAX; 
          emit_load_impl(offset, 0x0F, 0xbf, 0x00);
       }
 
       void emit_i32_load8_u(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(8, 16);
          // movzbl (RAX), EAX; 
-         emit_load_impl(offset, 0x0f, 0xb6, 0x00);
+         //emit_load_impl(offset, 0x0f, 0xb6, 0x00);
+         emit_load_impl2(offset, MOVZB, eax);
       }
 
       void emit_i32_load16_u(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(8, 16);
          // movzwl (RAX), EAX; 
          emit_load_impl(offset, 0x0f, 0xb7, 0x00);
       }
 
       void emit_i64_load8_s(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(9, 17);
          // movsbq (RAX), RAX; 
          emit_load_impl(offset, 0x48, 0x0F, 0xbe, 0x00);
       }
 
       void emit_i64_load16_s(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(9, 17);
          // movswq (RAX), RAX; 
          emit_load_impl(offset, 0x48, 0x0F, 0xbf, 0x00);
       }
 
       void emit_i64_load32_s(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(8, 16);
          // movslq (RAX), RAX
          emit_load_impl(offset, 0x48, 0x63, 0x00);
       }
 
       void emit_i64_load8_u(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(8, 16);
          // movzbl (RAX), EAX; 
          emit_load_impl(offset, 0x0f, 0xb6, 0x00);
       }
 
       void emit_i64_load16_u(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(8, 16);
          // movzwl (RAX), EAX; 
          emit_load_impl(offset, 0x0f, 0xb7, 0x00);
       }
 
      void emit_i64_load32_u(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(7, 15);
          // movl (RAX), EAX
          emit_load_impl(offset, 0x8b, 0x00);
       }
 
       void emit_i32_store(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(7, 15);
          // movl ECX, (RAX)
-         emit_store_impl(offset, 0x89, 0x08);
+         //emit_store_impl(offset, 0x89, 0x08);
+         emit_store_impl2(offset, MOV_B, eax);
       }
 
       void emit_i64_store(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(8, 16);
          // movl ECX, (RAX)
          emit_store_impl(offset, 0x48, 0x89, 0x08);
       }
 
       void emit_f32_store(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(7, 15);
          // movl ECX, (RAX)
          emit_store_impl(offset, 0x89, 0x08);
       }
 
       void emit_f64_store(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(8, 16);
          // movl ECX, (RAX)
          emit_store_impl(offset, 0x48, 0x89, 0x08);
       }
 
       void emit_i32_store8(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(7, 15);
          // movb CL, (RAX)
-         emit_store_impl(offset, 0x88, 0x08);
+         //emit_store_impl(offset, 0x88, 0x08);
+         emit_store_impl2(offset, MOVB_B, al);
       }
 
       void emit_i32_store16(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(8, 16);
          // movb CX, (RAX)
          emit_store_impl(offset, 0x66, 0x89, 0x08);
       }
 
       void emit_i64_store8(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(7, 15);
          // movb CL, (RAX)
          emit_store_impl(offset, 0x88, 0x08);
       }
 
       void emit_i64_store16(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(8, 16);
          // movb CX, (RAX)
          emit_store_impl(offset, 0x66, 0x89, 0x08);
       }
 
       void emit_i64_store32(uint32_t /*alignment*/, uint32_t offset) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(7, 15);
          // movl ECX, (RAX)
          emit_store_impl(offset, 0x89, 0x08);
       }
 
       void emit_current_memory() {
+         COUNT_INSTR();
          auto icount = variable_size_instr(17, 35);
          emit_setup_backtrace();
          // pushq %rdi
@@ -735,6 +808,7 @@ namespace eosio { namespace vm {
          emit_bytes(0x50);
       }
       void emit_grow_memory() {
+         COUNT_INSTR();
          auto icount = variable_size_instr(21, 39);
          // popq %rax
          emit_bytes(0x58);
@@ -759,6 +833,7 @@ namespace eosio { namespace vm {
          emit_bytes(0x50);
       }
       void emit_memory_init(std::uint32_t x) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(25, 43);
          emit_pop(r8);
          emit_pop(rcx);
@@ -779,6 +854,7 @@ namespace eosio { namespace vm {
          emit_restore_backtrace();
       }
       void emit_data_drop(std::uint32_t x) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(21, 39);
          emit_setup_backtrace();
          emit_push(rdi);
@@ -796,6 +872,7 @@ namespace eosio { namespace vm {
          emit_restore_backtrace();
       }
       void emit_table_init(std::uint32_t x) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(25, 43);
          emit_pop(r8);
          emit_pop(rcx);
@@ -816,6 +893,7 @@ namespace eosio { namespace vm {
          emit_restore_backtrace();
       }
       void emit_elem_drop(std::uint32_t x) {
+         COUNT_INSTR();
          auto icount = variable_size_instr(21, 39);
          emit_setup_backtrace();
          emit_push(rdi);
@@ -834,15 +912,23 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_const(uint32_t value) {
-         auto icount = fixed_size_instr(6);
-         // mov $value, %eax
-         emit_bytes(0xb8);
-         emit_operand32(value);
-         // push %rax
-         emit_bytes(0x50);
+         auto start = code;
+         if (value == 0) {
+            COUNT_INSTR();
+            auto icount = fixed_size_instr(3);
+            emit_xor(eax, eax);
+            emit_push(rax);
+         } else {
+            COUNT_INSTR();
+            auto icount = fixed_size_instr(6);
+            emit_mov(value, eax);
+            emit_push(rax);
+         }
+         push_recent_op(start, i32_const_op{value});
       }
 
       void emit_i64_const(uint64_t value) {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(11);
          // movabsq $value, %rax
          emit_bytes(0x48, 0xb8);
@@ -852,6 +938,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f32_const(float value) {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(6);
          // mov $value, %eax
          emit_bytes(0xb8);
@@ -860,6 +947,7 @@ namespace eosio { namespace vm {
          emit_bytes(0x50);
       }
       void emit_f64_const(double value) {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(11);
          // movabsq $value, %rax
          emit_bytes(0x48, 0xb8);
@@ -869,6 +957,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_eqz() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(10);
          // pop %rax
          emit_bytes(0x58);
@@ -944,6 +1033,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_eqz() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(11);
          // pop %rax
          emit_bytes(0x58);
@@ -1218,6 +1308,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_clz() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(has_tzcnt()?6:18);
          if(!has_tzcnt()) {
             // pop %rax
@@ -1245,6 +1336,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_ctz() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(has_tzcnt()?6:13);
          if(!has_tzcnt()) {
             // pop %rax
@@ -1268,6 +1360,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_popcnt() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(6);
          // popq %rax
          emit_bytes(0x58);
@@ -1280,27 +1373,52 @@ namespace eosio { namespace vm {
       // --------------- i32 binops ----------------------
 
       void emit_i32_add() {
+         if (auto local = try_pop_recent_op<get_local_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(ADD_A, local->expr, eax);
+            emit_push(rax);
+            return;
+         }
+         if (auto constant = try_pop_recent_op<i32_const_op>()) {
+            auto value = constant->value;
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit_add(value, eax);
+            emit_push(rax);
+            return;
+         }
+         COUNT_INSTR();
          auto icount = fixed_size_instr(5);
-         emit_i32_binop(0x01, 0xc8, 0x50);
+         //emit_i32_binop(0x01, 0xc8, 0x50);
+         emit_pop(rax);
+         emit_pop(rcx);
+         emit_add(ecx, eax);
+         emit_push(rax);
       }
       void emit_i32_sub() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_i32_binop(0x29, 0xc8, 0x50);
       }
       void emit_i32_mul() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(6);
          emit_i32_binop(0x0f, 0xaf, 0xc1, 0x50);
       }
       // cdq; idiv %ecx; pushq %rax
       void emit_i32_div_s() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(6);
          emit_i32_binop(0x99, 0xf7, 0xf9, 0x50);
       }
       void emit_i32_div_u() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(7);
          emit_i32_binop(0x31, 0xd2, 0xf7, 0xf1, 0x50);
       }
       void emit_i32_rem_s() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(22);
          // pop %rcx
          emit_bytes(0x59);
@@ -1328,38 +1446,75 @@ namespace eosio { namespace vm {
          emit_bytes(0x52);
       }
       void emit_i32_rem_u() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(7);
          emit_i32_binop(0x31, 0xd2, 0xf7, 0xf1, 0x52);
       }
       void emit_i32_and() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_i32_binop(0x21, 0xc8, 0x50);
       }
       void emit_i32_or() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_i32_binop(0x09, 0xc8, 0x50);
       }
       void emit_i32_xor() {
+         if (auto c = try_pop_recent_op<get_local_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(XOR_A, c->expr, eax);
+            emit_push(rax);
+            return;
+         }
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit_xor(c->value, eax);
+            emit_push(rax);
+            return;
+         }
+         COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_i32_binop(0x31, 0xc8, 0x50);
       }
       void emit_i32_shl() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(SHL_imm8, static_cast<imm8>(c->value & 0x1f), eax);
+            emit_push(rax);
+            return;
+         }
+         COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_i32_binop(0xd3, 0xe0, 0x50);
       }
       void emit_i32_shr_s() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_i32_binop(0xd3, 0xf8, 0x50);
       }
       void emit_i32_shr_u() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(SHR_imm8, static_cast<imm8>(c->value & 0x1f), eax);
+            emit_push(rax);
+            return;
+         }
+         COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_i32_binop(0xd3, 0xe8, 0x50);
       }
       void emit_i32_rotl() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_i32_binop(0xd3, 0xc0, 0x50);
       }
       void emit_i32_rotr() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_i32_binop(0xd3, 0xc8, 0x50);
       }
@@ -1367,6 +1522,7 @@ namespace eosio { namespace vm {
       // --------------- i64 unops ----------------------
 
       void emit_i64_clz() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(has_tzcnt()?7:24);
          if(!has_tzcnt()) {
             // pop %rax
@@ -1394,6 +1550,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_ctz() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(has_tzcnt()?7:17);
          if(!has_tzcnt()) {
             // pop %rax
@@ -1417,6 +1574,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_popcnt() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(7);
          // popq %rax
          emit_bytes(0x58);
@@ -1450,6 +1608,7 @@ namespace eosio { namespace vm {
          emit_i64_binop(0x48, 0x31, 0xd2, 0x48, 0xf7, 0xf1, 0x50);
       }
       void emit_i64_rem_s() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(25);
          // pop %rcx
          emit_bytes(0x59);
@@ -1516,6 +1675,7 @@ namespace eosio { namespace vm {
       // --------------- f32 unops ----------------------
 
       void emit_f32_abs() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(7);
          // popq %rax; 
          emit_bytes(0x58);
@@ -1527,6 +1687,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f32_neg() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(7);
          // popq %rax
          emit_bytes(0x58);
@@ -1538,6 +1699,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f32_ceil() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(12, 36, 54);
          if constexpr (use_softfloat) {
             if (_mod.eosio_fp) {
@@ -1553,6 +1715,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f32_floor() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(12, 36, 54);
          if constexpr (use_softfloat) {
             if (_mod.eosio_fp) {
@@ -1568,6 +1731,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f32_trunc() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(12, 36, 54);
          if constexpr (use_softfloat) {
             if (_mod.eosio_fp) {
@@ -1583,6 +1747,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f32_nearest() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(12, 36, 54);
          if constexpr (use_softfloat) {
             if (_mod.eosio_fp) {
@@ -1598,6 +1763,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f32_sqrt() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(10, 36, 54);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(_eosio_f32_sqrt));
@@ -1627,6 +1793,7 @@ namespace eosio { namespace vm {
          emit_f32_binop(0x5e, CHOOSE_FN(_eosio_f32_div));
       }
       void emit_f32_min() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(47, 44, 58);
         if constexpr(use_softfloat) {
            if (_mod.eosio_fp) {
@@ -1664,6 +1831,7 @@ namespace eosio { namespace vm {
         emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
       }
       void emit_f32_max() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(47, 44, 58);
         if(use_softfloat) {
            if (_mod.eosio_fp) {
@@ -1702,6 +1870,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f32_copysign() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(16);
          // popq %rax; 
          emit_bytes(0x58);
@@ -1722,6 +1891,7 @@ namespace eosio { namespace vm {
       // --------------- f64 unops ----------------------
 
       void emit_f64_abs() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(15);
          // popq %rcx; 
          emit_bytes(0x59);
@@ -1735,6 +1905,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f64_neg() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(15);
          // popq %rcx; 
          emit_bytes(0x59);
@@ -1748,6 +1919,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f64_ceil() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(12, 38, 56);
          if constexpr (use_softfloat) {
             if (_mod.eosio_fp) {
@@ -1763,6 +1935,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f64_floor() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(12, 38, 56);
          if constexpr (use_softfloat) {
             if (_mod.eosio_fp) {
@@ -1778,6 +1951,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f64_trunc() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(12, 38, 56);
          if constexpr (use_softfloat) {
             if (_mod.eosio_fp) {
@@ -1793,6 +1967,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f64_nearest() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(12, 38, 56);
          if constexpr (use_softfloat) {
             if (_mod.eosio_fp) {
@@ -1808,6 +1983,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f64_sqrt() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(10, 38, 56);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(_eosio_f64_sqrt));
@@ -1821,22 +1997,27 @@ namespace eosio { namespace vm {
       // --------------- f64 binops ----------------------
 
       void emit_f64_add() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(21, 47, 61);
          emit_f64_binop(0x58, CHOOSE_FN(_eosio_f64_add));
       }
       void emit_f64_sub() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(21, 47, 61);
          emit_f64_binop(0x5c, CHOOSE_FN(_eosio_f64_sub));
       }
       void emit_f64_mul() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(21, 47, 61);
          emit_f64_binop(0x59, CHOOSE_FN(_eosio_f64_mul));
       }
       void emit_f64_div() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(21, 47, 61);
          emit_f64_binop(0x5e, CHOOSE_FN(_eosio_f64_div));
       }
       void emit_f64_min() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(49, 47, 61);
          if(use_softfloat) {
             if (_mod.eosio_fp) {
@@ -1874,6 +2055,7 @@ namespace eosio { namespace vm {
          emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
       }
       void emit_f64_max() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(49, 47, 61);
          if(use_softfloat) {
             if (_mod.eosio_fp) {
@@ -1912,6 +2094,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f64_copysign() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(25);
          // popq %rcx; 
          emit_bytes(0x59);
@@ -1936,6 +2119,7 @@ namespace eosio { namespace vm {
 
 
       void emit_i32_wrap_i64() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(6);
          // Zero out the high 4 bytes
          // xor %eax, %eax
@@ -1945,6 +2129,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_trunc_s_f32() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(33, 36, 54);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(softfloat_trap<&_eosio_f32_trunc_i32s>()));
@@ -1956,6 +2141,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_trunc_u_f32() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(46, 36, 54);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(softfloat_trap<&_eosio_f32_trunc_i32u>()));
@@ -1973,6 +2159,7 @@ namespace eosio { namespace vm {
          fix_branch(emit_branch_target32(), fpe_handler);
       }
       void emit_i32_trunc_s_f64() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(34, 38, 56);
          if constexpr (use_softfloat) {
             if (_mod.eosio_fp) {
@@ -1988,6 +2175,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_trunc_u_f64() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(47, 38, 56);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(softfloat_trap<&_eosio_f64_trunc_i32u>()));
@@ -2022,18 +2210,21 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_extend8_s() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(7);
          emit(MOVSXB, *rsp, eax);
          emit_mov(eax, *rsp);
       }
 
       void emit_i32_extend16_s() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(7);
          emit(MOVSXW, *rsp, eax);
          emit_mov(eax, *rsp);
       }
 
       void emit_i64_extend_s_i32() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(8);
          // movslq (%rsp), %rax
          emit_bytes(0x48, 0x63, 0x04, 0x24);
@@ -2044,24 +2235,28 @@ namespace eosio { namespace vm {
       void emit_i64_extend_u_i32() { /* Nothing to do */ }
 
       void emit_i64_extend8_s() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(9);
          emit(MOVSXB, *rsp, rax);
          emit_mov(rax, *rsp);
       }
 
       void emit_i64_extend16_s() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(9);
          emit(MOVSXW, *rsp, rax);
          emit_mov(rax, *rsp);
       }
 
       void emit_i64_extend32_s() {
+         COUNT_INSTR();
          auto icount = fixed_size_instr(7);
          emit(MOVSXD, *rsp, rax);
          emit_mov(rax, *rsp);
       }
       
       void emit_i64_trunc_s_f32() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(35, 37, 55);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(softfloat_trap<&_eosio_f32_trunc_i64s>()));
@@ -2072,6 +2267,7 @@ namespace eosio { namespace vm {
          emit_bytes(0x48, 0x89, 0x04 ,0x24);
       }
       void emit_i64_trunc_u_f32() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(101, 37, 55);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(softfloat_trap<&_eosio_f32_trunc_i64u>()));
@@ -2115,6 +2311,7 @@ namespace eosio { namespace vm {
          fix_branch(emit_branch_target32(), fpe_handler);
       }
       void emit_i64_trunc_s_f64() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(35, 38, 56);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(softfloat_trap<&_eosio_f64_trunc_i64s>()));
@@ -2125,6 +2322,7 @@ namespace eosio { namespace vm {
          emit_bytes(0x48, 0x89, 0x04 ,0x24);
       }
       void emit_i64_trunc_u_f64() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(109, 38, 56);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(softfloat_trap<&_eosio_f64_trunc_i64u>()));
@@ -2185,6 +2383,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f32_convert_s_i32() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(10, 36, 54);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(_eosio_i32_to_f32));
@@ -2195,6 +2394,7 @@ namespace eosio { namespace vm {
          emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
       }
       void emit_f32_convert_u_i32() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(11, 36, 54);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(_eosio_ui32_to_f32));
@@ -2206,6 +2406,7 @@ namespace eosio { namespace vm {
          emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
       }
       void emit_f32_convert_s_i64() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(11, 38, 56);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(_eosio_i64_to_f32));
@@ -2216,6 +2417,7 @@ namespace eosio { namespace vm {
          emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
       }
       void emit_f32_convert_u_i64() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(55, 38, 56);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(_eosio_ui64_to_f32));
@@ -2256,6 +2458,7 @@ namespace eosio { namespace vm {
         emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
       }
       void emit_f32_demote_f64() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(16, 38, 56);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(_eosio_f64_demote));
@@ -2271,6 +2474,7 @@ namespace eosio { namespace vm {
          emit_bytes(0x89, 0x44, 0x24, 0x04);
       }
       void emit_f64_convert_s_i32() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(10, 37, 55);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(_eosio_i32_to_f64));
@@ -2281,6 +2485,7 @@ namespace eosio { namespace vm {
          emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
       }
       void emit_f64_convert_u_i32() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(11, 37, 55);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(_eosio_ui32_to_f64));
@@ -2291,6 +2496,7 @@ namespace eosio { namespace vm {
          emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
       }
       void emit_f64_convert_s_i64() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(11, 38, 56);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(_eosio_i64_to_f64));
@@ -2301,6 +2507,7 @@ namespace eosio { namespace vm {
          emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
       }
       void emit_f64_convert_u_i64() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(49, 38, 56);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(_eosio_ui64_to_f64));
@@ -2337,6 +2544,7 @@ namespace eosio { namespace vm {
         emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
       }
       void emit_f64_promote_f32() {
+         COUNT_INSTR();
          auto icount = softfloat_instr(10, 37, 55);
          if constexpr (use_softfloat) {
             return emit_softfloat_unop(CHOOSE_FN(_eosio_f32_promote));
@@ -3838,6 +4046,13 @@ namespace eosio { namespace vm {
 
       // returns the current write address
       const void* get_addr() const {
+         if (recent_ops[1].end == code) {
+            if (recent_ops[0].end == recent_ops[1].start) {
+               return recent_ops[0].start;
+            } else {
+               return recent_ops[1].start;
+            }
+         }
          return code;
       }
 
@@ -3924,6 +4139,11 @@ namespace eosio { namespace vm {
       {
          return { expr };
       }
+      template <typename T>
+      static sized_memory_ref<T, 8> qword_ptr(const T& expr)
+      {
+         return { expr };
+      }
       template <typename T, int Sz>
       friend auto operator*(const sized_memory_ref<T, Sz>& expr)
       {
@@ -3957,6 +4177,10 @@ namespace eosio { namespace vm {
          } else {
             emit(ADD_imm32, static_cast<imm32>(immediate), dest);
          }
+      }
+
+      void emit_add(general_register32 src, general_register32 dest) {
+         emit(ADD_A, src, dest);
       }
 
       void emit_add(general_register64 src, general_register64 dest) {
@@ -4043,6 +4267,18 @@ namespace eosio { namespace vm {
          emit_operand32(src);
       }
 
+      void emit_mov(uint64_t src, general_register64 dest) {
+         emit_REX_prefix(true, false, false, dest & 8);
+         emit_bytes(0xb8 | (dest & 7));
+         emit_operand64(src);
+      }
+
+      void emit_mov(const void* src, general_register64 dest) {
+         emit_REX_prefix(true, false, false, dest & 8);
+         emit_bytes(0xb8 | (dest & 7));
+         emit_operand_ptr(src);
+      }
+
       void emit_mov(general_register32 src, disp_memory_ref dest)
       {
          emit(IA32(0x89), dest, src);
@@ -4073,17 +4309,42 @@ namespace eosio { namespace vm {
       }
 
       void emit_pop(general_register64 reg) {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            emit_mov(c->value, reg);
+            return;
+         }
+         if (auto push = try_undo_push()) {
+            if (push->reg != reg) {
+               emit_mov(push->reg, reg);
+            }
+            return;
+         }
          emit_REX_prefix(false, false, false, reg & 8);
          emit_bytes(0x58 | (reg & 7));
       }
 
       void emit_push(general_register64 reg) {
+         auto start = code;
          emit_REX_prefix(false, false, false, reg & 8);
          emit_bytes(0x50 | (reg & 7));
+         push_recent_op(start, generic_register_push_op{reg});
+      }
+
+      void set_branch_target() {
+         recent_ops[0] = {};
+         recent_ops[1] = {};
       }
 
       void emit_xor(general_register32 src, general_register32 dest) {
          emit(XOR_A, src, dest);
+      }
+
+      void emit_xor(int32_t immediate, general_register32 dest) {
+         if(immediate <= 0x7F && immediate >= -0x80) {
+            emit(XOR_imm8, static_cast<imm8>(immediate), dest);
+         } else {
+            emit(XOR_imm32, static_cast<imm32>(immediate), dest);
+         }
       }
 
       void emit_vmovdqu(disp_memory_ref mem, xmm_register reg) {
@@ -4200,6 +4461,7 @@ namespace eosio { namespace vm {
       static constexpr auto DEC = IA32_WX(0xFF)/1;
       static constexpr auto DECD = IA32(0xFF)/1;
       static constexpr auto DECQ = IA32_REX_W(0xFF)/1;
+      static constexpr auto INC = IA32_WX(0xFF)/0;
       static constexpr auto INCD = IA32(0xFF)/0;
       // When adding jcc codes, verify that the rel8/rel32 versions are 7x and 0F 8x
       static constexpr auto JA = Jcc{0x77};
@@ -4217,8 +4479,10 @@ namespace eosio { namespace vm {
       static constexpr auto LEA = IA32_WX(0x8d);
       static constexpr auto LEAVE = IA32(0xc9);
       static constexpr auto MOVB_A = IA32(0x8a);
+      static constexpr auto MOVB_B = IA32(0x88);
       static constexpr auto MOV_A = IA32_WX(0x8b);
       static constexpr auto MOV_B = IA32_WX(0x89);
+      static constexpr auto MOVZB = IA32(0x0f, 0xb6);
       static constexpr auto MOVSXB = IA32_WX(0x0f, 0xbe);
       static constexpr auto MOVSXW = IA32_WX(0x0f, 0xbf);
       static constexpr auto MOVSXD = IA32_WX(0x63);
@@ -4226,6 +4490,7 @@ namespace eosio { namespace vm {
       static constexpr auto SETZ = IA32(0x0f, 0x94);
       static constexpr auto SETNZ = IA32(0x0f, 0x95);
       static constexpr auto SHL_imm8 = IA32_WX(0xc1)/4;
+      static constexpr auto SHR_imm8 = IA32_WX_imm8(0xc1)/5;
       static constexpr auto STD = IA32(0xFD);
       static constexpr auto STMXCSR = IA32(0x0f, 0xae)/3;
       static constexpr auto SUB_A = IA32_WX(0x2b);
@@ -4233,6 +4498,8 @@ namespace eosio { namespace vm {
       static constexpr auto TEST = IA32_WX(0x85);
       static constexpr auto XOR_A = IA32_WX(0x33);
       //static constexpr auto XOR_B = IA32_WX_STORE(0x31);
+      static constexpr auto XOR_imm8 = IA32_WX_imm8(0x83)/6;
+      static constexpr auto XOR_imm32 = IA32_WX_imm32(0x81)/6;
 
       enum VEX_mmmm { mmmm_none, mmmm_0F, mmmm_0F38, mmmm_0F3A };
       enum VEX_pp { pp_none, pp_66, pp_F3, pp_F2 };
@@ -4720,6 +4987,81 @@ namespace eosio { namespace vm {
       std::uint32_t stack_usage;
       void* stack_limit_entry = nullptr;
 
+      struct get_local_op {
+         disp_memory_ref expr;
+      };
+
+      struct i32_const_op {
+         uint32_t value;
+      };
+
+      struct generic_register_push_op {
+         general_register64 reg;
+      };
+
+      struct recent_op_t {
+         unsigned char* start;
+         unsigned char* end;
+         std::variant<std::monostate, generic_register_push_op, get_local_op, i32_const_op> data;
+      };
+
+      // This is used to fold common instruction sequences
+      recent_op_t recent_ops[2];
+
+      void push_recent_op(unsigned char* start, auto op) {
+         // If we're not changing end, it means we're overwriting the last instruction
+         // (replacing a push with a more specific op).
+         if (recent_ops[1].end != code) {
+            recent_ops[0] = recent_ops[1];
+         }
+         recent_ops[1] = {start, code, op};
+      }
+
+      template<typename T>
+      std::optional<T> try_pop_recent_op() {
+         if (recent_ops[1].end == code) {
+            if (auto p = std::get_if<T>(&recent_ops[1].data)) {
+               std::optional<T> result = *p;
+               code = recent_ops[1].start;
+               recent_ops[1] = recent_ops[0];
+               recent_ops[0] = {};
+               return result;
+            }
+         }
+         return {};
+      }
+
+      std::optional<generic_register_push_op> try_undo_push() {
+         if (recent_ops[1].end == code) {
+            if (auto res = try_pop_recent_op<generic_register_push_op>()) {
+               return res;
+            }
+            if (std::holds_alternative<get_local_op>(recent_ops[1].data) ||
+                std::holds_alternative<i32_const_op>(recent_ops[1].data)) {
+               --code;
+               recent_ops[1] = {};
+               recent_ops[0] = {};
+               return generic_register_push_op{rax};
+            }
+         }
+         return {};
+      }
+
+      template<typename T, typename U>
+      std::optional<std::pair<T, U>> try_pop_recent_op() {
+         if (recent_ops[1].end == code && recent_ops[0].end == recent_ops[1].start) {
+            if (auto p1 = std::get_if<T>(&recent_ops[0].data)) {
+               if (auto p2 = std::get_if<U>(&recent_ops[1].data)) {
+                  std::optional<std::pair<T, U>> result(*p1, *p2);
+                  code = recent_ops[0].start;
+                  recent_ops[0] = {};
+                  recent_ops[1] = {};
+                  return result;
+               }
+            }
+         }
+      }
+
       void emit_byte(uint8_t val) { *code++ = val; }
       void emit_bytes() {}
       template<class... T>
@@ -4860,6 +5202,32 @@ namespace eosio { namespace vm {
          }
       }
 
+      template<class I, class R>
+      void emit_load_impl2(uint32_t offset, I instr, R reg) {
+         emit_pop(rax);
+         if (offset & 0x80000000) {
+            emit_mov(offset, ecx);
+            emit_add(rcx, rax);
+            emit(instr, *(rax + rsi), reg);
+         } else {
+            emit(instr, *(rax + rsi + offset), reg);
+         }
+         emit_push(rax);
+      }
+
+      template<class I, class R>
+      void emit_store_impl2(uint32_t offset, I instr, R reg) {
+         emit_pop(rax);
+         emit_pop(rcx);
+         if (offset & 0x80000000) {
+            emit_mov(offset, edx);
+            emit_add(rdx, rcx);
+            emit(instr, *(rcx + rsi), reg);
+         } else {
+            emit(instr, *(rcx + rsi + offset), reg);
+         }
+      }
+
       // pops an i32 wasm address off the stack
       // adds offset and converts the result to
       // a native address.  The result is in %rax.
@@ -4900,6 +5268,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_relop(uint8_t opcode) {
+         COUNT_INSTR();
          // popq %rax
          emit_bytes(0x58);
          // popq %rcx
@@ -4916,6 +5285,7 @@ namespace eosio { namespace vm {
 
       template<class... T>
       void emit_i64_relop(uint8_t opcode) {
+         COUNT_INSTR();
          // popq %rax
          emit_bytes(0x58);
          // popq %rcx
@@ -5182,6 +5552,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f32_relop(uint8_t opcode, uint64_t (*softfloatfun)(float32_t, float32_t), bool switch_params, bool flip_result) {
+         COUNT_INSTR();
          if constexpr (use_softfloat) {
             auto extra = emit_setup_backtrace();
             // pushq %rdi
@@ -5249,6 +5620,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f64_relop(uint8_t opcode, uint64_t (*softfloatfun)(float64_t, float64_t), bool switch_params, bool flip_result) {
+         COUNT_INSTR();
          if constexpr (use_softfloat) {
             auto extra = emit_setup_backtrace();
             // pushq %rdi
@@ -5329,6 +5701,7 @@ namespace eosio { namespace vm {
 
       template<class... T>
       void emit_i64_binop(T... op) {
+         COUNT_INSTR();
          // popq %rcx
          emit_bytes(0x59);
          // popq %rax
@@ -5338,6 +5711,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f32_binop(uint8_t op, float32_t (*softfloatfun)(float32_t, float32_t)) {
+         COUNT_INSTR();
          if constexpr (use_softfloat) {
             return emit_f32_binop_softfloat(softfloatfun);
          }
@@ -5352,6 +5726,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f64_binop(uint8_t op, float64_t (*softfloatfun)(float64_t, float64_t)) {
+         COUNT_INSTR();
          if constexpr (use_softfloat) {
             return emit_f64_binop_softfloat(softfloatfun);
          }
