@@ -115,8 +115,8 @@ inline float _eosio_f32_ceil( float af ) {
    float32_t a = to_softfloat32(af);
    int e = (int)(a.v >> 23 & 0xFF) - 0X7F;
    uint32_t m;
-   if (is_nan(a)) {
-      return from_softfloat32({ a.v | 0x00400000 });
+   if (ArithNan && is_nan(a)) {
+      return from_softfloat32(propagate_nan<ArithNan>(a));
    }
    if (e >= 23)
       return af;

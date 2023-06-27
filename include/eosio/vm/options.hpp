@@ -60,6 +60,9 @@ struct options {
    bool allow_zero_blocktype = false;
    // Emulates the following eosio bugs:
    // - i32.trunc_s_f64 traps for values in the range (INT_MIN, INT_MIN - 1)
+   // - f32.min, f32.max, f32.ceil, f32.floor, f32.trunc, f32.nearest,
+   //   f64.min, f64.max, f64.ceil, f64.floor, f64.trunc, f64.nearest
+   //   do not return an arithmetic nan when the argument is a non-arithmetic nan
    bool eosio_fp = false;
    // Determines which components are counted towards max_function_local_bytes
    max_func_local_bytes_flags_t max_func_local_bytes_flags = max_func_local_bytes_flags_t::locals | max_func_local_bytes_flags_t::stack;

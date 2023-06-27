@@ -41,19 +41,19 @@ BACKEND_TEST_CASE( "Testing wasm <float_memory_1_wasm>", "[float_memory_1_wasm_t
    auto code = read_wasm( std::string(wasm_directory) + "float_memory.1.wasm");
    backend_t bkend( code, &wa );
 
-   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT32_C(9219994337134247936));
+   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT64_C(9219994337134247936));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load")->to_f64()) == UINT64_C(9219994337134247936));
 bkend("env", "reset");
-   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT32_C(0));
+   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT64_C(0));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load")->to_f64()) == UINT64_C(0));
 bkend("env", "f64.store");
-   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT32_C(9219994337134247936));
+   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT64_C(9219994337134247936));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load")->to_f64()) == UINT64_C(9219994337134247936));
 bkend("env", "reset");
-   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT32_C(0));
+   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT64_C(0));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load")->to_f64()) == UINT64_C(0));
 bkend("env", "i64.store");
-   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT32_C(9219994337134247936));
+   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT64_C(9219994337134247936));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load")->to_f64()) == UINT64_C(9219994337134247936));
 }
 
@@ -83,19 +83,19 @@ BACKEND_TEST_CASE( "Testing wasm <float_memory_3_wasm>", "[float_memory_3_wasm_t
    auto code = read_wasm( std::string(wasm_directory) + "float_memory.3.wasm");
    backend_t bkend( code, &wa );
 
-   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT32_C(9219994337134247936));
+   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT64_C(9219994337134247936));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load")->to_f64()) == UINT64_C(9219994337134247936));
 bkend("env", "reset");
-   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT32_C(0));
+   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT64_C(0));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load")->to_f64()) == UINT64_C(0));
 bkend("env", "f64.store");
-   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT32_C(9219994337134247936));
+   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT64_C(9219994337134247936));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load")->to_f64()) == UINT64_C(9219994337134247936));
 bkend("env", "reset");
-   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT32_C(0));
+   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT64_C(0));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load")->to_f64()) == UINT64_C(0));
 bkend("env", "i64.store");
-   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT32_C(9219994337134247936));
+   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT64_C(9219994337134247936));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load")->to_f64()) == UINT64_C(9219994337134247936));
 }
 
@@ -125,19 +125,19 @@ BACKEND_TEST_CASE( "Testing wasm <float_memory_5_wasm>", "[float_memory_5_wasm_t
    auto code = read_wasm( std::string(wasm_directory) + "float_memory.5.wasm");
    backend_t bkend( code, &wa );
 
-   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT32_C(9222246136947933185));
+   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT64_C(9222246136947933185));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load")->to_f64()) == UINT64_C(9222246136947933185));
 bkend("env", "reset");
-   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT32_C(0));
+   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT64_C(0));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load")->to_f64()) == UINT64_C(0));
 bkend("env", "f64.store");
-   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT32_C(9222246136947933185));
+   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT64_C(9222246136947933185));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load")->to_f64()) == UINT64_C(9222246136947933185));
 bkend("env", "reset");
-   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT32_C(0));
+   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT64_C(0));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load")->to_f64()) == UINT64_C(0));
 bkend("env", "i64.store");
-   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT32_C(9222246136947933185));
+   CHECK(bkend.call_with_return("env", "i64.load")->to_ui64() == UINT64_C(9222246136947933185));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load")->to_f64()) == UINT64_C(9222246136947933185));
 }
 
