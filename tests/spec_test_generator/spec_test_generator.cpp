@@ -1210,10 +1210,18 @@ string generate_test_call(picojson::object obj, string expected_t, string expect
       ss << "UINT64_C(" << expected_v << ")";
    } else if (expected_t == "f32") {
       ss << ")->to_f32()) == ";
-      ss << "UINT32_C(" << expected_v << ")";
+      if (expected_v.starts_with("nan")) {
+         ss << expected_v;
+      } else {
+         ss << "UINT32_C(" << expected_v << ")";
+      }
    } else if (expected_t == "f64") {
       ss << ")->to_f64()) == ";
-      ss << "UINT64_C(" << expected_v << ")";
+      if (expected_v.starts_with("nan")) {
+         ss << expected_v;
+      } else {
+         ss << "UINT64_C(" << expected_v << ")";
+      }
    } else if (expected_t == "v128") {
       ss << ")->to_v128() == ";
       ss << expected_v;
@@ -1312,7 +1320,14 @@ void generate_tests(const map<string, vector<picojson::object>>& mappings) {
             exp_v = "make_v128_" + obj["lane_type"].to_str() + "(" + std::move(exp_v) + ")";
          }
       } else {
-         exp_v = obj["value"].to_str();
+         auto& value = obj["value"];
+         if(value.to_str() == "nan:arithmetic") {
+            exp_v = "nan_arithmetic_t{}";
+         } else if(value.to_str() == "nan:canonical") {
+            exp_v = "nan_canonical_t{}";
+         } else {
+            exp_v = value.to_str();
+         }
       }
    };
 

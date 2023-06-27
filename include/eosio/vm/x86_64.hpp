@@ -1927,7 +1927,11 @@ namespace eosio { namespace vm {
       void emit_i32_trunc_s_f64() {
          auto icount = softfloat_instr(34, 38, 56);
          if constexpr (use_softfloat) {
-            return emit_softfloat_unop(CHOOSE_FN(softfloat_trap<&_eosio_f64_trunc_i32s<false>>()));
+            if (_mod.eosio_fp) {
+               return emit_softfloat_unop(CHOOSE_FN(softfloat_trap<&_eosio_f64_trunc_i32s<false>>()));
+            } else {
+               return emit_softfloat_unop(CHOOSE_FN(softfloat_trap<&_eosio_f64_trunc_i32s<true>>()));
+            }
          }
          // cvttsd2si 8(%rsp), %eax
          emit_f2i(0xf2, 0x0f, 0x2c, 0x44, 0x24, 0x08);

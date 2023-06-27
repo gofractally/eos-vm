@@ -444,18 +444,12 @@ template<bool FixedBound>
 inline int32_t _eosio_f64_trunc_i32s( double af ) {
    float64_t a = to_softfloat64(af);
    if constexpr (FixedBound) {
-      // Truncation is supposed to happen before the range check (this only
-      // makes a difference for f64 to i32)
-      af = _eosio_f64_trunc<false>( af );
-      a = to_softfloat64(af);
-      EOS_VM_ASSERT(!(_eosio_f64_ge(af, 2147483648.0) || _eosio_f64_lt(af, -2147483648.0)), wasm_interpreter_exception, "Error, f64.convert_s/i32 overflow");
-      EOS_VM_ASSERT(!is_nan(a), wasm_interpreter_exception, "Error, f64.convert_s/i32 unrepresentable");
-      return f64_to_i32( a, 0, false );
+      EOS_VM_ASSERT(!(_eosio_f64_ge(af, 2147483648.0) || _eosio_f64_le(af, -2147483649.0)), wasm_interpreter_exception, "Error, f64.convert_s/i32 overflow");
    } else {
       EOS_VM_ASSERT(!(_eosio_f64_ge(af, 2147483648.0) || _eosio_f64_lt(af, -2147483648.0)), wasm_interpreter_exception, "Error, f64.convert_s/i32 overflow");
-      EOS_VM_ASSERT(!is_nan(a), wasm_interpreter_exception, "Error, f64.convert_s/i32 unrepresentable");
-      return f64_to_i32( to_softfloat64(_eosio_f64_trunc<false>( af )), 0, false );
    }
+   EOS_VM_ASSERT(!is_nan(a), wasm_interpreter_exception, "Error, f64.convert_s/i32 unrepresentable");
+   return f64_to_i32( to_softfloat64(_eosio_f64_trunc<false>( af )), 0, false );
 }
 
 inline uint32_t _eosio_f32_trunc_i32u( float af ) {

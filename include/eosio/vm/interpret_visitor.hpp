@@ -1043,10 +1043,18 @@ namespace eosio { namespace vm {
          context.inc_pc();
          auto& oper = context.peek_operand();
          if constexpr (use_softfloat) {
-            oper = i32_const_t{ _eosio_f64_trunc_i32s<false>(oper.to_f64()) };
+            if (context.get_module().eosio_fp) {
+               oper = i32_const_t{ _eosio_f64_trunc_i32s<false>(oper.to_f64()) };
+            } else {
+               oper = i32_const_t{ _eosio_f64_trunc_i32s<true>(oper.to_f64()) };
+            }
          } else {
             double af = oper.to_f64();
-            EOS_VM_ASSERT(!((af >= 2147483648.0) || (af < -2147483648.0)), wasm_interpreter_exception, "Error, f64.trunc_s/i32 overflow");
+            if (context.get_module().eosio_fp) {
+               EOS_VM_ASSERT(!((af >= 2147483648.0) || (af < -2147483648.0)), wasm_interpreter_exception, "Error, f64.trunc_s/i32 overflow");
+            } else {
+               EOS_VM_ASSERT(!((af >= 2147483648.0) || (af <= -2147483649.0)), wasm_interpreter_exception, "Error, f64.trunc_s/i32 overflow");
+            }
             EOS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f64.trunc_s/i32 unrepresentable");
             oper = i32_const_t{ static_cast<int32_t>(af) };
          }

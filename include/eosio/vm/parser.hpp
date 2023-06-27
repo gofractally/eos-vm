@@ -190,6 +190,7 @@ namespace eosio { namespace vm {
    PARSER_OPTION(allow_code_after_function_end, false, bool);
    PARSER_OPTION(allow_u32_limits_flags, false, bool);
    PARSER_OPTION(allow_invalid_empty_local_set, false, bool);
+   PARSER_OPTION(eosio_fp, false, bool);
 
    PARSER_OPTION(allow_zero_blocktype, false, bool)
 
@@ -365,6 +366,7 @@ namespace eosio { namespace vm {
 
       void parse_module(wasm_code_ptr& code_ptr, size_t sz, module& mod, DebugInfo& debug) {
          _mod = &mod;
+         _mod->eosio_fp = detail::get_eosio_fp(_options);
          EOS_VM_ASSERT(parse_magic(code_ptr) == constants::magic, wasm_parse_exception, "magic number did not match");
          EOS_VM_ASSERT(parse_version(code_ptr) == constants::version, wasm_parse_exception,
                        "version number did not match");
