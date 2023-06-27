@@ -30,15 +30,18 @@ namespace eosio { namespace vm {
          return result;
       }
       static void print() {
+         std::uint64_t total = 0;
          for(auto [line, count] : data()) {
             if(*count != 0) {
                printf("%d %lu\n", line, *count);
             }
+            total += *count;
          }
+         printf("total: %lu\n", total);
       }
    };
 
-#if 1
+#if 0
 #define COUNT_INSTR() do { emit_mov(instruction_counter::ptr<__LINE__>(), rax); emit(INC, *qword_ptr(rax)); } while(0)
 #else
 #define COUNT_INSTR() ((void)0)
@@ -504,6 +507,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_get_local(uint32_t local_idx, uint8_t type) {
+         auto start = code;
          COUNT_INSTR();
          auto icount = variable_size_instr(5, 17);
          // stack layout:
@@ -523,6 +527,7 @@ namespace eosio { namespace vm {
          if (type != types::v128) {
             emit_mov(addr, rax);
             emit_push(rax);
+            push_recent_op(start, get_local_op{addr});
          } else {
             emit_vmovups(addr, xmm0);
             emit_sub(16, rsp);
@@ -663,7 +668,8 @@ namespace eosio { namespace vm {
          COUNT_INSTR();
          auto icount = variable_size_instr(8, 16);
          // movzbl (RAX), EAX; 
-         emit_load_impl(offset, 0x0f, 0xb6, 0x00);
+         //emit_load_impl(offset, 0x0f, 0xb6, 0x00);
+         emit_load_impl2(offset, MOVZB, eax);
       }
 
       void emit_i32_load16_u(uint32_t /*alignment*/, uint32_t offset) {
@@ -719,7 +725,8 @@ namespace eosio { namespace vm {
          COUNT_INSTR();
          auto icount = variable_size_instr(7, 15);
          // movl ECX, (RAX)
-         emit_store_impl(offset, 0x89, 0x08);
+         //emit_store_impl(offset, 0x89, 0x08);
+         emit_store_impl2(offset, MOV_B, eax);
       }
 
       void emit_i64_store(uint32_t /*alignment*/, uint32_t offset) {
@@ -747,7 +754,8 @@ namespace eosio { namespace vm {
          COUNT_INSTR();
          auto icount = variable_size_instr(7, 15);
          // movb CL, (RAX)
-         emit_store_impl(offset, 0x88, 0x08);
+         //emit_store_impl(offset, 0x88, 0x08);
+         emit_store_impl2(offset, MOVB_B, al);
       }
 
       void emit_i32_store16(uint32_t /*alignment*/, uint32_t offset) {
@@ -903,53 +911,20 @@ namespace eosio { namespace vm {
          emit_restore_backtrace();
       }
 
-      struct i32_const_folder_t {
-         unsigned char* start;
-         unsigned char* end;
-         uint32_t value;
-      };
-
       void emit_i32_const(uint32_t value) {
-         last_i32_const_op.start = code;
+         auto start = code;
          if (value == 0) {
             COUNT_INSTR();
             auto icount = fixed_size_instr(3);
             emit_xor(eax, eax);
             emit_push(rax);
          } else {
-            if (value == 1) {
-               COUNT_INSTR();
-            } else if (value == 2) {
-               COUNT_INSTR();
-            } else if (value <= 4) {
-               COUNT_INSTR();
-            } else if (value <= 8) {
-               COUNT_INSTR();
-            } else if (value <= 16) {
-               COUNT_INSTR();
-            } else if (value <= 32) {
-               COUNT_INSTR();
-            } else if (value <= 64) {
-               COUNT_INSTR();
-            } else if (value <= 128) {
-               COUNT_INSTR();
-            } else if (value == 0xffffffff) {
-               COUNT_INSTR();
-            } else if (value > 0xffffffff - 2) {
-               COUNT_INSTR();
-            } else if (value > 0xffffffff - 4) {
-               COUNT_INSTR();
-            } else if (value > 0xffffffff - 8) {
-               COUNT_INSTR();
-            } else {
-               COUNT_INSTR();
-            }
+            COUNT_INSTR();
             auto icount = fixed_size_instr(6);
             emit_mov(value, eax);
             emit_push(rax);
          }
-         last_i32_const_op.end = code;
-         last_i32_const_op.value = value;
+         push_recent_op(start, i32_const_op{value});
       }
 
       void emit_i64_const(uint64_t value) {
@@ -1398,10 +1373,15 @@ namespace eosio { namespace vm {
       // --------------- i32 binops ----------------------
 
       void emit_i32_add() {
-         if (last_i32_const_op.end == code) {
-            code = last_i32_const_op.start;
-            auto value = last_i32_const_op.value;
-            set_branch_target(); // TODO: rename function
+         if (auto local = try_pop_recent_op<get_local_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(ADD_A, local->expr, eax);
+            emit_push(rax);
+            return;
+         }
+         if (auto constant = try_pop_recent_op<i32_const_op>()) {
+            auto value = constant->value;
             COUNT_INSTR();
             emit_pop(rax);
             emit_add(value, eax);
@@ -1481,11 +1461,32 @@ namespace eosio { namespace vm {
          emit_i32_binop(0x09, 0xc8, 0x50);
       }
       void emit_i32_xor() {
+         if (auto c = try_pop_recent_op<get_local_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(XOR_A, c->expr, eax);
+            emit_push(rax);
+            return;
+         }
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit_xor(c->value, eax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_i32_binop(0x31, 0xc8, 0x50);
       }
       void emit_i32_shl() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(SHL_imm8, static_cast<imm8>(c->value & 0x1f), eax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_i32_binop(0xd3, 0xe0, 0x50);
@@ -1496,6 +1497,13 @@ namespace eosio { namespace vm {
          emit_i32_binop(0xd3, 0xf8, 0x50);
       }
       void emit_i32_shr_u() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(SHR_imm8, static_cast<imm8>(c->value & 0x1f), eax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_i32_binop(0xd3, 0xe8, 0x50);
@@ -3954,14 +3962,11 @@ namespace eosio { namespace vm {
 
       // returns the current write address
       const void* get_addr() const {
-         if (last_i32_const_op.end == code) {
-            return last_i32_const_op.start;
-         }
-         if (last_push_op.first == code) {
-            if (last_push_op.second & 8) {
-               return code - 2;
+         if (recent_ops[1].end == code) {
+            if (recent_ops[0].end == recent_ops[1].start) {
+               return recent_ops[0].start;
             } else {
-               return code - 1;
+               return recent_ops[1].start;
             }
          }
          return code;
@@ -4220,16 +4225,14 @@ namespace eosio { namespace vm {
       }
 
       void emit_pop(general_register64 reg) {
-         if (last_push_op == std::pair{code, reg}) {
-            if (reg & 8)
-            {
-               code -= 2;
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            emit_mov(c->value, reg);
+            return;
+         }
+         if (auto push = try_undo_push()) {
+            if (push->reg != reg) {
+               emit_mov(push->reg, reg);
             }
-            else
-            {
-               code -= 1;
-            }
-            set_branch_target();
             return;
          }
          emit_REX_prefix(false, false, false, reg & 8);
@@ -4237,18 +4240,27 @@ namespace eosio { namespace vm {
       }
 
       void emit_push(general_register64 reg) {
+         auto start = code;
          emit_REX_prefix(false, false, false, reg & 8);
          emit_bytes(0x50 | (reg & 7));
-         last_push_op = {code, reg};
+         push_recent_op(start, generic_register_push_op{reg});
       }
 
       void set_branch_target() {
-         last_push_op = {};
-         last_i32_const_op = {};
+         recent_ops[0] = {};
+         recent_ops[1] = {};
       }
 
       void emit_xor(general_register32 src, general_register32 dest) {
          emit(XOR_A, src, dest);
+      }
+
+      void emit_xor(int32_t immediate, general_register32 dest) {
+         if(immediate <= 0x7F && immediate >= -0x80) {
+            emit(XOR_imm8, static_cast<imm8>(immediate), dest);
+         } else {
+            emit(XOR_imm32, static_cast<imm32>(immediate), dest);
+         }
       }
 
       void emit_vmovdqu(disp_memory_ref mem, xmm_register reg) {
@@ -4383,8 +4395,10 @@ namespace eosio { namespace vm {
       static constexpr auto LEA = IA32_WX(0x8d);
       static constexpr auto LEAVE = IA32(0xc9);
       static constexpr auto MOVB_A = IA32(0x8a);
+      static constexpr auto MOVB_B = IA32(0x88);
       static constexpr auto MOV_A = IA32_WX(0x8b);
       static constexpr auto MOV_B = IA32_WX(0x89);
+      static constexpr auto MOVZB = IA32(0x0f, 0xb6);
       static constexpr auto MOVSXB = IA32_WX(0x0f, 0xbe);
       static constexpr auto MOVSXW = IA32_WX(0x0f, 0xbf);
       static constexpr auto MOVSXD = IA32_WX(0x63);
@@ -4392,6 +4406,7 @@ namespace eosio { namespace vm {
       static constexpr auto SETZ = IA32(0x0f, 0x94);
       static constexpr auto SETNZ = IA32(0x0f, 0x95);
       static constexpr auto SHL_imm8 = IA32_WX(0xc1)/4;
+      static constexpr auto SHR_imm8 = IA32_WX_imm8(0xc1)/5;
       static constexpr auto STD = IA32(0xFD);
       static constexpr auto STMXCSR = IA32(0x0f, 0xae)/3;
       static constexpr auto SUB_A = IA32_WX(0x2b);
@@ -4399,6 +4414,8 @@ namespace eosio { namespace vm {
       static constexpr auto TEST = IA32_WX(0x85);
       static constexpr auto XOR_A = IA32_WX(0x33);
       //static constexpr auto XOR_B = IA32_WX_STORE(0x31);
+      static constexpr auto XOR_imm8 = IA32_WX_imm8(0x83)/6;
+      static constexpr auto XOR_imm32 = IA32_WX_imm32(0x81)/6;
 
       enum VEX_mmmm { mmmm_none, mmmm_0F, mmmm_0F38, mmmm_0F3A };
       enum VEX_pp { pp_none, pp_66, pp_F3, pp_F2 };
@@ -4886,9 +4903,80 @@ namespace eosio { namespace vm {
       std::uint32_t stack_usage;
       void* stack_limit_entry = nullptr;
 
-      // This is used to remove the sequnce push rax; pop rax;
-      std::pair<unsigned char*, general_register64> last_push_op = {};
-      i32_const_folder_t last_i32_const_op = {};
+      struct get_local_op {
+         disp_memory_ref expr;
+      };
+
+      struct i32_const_op {
+         uint32_t value;
+      };
+
+      struct generic_register_push_op {
+         general_register64 reg;
+      };
+
+      struct recent_op_t {
+         unsigned char* start;
+         unsigned char* end;
+         std::variant<std::monostate, generic_register_push_op, get_local_op, i32_const_op> data;
+      };
+
+      // This is used to fold common instruction sequences
+      recent_op_t recent_ops[2];
+
+      void push_recent_op(unsigned char* start, auto op) {
+         // If we're not changing end, it means we're overwriting the last instruction
+         // (replacing a push with a more specific op).
+         if (recent_ops[1].end != code) {
+            recent_ops[0] = recent_ops[1];
+         }
+         recent_ops[1] = {start, code, op};
+      }
+
+      template<typename T>
+      std::optional<T> try_pop_recent_op() {
+         if (recent_ops[1].end == code) {
+            if (auto p = std::get_if<T>(&recent_ops[1].data)) {
+               std::optional<T> result = *p;
+               code = recent_ops[1].start;
+               recent_ops[1] = recent_ops[0];
+               recent_ops[0] = {};
+               return result;
+            }
+         }
+         return {};
+      }
+
+      std::optional<generic_register_push_op> try_undo_push() {
+         if (recent_ops[1].end == code) {
+            if (auto res = try_pop_recent_op<generic_register_push_op>()) {
+               return res;
+            }
+            if (std::holds_alternative<get_local_op>(recent_ops[1].data) ||
+                std::holds_alternative<i32_const_op>(recent_ops[1].data)) {
+               --code;
+               recent_ops[1] = {};
+               recent_ops[0] = {};
+               return generic_register_push_op{rax};
+            }
+         }
+         return {};
+      }
+
+      template<typename T, typename U>
+      std::optional<std::pair<T, U>> try_pop_recent_op() {
+         if (recent_ops[1].end == code && recent_ops[0].end == recent_ops[1].start) {
+            if (auto p1 = std::get_if<T>(&recent_ops[0].data)) {
+               if (auto p2 = std::get_if<U>(&recent_ops[1].data)) {
+                  std::optional<std::pair<T, U>> result(*p1, *p2);
+                  code = recent_ops[0].start;
+                  recent_ops[0] = {};
+                  recent_ops[1] = {};
+                  return result;
+               }
+            }
+         }
+      }
 
       void emit_byte(uint8_t val) { *code++ = val; }
       void emit_bytes() {}
@@ -5034,12 +5122,26 @@ namespace eosio { namespace vm {
       void emit_load_impl2(uint32_t offset, I instr, R reg) {
          emit_pop(rax);
          if (offset & 0x80000000) {
-            emit_mov(offset, rax);
+            emit_mov(offset, ecx);
+            emit_add(rcx, rax);
             emit(instr, *(rax + rsi), reg);
          } else {
             emit(instr, *(rax + rsi + offset), reg);
          }
          emit_push(rax);
+      }
+
+      template<class I, class R>
+      void emit_store_impl2(uint32_t offset, I instr, R reg) {
+         emit_pop(rax);
+         emit_pop(rcx);
+         if (offset & 0x80000000) {
+            emit_mov(offset, edx);
+            emit_add(rdx, rcx);
+            emit(instr, *(rcx + rsi), reg);
+         } else {
+            emit(instr, *(rcx + rsi + offset), reg);
+         }
       }
 
       // pops an i32 wasm address off the stack
