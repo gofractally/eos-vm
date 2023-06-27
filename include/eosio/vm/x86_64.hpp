@@ -1927,7 +1927,7 @@ namespace eosio { namespace vm {
       void emit_i32_trunc_s_f64() {
          auto icount = softfloat_instr(34, 38, 56);
          if constexpr (use_softfloat) {
-            return emit_softfloat_unop(CHOOSE_FN(softfloat_trap<&_eosio_f64_trunc_i32s>()));
+            return emit_softfloat_unop(CHOOSE_FN(softfloat_trap<&_eosio_f64_trunc_i32s<false>>()));
          }
          // cvttsd2si 8(%rsp), %eax
          emit_f2i(0xf2, 0x0f, 0x2c, 0x44, 0x24, 0x08);
@@ -1951,6 +1951,22 @@ namespace eosio { namespace vm {
          // jnz FP_ERROR_HANDLER
          emit_bytes(0x0f, 0x85);
          fix_branch(emit_branch_target32(), fpe_handler);
+      }
+
+      void emit_i32_trunc_sat_f32_s() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i32_trunc_sat_f32_s));
+      }
+
+      void emit_i32_trunc_sat_f32_u() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i32_trunc_sat_f32_u));
+      }
+
+      void emit_i32_trunc_sat_f64_s() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i32_trunc_sat_f64_s));
+      }
+
+      void emit_i32_trunc_sat_f64_u() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i32_trunc_sat_f64_u));
       }
 
       void emit_i32_extend8_s() {
@@ -2098,6 +2114,22 @@ namespace eosio { namespace vm {
          // jc FP_ERROR_HANDLER
          emit_bytes(0x0f, 0x82);
          fix_branch(emit_branch_target32(), fpe_handler);
+      }
+
+      void emit_i64_trunc_sat_f32_s() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i64_trunc_sat_f32_s));
+      }
+
+      void emit_i64_trunc_sat_f32_u() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i64_trunc_sat_f32_u));
+      }
+
+      void emit_i64_trunc_sat_f64_s() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i64_trunc_sat_f64_s));
+      }
+
+      void emit_i64_trunc_sat_f64_u() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i64_trunc_sat_f64_u));
       }
 
       void emit_f32_convert_s_i32() {

@@ -198,6 +198,15 @@ class null_writer {
    void emit_f32_reinterpret_i32() {}
    void emit_f64_reinterpret_i64() {}
 
+   void emit_i32_trunc_sat_f32_s() {}
+   void emit_i32_trunc_sat_f32_u() {}
+   void emit_i32_trunc_sat_f64_s() {}
+   void emit_i32_trunc_sat_f64_u() {}
+   void emit_i64_trunc_sat_f32_s() {}
+   void emit_i64_trunc_sat_f32_u() {}
+   void emit_i64_trunc_sat_f64_s() {}
+   void emit_i64_trunc_sat_f64_u() {}
+
    void emit_i32_extend8_s() {}
    void emit_i32_extend16_s() {}
    void emit_i64_extend8_s() {}

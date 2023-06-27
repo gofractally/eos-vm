@@ -1043,7 +1043,7 @@ namespace eosio { namespace vm {
          context.inc_pc();
          auto& oper = context.peek_operand();
          if constexpr (use_softfloat) {
-            oper = i32_const_t{ _eosio_f64_trunc_i32s(oper.to_f64()) };
+            oper = i32_const_t{ _eosio_f64_trunc_i32s<false>(oper.to_f64()) };
          } else {
             double af = oper.to_f64();
             EOS_VM_ASSERT(!((af >= 2147483648.0) || (af < -2147483648.0)), wasm_interpreter_exception, "Error, f64.trunc_s/i32 overflow");
@@ -1230,6 +1230,46 @@ namespace eosio { namespace vm {
          context.inc_pc();
          auto& oper = context.peek_operand();
          oper       = f64_const_t{ oper.to_ui64() };
+      }
+      [[gnu::always_inline]] inline void operator()(const i32_trunc_sat_f32_s_t& op) {
+         context.inc_pc();
+         auto& oper = context.peek_operand();
+         oper = i32_const_t{ _eosio_i32_trunc_sat_f32_s(oper.to_f32()) };
+      }
+      [[gnu::always_inline]] inline void operator()(const i32_trunc_sat_f32_u_t& op) {
+         context.inc_pc();
+         auto& oper = context.peek_operand();
+         oper = i32_const_t{ _eosio_i32_trunc_sat_f32_u(oper.to_f32()) };
+      }
+      [[gnu::always_inline]] inline void operator()(const i32_trunc_sat_f64_s_t& op) {
+         context.inc_pc();
+         auto& oper = context.peek_operand();
+         oper = i32_const_t{ _eosio_i32_trunc_sat_f64_s(oper.to_f64()) };
+      }
+      [[gnu::always_inline]] inline void operator()(const i32_trunc_sat_f64_u_t& op) {
+         context.inc_pc();
+         auto& oper = context.peek_operand();
+         oper = i32_const_t{ _eosio_i32_trunc_sat_f64_u(oper.to_f64()) };
+      }
+      [[gnu::always_inline]] inline void operator()(const i64_trunc_sat_f32_s_t& op) {
+         context.inc_pc();
+         auto& oper = context.peek_operand();
+         oper = i64_const_t{ _eosio_i64_trunc_sat_f32_s(oper.to_f32()) };
+      }
+      [[gnu::always_inline]] inline void operator()(const i64_trunc_sat_f32_u_t& op) {
+         context.inc_pc();
+         auto& oper = context.peek_operand();
+         oper = i64_const_t{ _eosio_i64_trunc_sat_f32_u(oper.to_f32()) };
+      }
+      [[gnu::always_inline]] inline void operator()(const i64_trunc_sat_f64_s_t& op) {
+         context.inc_pc();
+         auto& oper = context.peek_operand();
+         oper = i64_const_t{ _eosio_i64_trunc_sat_f64_s(oper.to_f64()) };
+      }
+      [[gnu::always_inline]] inline void operator()(const i64_trunc_sat_f64_u_t& op) {
+         context.inc_pc();
+         auto& oper = context.peek_operand();
+         oper = i64_const_t{ _eosio_i64_trunc_sat_f64_u(oper.to_f64()) };
       }
       [[gnu::always_inline]] inline void operator()(const i32_extend8_s_t& op) {
          context.inc_pc();

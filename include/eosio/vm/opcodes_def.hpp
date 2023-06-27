@@ -288,6 +288,14 @@
    opcode_macro(elem_drop, 13)
 
 #define EOS_VM_EXT_OPS(opcode_macro)            \
+   opcode_macro(i32_trunc_sat_f32_s, 0)         \
+   opcode_macro(i32_trunc_sat_f32_u, 1)         \
+   opcode_macro(i32_trunc_sat_f64_s, 2)         \
+   opcode_macro(i32_trunc_sat_f64_u, 3)         \
+   opcode_macro(i64_trunc_sat_f32_s, 4)         \
+   opcode_macro(i64_trunc_sat_f32_u, 5)         \
+   opcode_macro(i64_trunc_sat_f64_s, 6)         \
+   opcode_macro(i64_trunc_sat_f64_u, 7)         \
    opcode_macro(memory_copy, 10)                \
    opcode_macro(memory_fill, 11)                \
    opcode_macro(table_copy, 14)

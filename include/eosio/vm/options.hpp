@@ -86,6 +86,8 @@ struct eosio_options {
 
    static constexpr bool enable_simd = false;
    static constexpr bool enable_bulk_memory = false;
+   static constexpr bool enable_nontrapping_fptoint = false;
+   static constexpr bool enable_sign_ext = false;
    
    static constexpr bool forbid_export_mutable_globals = true;
    static constexpr bool allow_code_after_function_end = true;

@@ -198,6 +198,7 @@ namespace eosio { namespace vm {
    PARSER_OPTION(enable_simd, true, bool)
    PARSER_OPTION(enable_bulk_memory, true, bool)
    PARSER_OPTION(enable_sign_ext, true, bool)
+   PARSER_OPTION(enable_nontrapping_fptoint, true, bool)
 
 #undef MAX_ELEMENTS
 #undef PARSER_OPTION
@@ -1731,6 +1732,23 @@ namespace eosio { namespace vm {
                case opcodes::ext_prefix: {
                   switch(parse_varuint32(code))
                   {
+#define TRUNC_SAT_OP(dest, src, sign)                                                   \
+                     case ext_opcodes::dest ## _trunc_sat_ ## src ## _ ## sign: {       \
+                        check_in_bounds();                                              \
+                        EOS_VM_ASSERT(detail::get_enable_nontrapping_fptoint(_options), wasm_parse_exception, "Non-trapping float-to-int conversions not enabled");\
+                        op_stack.pop(src);                                              \
+                        op_stack.push(dest);                                            \
+                        code_writer.emit_ ## dest ## _trunc_sat_ ## src ## _ ## sign(); \
+                     } break;
+                     TRUNC_SAT_OP(i32, f32, s)
+                     TRUNC_SAT_OP(i32, f32, u)
+                     TRUNC_SAT_OP(i32, f64, s)
+                     TRUNC_SAT_OP(i32, f64, u)
+                     TRUNC_SAT_OP(i64, f32, s)
+                     TRUNC_SAT_OP(i64, f32, u)
+                     TRUNC_SAT_OP(i64, f64, s)
+                     TRUNC_SAT_OP(i64, f64, u)
+#undef TRUNC_SAT_OP
                      case ext_opcodes::memory_init: {
                         EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
                         EOS_VM_ASSERT(_mod->memories.size() != 0, wasm_parse_exception, "memory.init requires memory");

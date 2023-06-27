@@ -274,6 +274,15 @@ namespace eosio { namespace vm {
       UNOP(f32_reinterpret_i32)
       UNOP(f64_reinterpret_i64)
 
+      UNOP(i32_trunc_sat_f32_s)
+      UNOP(i32_trunc_sat_f32_u)
+      UNOP(i32_trunc_sat_f64_s)
+      UNOP(i32_trunc_sat_f64_u)
+      UNOP(i64_trunc_sat_f32_s)
+      UNOP(i64_trunc_sat_f32_u)
+      UNOP(i64_trunc_sat_f64_s)
+      UNOP(i64_trunc_sat_f64_u)
+
       UNOP(i32_extend8_s)
       UNOP(i32_extend16_s)
       UNOP(i64_extend8_s)
