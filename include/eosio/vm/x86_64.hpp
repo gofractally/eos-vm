@@ -41,7 +41,7 @@ namespace eosio { namespace vm {
       }
    };
 
-#if 0
+#if 1
 #define COUNT_INSTR() do { emit_mov(instruction_counter::ptr<__LINE__>(), rax); emit(INC, *qword_ptr(rax)); } while(0)
 #else
 #define COUNT_INSTR() ((void)0)
@@ -4633,6 +4633,24 @@ namespace eosio { namespace vm {
          push_recent_op(start, generic_register_push_op{reg});
       }
 
+      void emit_push_v128(xmm_register reg) {
+         auto start = code;
+         emit_sub(16, rsp);
+         emit_vmovdqu(reg, *rsp);
+         push_recent_op(start, xmm_register_push_op{reg});
+      }
+
+      void emit_pop_v128(xmm_register reg) {
+         if (auto push = try_pop_recent_op<xmm_register_push_op>()) {
+            if (push->reg != reg) {
+               emit(VMOVDQU_A, push->reg, reg);
+            }
+            return;
+         }
+         emit_vmovdqu(*rsp, xmm0);
+         emit_add(16, rsp);
+      }
+
       void set_branch_target() {
          recent_ops[0] = {};
          recent_ops[1] = {};
@@ -5099,6 +5117,13 @@ namespace eosio { namespace vm {
       }
 
       template<int Sz, VEX_pp pp, VEX_mmmm mmmm, int W>
+      void emit(VEX<Sz, pp, mmmm, W> opcode, sib_memory_ref src1, xmm_register src2) {
+         emit_VEX_prefix(src2 & 8, src1.reg1 & 8, src1.reg2 & 8, mmmm, W, 0, Sz == 256, pp);
+         emit_bytes(opcode.opcode);
+         emit_modrm_sib_disp(src1, src2);
+      }
+
+      template<int Sz, VEX_pp pp, VEX_mmmm mmmm, int W>
       void emit(VEX<Sz, pp, mmmm, W> opcode, disp_memory_ref src1, xmm_register src2) {
          emit_VEX_prefix(src2 & 8, false, src1.reg & 8, mmmm, W, 0, Sz == 256, pp);
          emit_bytes(opcode.opcode);
@@ -5311,10 +5336,14 @@ namespace eosio { namespace vm {
          general_register64 reg;
       };
 
+      struct xmm_register_push_op {
+         xmm_register reg;
+      };
+
       struct recent_op_t {
          unsigned char* start;
          unsigned char* end;
-         std::variant<std::monostate, generic_register_push_op, get_local_op, i32_const_op> data;
+         std::variant<std::monostate, generic_register_push_op, get_local_op, i32_const_op, xmm_register_push_op> data;
       };
 
       // This is used to fold common instruction sequences
@@ -5514,6 +5543,17 @@ namespace eosio { namespace vm {
          }
       }
 
+      sib_memory_ref emit_pop_address(uint32_t offset, general_register64 out, general_register32 tmpreg) {
+         emit_pop(out);
+         if (offset & 0x80000000u) {
+            emit_mov(offset, tmpreg);
+            emit_add(static_cast<general_register64>(tmpreg), out);
+            return *(out + rsi + 0);
+         } else {
+            return *(out + rsi + offset);
+         }
+      }
+
       template<class I, class R>
       void emit_load_impl2(uint32_t offset, I instr, R reg) {
          emit_pop(rax);
@@ -5609,17 +5649,15 @@ namespace eosio { namespace vm {
       template<typename Op>
       void emit_v128_loadop(Op op, uint32_t /*align*/, uint32_t offset) {
          auto icount = simd_instr();
-         emit_pop_address(offset);
-         emit(op, *rax, xmm0);
-         emit_sub(16, rsp);
-         emit_vmovdqu(xmm0, *rsp);
+         auto expr = emit_pop_address(offset, rax, ecx);
+         emit(op, expr, xmm0);
+         emit_push_v128(xmm0);
       }
 
       template<typename Op>
       void emit_v128_load_laneop(Op op, uint32_t /*align*/, uint32_t offset, uint8_t lane) {
          auto icount = simd_instr();
-         emit_vmovdqu(*rsp, xmm0);
-         emit_add(16, rsp);
+         emit_pop_v128(xmm0);
          emit_pop_address(offset);
          emit(op, imm8{lane}, *rax, xmm0, xmm0);
          emit_sub(16, rsp);
