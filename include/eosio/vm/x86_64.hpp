@@ -41,10 +41,12 @@ namespace eosio { namespace vm {
       }
    };
 
-#if 1
+#if 0
 #define COUNT_INSTR() do { emit_mov(instruction_counter::ptr<__LINE__>(), rax); emit(INC, *qword_ptr(rax)); } while(0)
+#define COUNT_INSTR_NO_FLAGS() do { emit_mov(instruction_counter::ptr<__LINE__>(), rax); emit_mov(*rax, rcx); emit(LEA, *(rcx + 1), rcx); emit_mov(rcx, *rax); } while(0)
 #else
 #define COUNT_INSTR() ((void)0)
+#define COUNT_INSTR_NO_FLAGS() ((void)0)
 #endif
 
    // Random notes:
@@ -284,6 +286,10 @@ namespace eosio { namespace vm {
       void emit_block() {}
       void* emit_loop() { set_branch_target(); return code; }
       void* emit_if() {
+         if (auto cond = try_pop_recent_op<condition_op>()) {
+            COUNT_INSTR_NO_FLAGS();
+            return emit_branchcc32(reverse_condition(cond->branchop));
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(9);
          emit_pop(rax);
@@ -309,6 +315,19 @@ namespace eosio { namespace vm {
          return emit_branch_target32();
       }
       void* emit_br_if(uint32_t depth_change, uint8_t rt) {
+         if (auto cond = try_pop_recent_op<condition_op>()) {
+            COUNT_INSTR_NO_FLAGS(); // The previous flags are use be the conditional branch
+            if (is_simple_multipop(depth_change, rt)) {
+               return emit_branchcc32(cond->branchop);
+            } else {
+               void* skip = emit_branch8(reverse_condition(cond->branchop));
+               emit_multipop(depth_change, rt);
+               emit(JMP_32);
+               void* result = emit_branch_target32();
+               fix_branch8(skip, code);
+               return result;
+            }
+         }
          COUNT_INSTR();
          auto icount = variable_size_instr(9, 27);
          emit_pop(rax);
@@ -955,79 +974,71 @@ namespace eosio { namespace vm {
          emit_pop(rax);
          emit(XOR_A, ecx, ecx);
          emit(TEST, eax, eax);
+         auto start = code;
          emit(SETZ, cl);
          emit_push(rcx);
+         push_recent_op(start, condition_op{JZ});
       }
 
       // i32 relops
       void emit_i32_eq() {
          COUNT_INSTR();
          auto icount = fixed_size_instr(10);
-         // sete %dl
-         emit_i32_relop(0x94);
+         emit_i32_relop(JE);
       }
 
       void emit_i32_ne() {
          COUNT_INSTR();
          auto icount = fixed_size_instr(10);
-         // sete %dl
-         emit_i32_relop(0x95);
+         emit_i32_relop(JNE);
       }
 
       void emit_i32_lt_s() {
          COUNT_INSTR();
          auto icount = fixed_size_instr(10);
-         // setl %dl
-         emit_i32_relop(0x9c);
+         emit_i32_relop(JL);
       }
 
       void emit_i32_lt_u() {
          COUNT_INSTR();
          auto icount = fixed_size_instr(10);
-         // setl %dl
-         emit_i32_relop(0x92);
+         emit_i32_relop(JB);
       }
 
       void emit_i32_gt_s() {
          COUNT_INSTR();
          auto icount = fixed_size_instr(10);
-         // setg %dl
-         emit_i32_relop(0x9f);
+         emit_i32_relop(JG);
       }
 
       void emit_i32_gt_u() {
          COUNT_INSTR();
          auto icount = fixed_size_instr(10);
-         // seta %dl
-         emit_i32_relop(0x97);
+         emit_i32_relop(JA);
       }
 
       void emit_i32_le_s() {
          COUNT_INSTR();
          auto icount = fixed_size_instr(10);
-         // setle %dl
-         emit_i32_relop(0x9e);
+         emit_i32_relop(JLE);
       }
 
       void emit_i32_le_u() {
          COUNT_INSTR();
          auto icount = fixed_size_instr(10);
-         // setbe %dl
-         emit_i32_relop(0x96);
+         emit_i32_relop(JBE);
       }
 
       void emit_i32_ge_s() {
          COUNT_INSTR();
          auto icount = fixed_size_instr(10);
-         // setge %dl
-         emit_i32_relop(0x9d);
+         emit_i32_relop(JGE);
       }
 
       void emit_i32_ge_u() {
          COUNT_INSTR();
          auto icount = fixed_size_instr(10);
-         // setae %dl
-         emit_i32_relop(0x93);
+         emit_i32_relop(JAE);
       }
 
       void emit_i64_eqz() {
@@ -4788,14 +4799,17 @@ namespace eosio { namespace vm {
       static constexpr auto INC = IA32_WX(0xFF)/0;
       static constexpr auto INCD = IA32(0xFF)/0;
       // When adding jcc codes, verify that the rel8/rel32 versions are 7x and 0F 8x
-      static constexpr auto JA = Jcc{0x77};
-      static constexpr auto JAE = Jcc{0x73};
-      static constexpr auto JBE = Jcc{0x76};
-      static constexpr auto JNE = Jcc{0x75};
-      static constexpr auto JZ = Jcc{0x74};
-      static constexpr auto JNZ = Jcc{0x75};
       static constexpr auto JB = Jcc{0x72};
+      static constexpr auto JAE = Jcc{0x73};
+      static constexpr auto JE = Jcc{0x74};
+      static constexpr auto JZ = Jcc{0x74};
+      static constexpr auto JNE = Jcc{0x75};
+      static constexpr auto JNZ = Jcc{0x75};
+      static constexpr auto JBE = Jcc{0x76};
+      static constexpr auto JA = Jcc{0x77};
+      static constexpr auto JL = Jcc{0x7c};
       static constexpr auto JGE = Jcc{0x7d};
+      static constexpr auto JLE = Jcc{0x7e};
       static constexpr auto JG = Jcc{0x7f};
       static constexpr auto JMP_8 = IA32(0xeb);
       static constexpr auto JMP_32 = IA32(0xe9);
@@ -4830,6 +4844,23 @@ namespace eosio { namespace vm {
       //static constexpr auto XOR_B = IA32_WX_STORE(0x31);
       static constexpr auto XOR_imm8 = IA32_WX_imm8(0x83)/6;
       static constexpr auto XOR_imm32 = IA32_WX_imm32(0x81)/6;
+
+      static constexpr auto reverse_condition(Jcc opcode) {
+         switch(opcode.opcode) {
+         case JA.opcode: return JBE;
+         case JBE.opcode: return JA;
+         case JB.opcode: return JAE;
+         case JAE.opcode: return JB;
+         case JE.opcode: return JNE;
+         case JNE.opcode: return JE;
+         case JL.opcode: return JGE;
+         case JGE.opcode: return JL;
+         case JG.opcode: return JLE;
+         case JLE.opcode: return JG;
+         default: unimplemented();
+         }
+         __builtin_unreachable();
+      }
 
       enum VEX_mmmm { mmmm_none, mmmm_0F, mmmm_0F38, mmmm_0F3A };
       enum VEX_pp { pp_none, pp_66, pp_F3, pp_F2 };
@@ -5106,6 +5137,10 @@ namespace eosio { namespace vm {
          emit_operand(imm);
       }
 
+      void emit_setcc(Jcc opcode, general_register8 reg) {
+         emit(IA32(0x0f, 0x20 + opcode.opcode), reg);
+      }
+
       void* emit_branch8(Jcc opcode) {
          emit_bytes(opcode.opcode);
          return emit_branch_target8();
@@ -5340,10 +5375,14 @@ namespace eosio { namespace vm {
          xmm_register reg;
       };
 
+      struct condition_op {
+         Jcc branchop;
+      };
+
       struct recent_op_t {
          unsigned char* start;
          unsigned char* end;
-         std::variant<std::monostate, generic_register_push_op, get_local_op, i32_const_op, xmm_register_push_op> data;
+         std::variant<std::monostate, generic_register_push_op, get_local_op, i32_const_op, condition_op, xmm_register_push_op> data;
       };
 
       // This is used to fold common instruction sequences
@@ -5619,14 +5658,15 @@ namespace eosio { namespace vm {
          emit_bytes(static_cast<uint8_t>(storeop)...);;
       }
 
-      void emit_i32_relop(uint8_t opcode) {
+      void emit_i32_relop(Jcc opcode) {
          emit_pop(rax);
          emit_pop(rcx);
          emit(XOR_A, edx, edx);
          emit(CMP, eax, ecx);
-         // SETcc %dl
-         emit_bytes(0x0f, opcode, 0xc2);
+         auto start = code;
+         emit_setcc(opcode, dl);
          emit_push(rdx);
+         push_recent_op(start, condition_op{opcode});
       }
 
       template<class... T>
