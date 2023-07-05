@@ -206,6 +206,8 @@ namespace eosio { namespace vm {
       uint64_t                 maximum_stack    = 0;
       // The stack limit can be tracked as either frames or bytes
       bool                     stack_limit_is_bytes = false;
+      // Emulate eosio bugs
+      bool                     eosio_fp             = false;
       // If non-null, indicates that the parser encountered an error
       // that would prevent successful instantiation.  Must refer
       // to memory with static storage duration.

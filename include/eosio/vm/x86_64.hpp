@@ -1540,7 +1540,11 @@ namespace eosio { namespace vm {
       void emit_f32_ceil() {
          auto icount = softfloat_instr(12, 36, 54);
          if constexpr (use_softfloat) {
-            return emit_softfloat_unop(CHOOSE_FN(_eosio_f32_ceil<false>));
+            if (_mod.eosio_fp) {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f32_ceil<false>));
+            } else {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f32_ceil<true>));
+            }
          }
          // roundss 0b1010, (%rsp), %xmm0
          emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0x04, 0x24, 0x0a);
@@ -1551,7 +1555,11 @@ namespace eosio { namespace vm {
       void emit_f32_floor() {
          auto icount = softfloat_instr(12, 36, 54);
          if constexpr (use_softfloat) {
-            return emit_softfloat_unop(CHOOSE_FN(_eosio_f32_floor<false>));
+            if (_mod.eosio_fp) {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f32_floor<false>));
+            } else {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f32_floor<true>));
+            }
          }
          // roundss 0b1001, (%rsp), %xmm0
          emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0x04, 0x24, 0x09);
@@ -1562,7 +1570,11 @@ namespace eosio { namespace vm {
       void emit_f32_trunc() {
          auto icount = softfloat_instr(12, 36, 54);
          if constexpr (use_softfloat) {
-            return emit_softfloat_unop(CHOOSE_FN(_eosio_f32_trunc<false>));
+            if (_mod.eosio_fp) {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f32_trunc<false>));
+            } else {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f32_trunc<true>));
+            }
          }
          // roundss 0b1011, (%rsp), %xmm0
          emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0x04, 0x24, 0x0b);
@@ -1573,7 +1585,11 @@ namespace eosio { namespace vm {
       void emit_f32_nearest() {
          auto icount = softfloat_instr(12, 36, 54);
          if constexpr (use_softfloat) {
-            return emit_softfloat_unop(CHOOSE_FN(_eosio_f32_nearest<false>));
+            if (_mod.eosio_fp) {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f32_nearest<false>));
+            } else {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f32_nearest<true>));
+            }
          }
          // roundss 0b1000, (%rsp), %xmm0
          emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0x04, 0x24, 0x08);
@@ -1613,7 +1629,11 @@ namespace eosio { namespace vm {
       void emit_f32_min() {
          auto icount = softfloat_instr(47, 44, 58);
         if constexpr(use_softfloat) {
-           emit_f32_binop_softfloat(CHOOSE_FN(_eosio_f32_min<false>));
+           if (_mod.eosio_fp) {
+              emit_f32_binop_softfloat(CHOOSE_FN(_eosio_f32_min<false>));
+           } else {
+              emit_f32_binop_softfloat(CHOOSE_FN(_eosio_f32_min<true>));
+           }
            return;
         }
         // mov (%rsp), %eax
@@ -1646,7 +1666,11 @@ namespace eosio { namespace vm {
       void emit_f32_max() {
          auto icount = softfloat_instr(47, 44, 58);
         if(use_softfloat) {
-           emit_f32_binop_softfloat(CHOOSE_FN(_eosio_f32_max<false>));
+           if (_mod.eosio_fp) {
+              emit_f32_binop_softfloat(CHOOSE_FN(_eosio_f32_max<false>));
+           } else {
+              emit_f32_binop_softfloat(CHOOSE_FN(_eosio_f32_max<true>));
+           }
            return;
         }
         // mov (%rsp), %eax
@@ -1726,7 +1750,11 @@ namespace eosio { namespace vm {
       void emit_f64_ceil() {
          auto icount = softfloat_instr(12, 38, 56);
          if constexpr (use_softfloat) {
-            return emit_softfloat_unop(CHOOSE_FN(_eosio_f64_ceil<false>));
+            if (_mod.eosio_fp) {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f64_ceil<false>));
+            } else {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f64_ceil<true>));
+            }
          }
          // roundsd 0b1010, (%rsp), %xmm0
          emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0x04, 0x24, 0x0a);
@@ -1737,7 +1765,11 @@ namespace eosio { namespace vm {
       void emit_f64_floor() {
          auto icount = softfloat_instr(12, 38, 56);
          if constexpr (use_softfloat) {
-            return emit_softfloat_unop(CHOOSE_FN(_eosio_f64_floor<false>));
+            if (_mod.eosio_fp) {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f64_floor<false>));
+            } else {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f64_floor<true>));
+            }
          }
          // roundsd 0b1001, (%rsp), %xmm0
          emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0x04, 0x24, 0x09);
@@ -1748,7 +1780,11 @@ namespace eosio { namespace vm {
       void emit_f64_trunc() {
          auto icount = softfloat_instr(12, 38, 56);
          if constexpr (use_softfloat) {
-            return emit_softfloat_unop(CHOOSE_FN(_eosio_f64_trunc<false>));
+            if (_mod.eosio_fp) {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f64_trunc<false>));
+            } else {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f64_trunc<true>));
+            }
          }
          // roundsd 0b1011, (%rsp), %xmm0
          emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0x04, 0x24, 0x0b);
@@ -1759,7 +1795,11 @@ namespace eosio { namespace vm {
       void emit_f64_nearest() {
          auto icount = softfloat_instr(12, 38, 56);
          if constexpr (use_softfloat) {
-            return emit_softfloat_unop(CHOOSE_FN(_eosio_f64_nearest<false>));
+            if (_mod.eosio_fp) {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f64_nearest<false>));
+            } else {
+               return emit_softfloat_unop(CHOOSE_FN(_eosio_f64_nearest<true>));
+            }
          }
          // roundsd 0b1000, (%rsp), %xmm0
          emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0x04, 0x24, 0x08);
@@ -1799,7 +1839,11 @@ namespace eosio { namespace vm {
       void emit_f64_min() {
          auto icount = softfloat_instr(49, 47, 61);
          if(use_softfloat) {
-            emit_f64_binop_softfloat(CHOOSE_FN(_eosio_f64_min<false>));
+            if (_mod.eosio_fp) {
+               emit_f64_binop_softfloat(CHOOSE_FN(_eosio_f64_min<false>));
+            } else {
+               emit_f64_binop_softfloat(CHOOSE_FN(_eosio_f64_min<true>));
+            }
             return;
          }
          // mov (%rsp), %rax
@@ -1832,7 +1876,11 @@ namespace eosio { namespace vm {
       void emit_f64_max() {
          auto icount = softfloat_instr(49, 47, 61);
          if(use_softfloat) {
-            emit_f64_binop_softfloat(CHOOSE_FN(_eosio_f64_max<false>));
+            if (_mod.eosio_fp) {
+               emit_f64_binop_softfloat(CHOOSE_FN(_eosio_f64_max<false>));
+            } else {
+               emit_f64_binop_softfloat(CHOOSE_FN(_eosio_f64_max<true>));
+            }
             return;
          }
          // mov (%rsp), %rax
@@ -1927,7 +1975,11 @@ namespace eosio { namespace vm {
       void emit_i32_trunc_s_f64() {
          auto icount = softfloat_instr(34, 38, 56);
          if constexpr (use_softfloat) {
-            return emit_softfloat_unop(CHOOSE_FN(softfloat_trap<&_eosio_f64_trunc_i32s>()));
+            if (_mod.eosio_fp) {
+               return emit_softfloat_unop(CHOOSE_FN(softfloat_trap<&_eosio_f64_trunc_i32s<false>>()));
+            } else {
+               return emit_softfloat_unop(CHOOSE_FN(softfloat_trap<&_eosio_f64_trunc_i32s<true>>()));
+            }
          }
          // cvttsd2si 8(%rsp), %eax
          emit_f2i(0xf2, 0x0f, 0x2c, 0x44, 0x24, 0x08);
@@ -1951,6 +2003,22 @@ namespace eosio { namespace vm {
          // jnz FP_ERROR_HANDLER
          emit_bytes(0x0f, 0x85);
          fix_branch(emit_branch_target32(), fpe_handler);
+      }
+
+      void emit_i32_trunc_sat_f32_s() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i32_trunc_sat_f32_s));
+      }
+
+      void emit_i32_trunc_sat_f32_u() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i32_trunc_sat_f32_u));
+      }
+
+      void emit_i32_trunc_sat_f64_s() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i32_trunc_sat_f64_s));
+      }
+
+      void emit_i32_trunc_sat_f64_u() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i32_trunc_sat_f64_u));
       }
 
       void emit_i32_extend8_s() {
@@ -2098,6 +2166,22 @@ namespace eosio { namespace vm {
          // jc FP_ERROR_HANDLER
          emit_bytes(0x0f, 0x82);
          fix_branch(emit_branch_target32(), fpe_handler);
+      }
+
+      void emit_i64_trunc_sat_f32_s() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i64_trunc_sat_f32_s));
+      }
+
+      void emit_i64_trunc_sat_f32_u() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i64_trunc_sat_f32_u));
+      }
+
+      void emit_i64_trunc_sat_f64_s() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i64_trunc_sat_f64_s));
+      }
+
+      void emit_i64_trunc_sat_f64_u() {
+         emit_softfloat_unop(CHOOSE_FN(_eosio_i64_trunc_sat_f64_u));
       }
 
       void emit_f32_convert_s_i32() {

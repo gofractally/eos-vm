@@ -58,6 +58,12 @@ struct options {
    // Determines whether an local set of size 0 with an invalid type should be accepted.
    bool allow_invalid_empty_local_set = false;
    bool allow_zero_blocktype = false;
+   // Emulates the following eosio bugs:
+   // - i32.trunc_s_f64 traps for values in the range (INT_MIN, INT_MIN - 1)
+   // - f32.min, f32.max, f32.ceil, f32.floor, f32.trunc, f32.nearest,
+   //   f64.min, f64.max, f64.ceil, f64.floor, f64.trunc, f64.nearest
+   //   do not return an arithmetic nan when the argument is a non-arithmetic nan
+   bool eosio_fp = false;
    // Determines which components are counted towards max_function_local_bytes
    max_func_local_bytes_flags_t max_func_local_bytes_flags = max_func_local_bytes_flags_t::locals | max_func_local_bytes_flags_t::stack;
 };
@@ -86,12 +92,15 @@ struct eosio_options {
 
    static constexpr bool enable_simd = false;
    static constexpr bool enable_bulk_memory = false;
+   static constexpr bool enable_nontrapping_fptoint = false;
+   static constexpr bool enable_sign_ext = false;
    
    static constexpr bool forbid_export_mutable_globals = true;
    static constexpr bool allow_code_after_function_end = true;
    static constexpr bool allow_u32_limits_flags = true;
    static constexpr bool allow_invalid_empty_local_set = true;
    static constexpr bool allow_zero_blocktype = true;
+   static constexpr bool eosio_fp = true;
 };
 
 }}

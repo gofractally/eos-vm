@@ -115,8 +115,8 @@ inline float _eosio_f32_ceil( float af ) {
    float32_t a = to_softfloat32(af);
    int e = (int)(a.v >> 23 & 0xFF) - 0X7F;
    uint32_t m;
-   if (is_nan(a)) {
-      return from_softfloat32({ a.v | 0x00400000 });
+   if (ArithNan && is_nan(a)) {
+      return from_softfloat32(propagate_nan<ArithNan>(a));
    }
    if (e >= 23)
       return af;
@@ -440,9 +440,14 @@ inline int32_t _eosio_f32_trunc_i32s( float af ) {
    return f32_to_i32( to_softfloat32(_eosio_f32_trunc<false>( af )), 0, false );
 }
 
+template<bool FixedBound>
 inline int32_t _eosio_f64_trunc_i32s( double af ) {
    float64_t a = to_softfloat64(af);
-   EOS_VM_ASSERT(!(_eosio_f64_ge(af, 2147483648.0) || _eosio_f64_lt(af, -2147483648.0)), wasm_interpreter_exception, "Error, f64.convert_s/i32 overflow");
+   if constexpr (FixedBound) {
+      EOS_VM_ASSERT(!(_eosio_f64_ge(af, 2147483648.0) || _eosio_f64_le(af, -2147483649.0)), wasm_interpreter_exception, "Error, f64.convert_s/i32 overflow");
+   } else {
+      EOS_VM_ASSERT(!(_eosio_f64_ge(af, 2147483648.0) || _eosio_f64_lt(af, -2147483648.0)), wasm_interpreter_exception, "Error, f64.convert_s/i32 overflow");
+   }
    EOS_VM_ASSERT(!is_nan(a), wasm_interpreter_exception, "Error, f64.convert_s/i32 unrepresentable");
    return f64_to_i32( to_softfloat64(_eosio_f64_trunc<false>( af )), 0, false );
 }
@@ -576,6 +581,62 @@ inline uint32_t _eosio_i32_trunc_sat_f64_u( double af ){
       return 0;
    }
    return f64_to_ui32_r_minMag(a, false);
+}
+
+inline int64_t _eosio_i64_trunc_sat_f32_s( float af ){
+   float32_t a = to_softfloat32(af);
+   if(is_nan(a)) {
+      return 0;
+   }
+   if(_eosio_f32_ge(af, 0x1p63f)) {
+      return INT64_MAX;
+   }
+   if(_eosio_f32_lt(af, -0x1p63f)) {
+      return INT64_MIN;
+   }
+   return f32_to_i64_r_minMag(a, false);
+}
+
+inline uint64_t _eosio_i64_trunc_sat_f32_u( float af ){
+   float32_t a = to_softfloat32(af);
+   if(is_nan(a)) {
+      return 0;
+   }
+   if(_eosio_f32_ge(af, 0x1p64f)) {
+      return UINT64_MAX;
+   }
+   if(_eosio_f32_le(af, -1.0f)) {
+      return 0;
+   }
+   return f32_to_ui64_r_minMag(a, false);
+}
+
+inline int64_t _eosio_i64_trunc_sat_f64_s( double af ){
+   float64_t a = to_softfloat64(af);
+   if(is_nan(a)) {
+      return 0;
+   }
+   if(_eosio_f64_ge(af, 0x1p63)) {
+      return INT64_MAX;
+   }
+   if(_eosio_f64_lt(af, -0x1p63)) {
+      return INT64_MIN;
+   }
+   return f64_to_i64_r_minMag(a, false);
+}
+
+inline uint64_t _eosio_i64_trunc_sat_f64_u( double af ){
+   float64_t a = to_softfloat64(af);
+   if(is_nan(a)) {
+      return 0;
+   }
+   if(_eosio_f64_ge(af, 0x1p64)) {
+      return UINT64_MAX;
+   }
+   if(_eosio_f64_le(af, -1.0)) {
+      return 0;
+   }
+   return f64_to_ui64_r_minMag(a, false);
 }
 
 template<typename F, typename R, typename... T>
