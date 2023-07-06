@@ -720,67 +720,56 @@ namespace eosio { namespace vm {
 
       void emit_i32_store(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(7, 15);
-         // movl ECX, (RAX)
-         //emit_store_impl(offset, 0x89, 0x08);
+         auto icount = variable_size_instr(5, 13);
          emit_store_impl2(offset, MOV_B, eax);
       }
 
       void emit_i64_store(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(8, 16);
-         // movl ECX, (RAX)
-         emit_store_impl(offset, 0x48, 0x89, 0x08);
+         auto icount = variable_size_instr(6, 14);
+         emit_store_impl2(offset, MOV_B, rax);
       }
 
       void emit_f32_store(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(7, 15);
-         // movl ECX, (RAX)
-         emit_store_impl(offset, 0x89, 0x08);
+         auto icount = variable_size_instr(5, 13);
+         emit_store_impl2(offset, MOV_B, eax);
       }
 
       void emit_f64_store(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(8, 16);
-         // movl ECX, (RAX)
-         emit_store_impl(offset, 0x48, 0x89, 0x08);
+         auto icount = variable_size_instr(6, 14);
+         emit_store_impl2(offset, MOV_B, rax);
       }
 
       void emit_i32_store8(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(7, 15);
-         // movb CL, (RAX)
-         //emit_store_impl(offset, 0x88, 0x08);
+         auto icount = variable_size_instr(5, 13);
          emit_store_impl2(offset, MOVB_B, al);
       }
 
       void emit_i32_store16(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(8, 16);
-         // movb CX, (RAX)
-         emit_store_impl(offset, 0x66, 0x89, 0x08);
+         auto icount = variable_size_instr(6, 14);
+         emit_store_impl2(offset, MOVW_B, ax);
       }
 
       void emit_i64_store8(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(7, 15);
-         // movb CL, (RAX)
-         emit_store_impl(offset, 0x88, 0x08);
+         auto icount = variable_size_instr(5, 13);
+         emit_store_impl2(offset, MOVB_B, al);
       }
 
       void emit_i64_store16(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(8, 16);
-         // movb CX, (RAX)
-         emit_store_impl(offset, 0x66, 0x89, 0x08);
+         auto icount = variable_size_instr(6, 14);
+         emit_store_impl2(offset, MOVW_B, ax);
       }
 
       void emit_i64_store32(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(7, 15);
-         // movl ECX, (RAX)
-         emit_store_impl(offset, 0x89, 0x08);
+         auto icount = variable_size_instr(5, 13);
+         emit_store_impl2(offset, MOV_B, eax);
       }
 
       void emit_current_memory() {
@@ -4803,6 +4792,7 @@ namespace eosio { namespace vm {
       static constexpr auto LEAVE = IA32(0xc9);
       static constexpr auto MOVB_A = IA32(0x8a);
       static constexpr auto MOVB_B = IA32(0x88);
+      static constexpr auto MOVW_B = IA32(0x66, 0x89);
       static constexpr auto MOV_A = IA32_WX(0x8b);
       static constexpr auto MOV_B = IA32_WX(0x89);
       static constexpr auto MOVZXB = IA32(0x0f, 0xb6);
@@ -5579,6 +5569,7 @@ namespace eosio { namespace vm {
          }
       }
 
+      // reg should be rax, eax, ax, or al
       template<class I, class R>
       void emit_load_impl2(uint32_t offset, I instr, R reg) {
          auto addr = emit_pop_address(offset, rax, ecx);
@@ -5586,17 +5577,12 @@ namespace eosio { namespace vm {
          emit_push(rax);
       }
 
+      // rax holds the value to be stored
       template<class I, class R>
       void emit_store_impl2(uint32_t offset, I instr, R reg) {
          emit_pop(rax);
-         emit_pop(rcx);
-         if (offset & 0x80000000) {
-            emit_mov(offset, edx);
-            emit_add(rdx, rcx);
-            emit(instr, *(rcx + rsi), reg);
-         } else {
-            emit(instr, *(rcx + rsi + offset), reg);
-         }
+         auto addr = emit_pop_address(offset, rcx, edx);
+         emit(instr, addr, reg);
       }
 
       // pops an i32 wasm address off the stack
@@ -5618,15 +5604,6 @@ namespace eosio { namespace vm {
          }
          // add %rsi, %rax
          emit_bytes(0x48, 0x01, 0xf0);
-      }
-
-      template<class... T>
-      void emit_store_impl(uint32_t offset, T... storeop) {
-         // pop RCX
-         emit_bytes(0x59);
-         emit_pop_address(offset);
-         // from the caller
-         emit_bytes(static_cast<uint8_t>(storeop)...);;
       }
 
       void emit_i32_relop(Jcc opcode) {
