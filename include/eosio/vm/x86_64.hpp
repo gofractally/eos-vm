@@ -559,7 +559,7 @@ namespace eosio { namespace vm {
 
       void emit_tee_local(uint32_t local_idx, uint8_t type) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(8, 13);
+         auto icount = variable_size_instr(5, 13);
          auto addr = *(rbp + get_frame_offset(local_idx));
          if (type != types::v128) {
             emit_pop(rax);
@@ -1467,7 +1467,7 @@ namespace eosio { namespace vm {
          auto icount = fixed_size_instr(5);
          emit_pop(rax);
          emit_pop(rcx);
-         emit(OR_A, rcx, rax);
+         emit(OR_A, ecx, eax);
          emit_push(rax);
       }
       void emit_i32_xor() {
@@ -2285,11 +2285,11 @@ namespace eosio { namespace vm {
 
       void emit_i64_extend32_s() {
          COUNT_INSTR();
-         auto icount = fixed_size_instr(7);
+         auto icount = fixed_size_instr(8);
          emit(MOVSXD, *rsp, rax);
          emit_mov(rax, *rsp);
       }
-      
+
       void emit_i64_trunc_s_f32() {
          COUNT_INSTR();
          auto icount = softfloat_instr(35, 37, 55);
@@ -4597,8 +4597,9 @@ namespace eosio { namespace vm {
       }
 
       void emit_pop(general_register64 reg) {
+#ifndef EOS_VM_VALIDATE_JIT_SIZE
          if (auto c = try_pop_recent_op<i32_const_op>()) {
-            emit_mov(c->value, reg);
+            emit_mov(c->value, static_cast<general_register32>(reg));
             return;
          }
          if (auto push = try_undo_push()) {
@@ -4607,6 +4608,7 @@ namespace eosio { namespace vm {
             }
             return;
          }
+#endif
          emit_REX_prefix(false, false, false, reg & 8);
          emit_bytes(0x58 | (reg & 7));
       }
