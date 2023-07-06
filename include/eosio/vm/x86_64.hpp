@@ -53,14 +53,15 @@ namespace eosio { namespace vm {
    // - branch instructions return the address that will need to be updated
    // - label instructions return the address of the target
    // - fix_branch will be called when the branch target is resolved
-   // - It would make everything more efficient to make RAX always represent the top of
-   //   the stack.
+   // - parameters and locals are accessed relative to rbp. stack items
+   //   are pushed and popped.
+   // - Some sequences of instructions can be folded. Up to two previous
+   //   instructions are tracked.
    //
    // - The base of memory is stored in rsi
    // - rdi hold the execution context
    // - rbx holds the remaining stack frames
    //
-   // - FIXME: Factor the machine instructions into a separate assembler class.
    template<typename Context, bool StackLimitIsBytes>
    class machine_code_writer {
     public:
@@ -635,102 +636,86 @@ namespace eosio { namespace vm {
 
       void emit_i32_load(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(7, 15);
-         // movl (RAX), EAX
-         //emit_load_impl(offset, 0x8b, 0x00);
+         auto icount = variable_size_instr(5, 13);
          emit_load_impl2(offset, MOV_A, eax);
       }
 
       void emit_i64_load(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(8, 16);
-         // movq (RAX), RAX
-         emit_load_impl(offset, 0x48, 0x8b, 0x00);
+         auto icount = variable_size_instr(6, 14);
+         emit_load_impl2(offset, MOV_A, rax);
       }
 
       void emit_f32_load(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(7, 15);
-         // movl (RAX), EAX
-         emit_load_impl(offset, 0x8b, 0x00);
+         auto icount = variable_size_instr(5, 13);
+         emit_load_impl2(offset, MOV_A, eax);
       }
 
       void emit_f64_load(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(8, 16);
-         // movq (RAX), RAX
-         emit_load_impl(offset, 0x48, 0x8b, 0x00);
+         auto icount = variable_size_instr(6, 14);
+         emit_load_impl2(offset, MOV_A, rax);
       }
 
       void emit_i32_load8_s(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(8, 16);
-         // movsbl (RAX), EAX; 
-         emit_load_impl(offset, 0x0F, 0xbe, 0x00);
+         auto icount = variable_size_instr(6, 14);
+         emit_load_impl2(offset, MOVSXB, eax);
       }
 
       void emit_i32_load16_s(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(8, 16);
-         // movswl (RAX), EAX; 
-         emit_load_impl(offset, 0x0F, 0xbf, 0x00);
+         auto icount = variable_size_instr(6, 14);
+         emit_load_impl2(offset, MOVSXW, eax);
       }
 
       void emit_i32_load8_u(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(8, 16);
-         // movzbl (RAX), EAX; 
-         //emit_load_impl(offset, 0x0f, 0xb6, 0x00);
-         emit_load_impl2(offset, MOVZB, eax);
+         auto icount = variable_size_instr(6, 14);
+         emit_load_impl2(offset, MOVZXB, eax);
       }
 
       void emit_i32_load16_u(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(8, 16);
-         // movzwl (RAX), EAX; 
-         emit_load_impl(offset, 0x0f, 0xb7, 0x00);
+         auto icount = variable_size_instr(6, 14);
+         emit_load_impl2(offset, MOVZXW, eax);
       }
 
       void emit_i64_load8_s(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(9, 17);
-         // movsbq (RAX), RAX; 
-         emit_load_impl(offset, 0x48, 0x0F, 0xbe, 0x00);
+         auto icount = variable_size_instr(7, 15);
+         emit_load_impl2(offset, MOVSXB, rax);
       }
 
       void emit_i64_load16_s(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(9, 17);
-         // movswq (RAX), RAX; 
-         emit_load_impl(offset, 0x48, 0x0F, 0xbf, 0x00);
+         auto icount = variable_size_instr(7, 15);
+         emit_load_impl2(offset, MOVSXW, rax);
       }
 
       void emit_i64_load32_s(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(8, 16);
-         // movslq (RAX), RAX
-         emit_load_impl(offset, 0x48, 0x63, 0x00);
+         auto icount = variable_size_instr(6, 14);
+         emit_load_impl2(offset, MOVSXD, rax);
       }
 
       void emit_i64_load8_u(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(8, 16);
-         // movzbl (RAX), EAX; 
-         emit_load_impl(offset, 0x0f, 0xb6, 0x00);
+         auto icount = variable_size_instr(6, 14);
+         emit_load_impl2(offset, MOVZXB, eax);
       }
 
       void emit_i64_load16_u(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(8, 16);
-         // movzwl (RAX), EAX; 
-         emit_load_impl(offset, 0x0f, 0xb7, 0x00);
+         auto icount = variable_size_instr(6, 14);
+         emit_load_impl2(offset, MOVZXW, eax);
       }
 
      void emit_i64_load32_u(uint32_t /*alignment*/, uint32_t offset) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(7, 15);
-         // movl (RAX), EAX
-         emit_load_impl(offset, 0x8b, 0x00);
+         auto icount = variable_size_instr(5, 13);
+         emit_load_impl2(offset, MOV_A, eax);
       }
 
       void emit_i32_store(uint32_t /*alignment*/, uint32_t offset) {
@@ -4820,7 +4805,8 @@ namespace eosio { namespace vm {
       static constexpr auto MOVB_B = IA32(0x88);
       static constexpr auto MOV_A = IA32_WX(0x8b);
       static constexpr auto MOV_B = IA32_WX(0x89);
-      static constexpr auto MOVZB = IA32(0x0f, 0xb6);
+      static constexpr auto MOVZXB = IA32(0x0f, 0xb6);
+      static constexpr auto MOVZXW = IA32_WX(0x0f, 0xb7);
       static constexpr auto MOVSXB = IA32_WX(0x0f, 0xbe);
       static constexpr auto MOVSXW = IA32_WX(0x0f, 0xbf);
       static constexpr auto MOVSXD = IA32_WX(0x63);
@@ -5595,14 +5581,8 @@ namespace eosio { namespace vm {
 
       template<class I, class R>
       void emit_load_impl2(uint32_t offset, I instr, R reg) {
-         emit_pop(rax);
-         if (offset & 0x80000000) {
-            emit_mov(offset, ecx);
-            emit_add(rcx, rax);
-            emit(instr, *(rax + rsi), reg);
-         } else {
-            emit(instr, *(rax + rsi + offset), reg);
-         }
+         auto addr = emit_pop_address(offset, rax, ecx);
+         emit(instr, addr, reg);
          emit_push(rax);
       }
 
@@ -5638,15 +5618,6 @@ namespace eosio { namespace vm {
          }
          // add %rsi, %rax
          emit_bytes(0x48, 0x01, 0xf0);
-      }
-
-      template<class... T>
-      void emit_load_impl(uint32_t offset, T... loadop) {
-         emit_pop_address(offset);
-         // from the caller
-         emit_bytes(static_cast<uint8_t>(loadop)...);
-         // push RAX
-         emit_bytes(0x50);
       }
 
       template<class... T>
