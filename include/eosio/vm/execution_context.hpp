@@ -682,6 +682,14 @@ namespace eosio { namespace vm {
          if constexpr (!Should_Exit)
             return_pc = _state.pc + 1;
 
+         if (index < _mod.get_imported_functions_size())
+         {
+            if (!_mod.stack_limit_is_bytes)
+            {
+               this->_remaining_call_depth -= 1;
+            }
+         }
+         else
          {
             std::uint32_t frame_size = _mod.code[index - _mod.get_imported_functions_size()].stack_size;
             EOS_VM_ASSERT (frame_size <= this->_remaining_call_depth, wasm_interpreter_exception, "stack overflow");
