@@ -617,7 +617,6 @@
 
 #define EOS_VM_CREATE_TYPES(name, code)                                                                                \
    struct EOS_VM_OPCODE_T(name) {                                                                                      \
-      EOS_VM_OPCODE_T(name)() = default;                                                                               \
       static constexpr uint8_t opcode = code;                                                                          \
    };
 

@@ -66,16 +66,16 @@ namespace eosio { namespace vm {
    class machine_code_writer {
     public:
       machine_code_writer(growable_allocator& alloc, std::size_t source_bytes, module& mod) :
-         _mod(mod), _code_segment_base(alloc.start_code()) {
-         _code_start = _mod.allocator.alloc<unsigned char>(128);
+         _mod(mod), _allocator(alloc), _code_segment_base(_allocator.start_code()) {
+         _code_start = _allocator.alloc<unsigned char>(128);
          _code_end = _code_start + 128;
          code = _code_start;
          emit_sysv_abi_interface();
          assert(code <= _code_end);
-         _mod.allocator.reclaim(code, _code_end - code);
+         _allocator.reclaim(code, _code_end - code);
 
          const std::size_t code_size = 5 * 16; // 5 error handlers, each is 16 bytes.
-         _code_start = _mod.allocator.alloc<unsigned char>(code_size);
+         _code_start = _allocator.alloc<unsigned char>(code_size);
          _code_end = _code_start + code_size;
          code = _code_start;
 
@@ -91,7 +91,7 @@ namespace eosio { namespace vm {
          // emit host functions
          const uint32_t num_imported = mod.get_imported_functions_size();
          const std::size_t host_functions_size = (42 + 10 * Context::async_backtrace()) * num_imported;
-         _code_start = _mod.allocator.alloc<unsigned char>(host_functions_size);
+         _code_start = _allocator.alloc<unsigned char>(host_functions_size);
          _code_end = _code_start + host_functions_size;
          // code already set
          for(uint32_t i = 0; i < num_imported; ++i) {
@@ -101,7 +101,7 @@ namespace eosio { namespace vm {
          assert(code == _code_end);
       }
       ~machine_code_writer() {
-         _mod.allocator.end_code<true>(_code_segment_base);
+         _allocator.end_code<true>(_code_segment_base);
          for (auto& elem : _mod.elements) {
             for (auto& entry : elem.elems) {
                void* addr;
@@ -194,7 +194,7 @@ namespace eosio { namespace vm {
          // FIXME: This is not a tight upper bound
          const std::size_t instruction_size_ratio_upper_bound = use_softfloat?(Context::async_backtrace()?63:49):79;
          std::size_t code_size = max_prologue_size + _mod.code[funcnum].size * instruction_size_ratio_upper_bound + max_epilogue_size;
-         _code_start = _mod.allocator.alloc<unsigned char>(code_size);
+         _code_start = _allocator.alloc<unsigned char>(code_size);
          _code_end = _code_start + code_size;
          code = _code_start;
          start_function(code, funcnum + _mod.get_imported_functions_size());
@@ -575,48 +575,64 @@ namespace eosio { namespace vm {
       }
 
       void emit_get_global(uint32_t globalidx) {
-         COUNT_INSTR();
-         auto icount = variable_size_instr(13, 23);
+         auto icount = variable_size_instr(24, 42); // emit_setup_backtrace can be 0 or 9, and emit_restore_backtrace 0 or 9, the total of the rest 24
          auto& gl = _mod.globals[globalidx];
-         void *ptr = &gl.current.value;
+         emit_setup_backtrace();
+         // pushq %rdi -- save %rdi content onto stack
+         emit_bytes(0x57);
+         // pushq %rsi -- save %rsi content onto stack
+         emit_bytes(0x56);
+         // movq $globalidx, %rsi -- pass globalidx to %rsi, the second argument
+         emit_bytes(0x48, 0xc7, 0xc6);
+         emit_operand32(globalidx);
+         // movabsq $get_global, %rax
+         emit_bytes(0x48, 0xb8);
          switch(gl.type.content_type) {
-          case types::i32:
-          case types::f32:
-            emit_mov(ptr, rax);
-            emit_mov(*rax, eax);
-            emit_push(rax);
-            break;
-          case types::i64:
-          case types::f64:
-            emit_mov(ptr, rax);
-            emit_mov(*rax, rax);
-            emit_push(rax);
-            break;
-          case types::v128:
-            emit_mov(ptr, rax);
-            emit_vmovups(*rax, xmm0);
-            emit_push_v128(xmm0);
-            break;
+            case types::i32: emit_operand_ptr(&get_global_i32); break;
+            case types::i64: emit_operand_ptr(&get_global_i64); break;
+            case types::f32: emit_operand_ptr(&get_global_f32); break;
+            case types::f64: emit_operand_ptr(&get_global_f64); break;
          }
+         // call *%rax
+         emit_bytes(0xff, 0xd0);
+         // pop %rsi
+         emit_bytes(0x5e);
+         // pop %rdi
+         emit_bytes(0x5f);
+         emit_restore_backtrace();
+         // push %rax -- return result
+         emit_bytes(0x50);
       }
+
       void emit_set_global(uint32_t globalidx) {
-         COUNT_INSTR();
-         auto icount = variable_size_instr(13, 23);
+         auto icount = variable_size_instr(24, 42); // emit_setup_backtrace can be 0 or 9, and emit_restore_backtrace 0 or 9, the total of the rest 24
          auto& gl = _mod.globals[globalidx];
-         void *ptr = &gl.current.value;
-         if(gl.type.content_type != types::v128) {
-            emit_pop(rax);
-            emit_mov(ptr, rcx);
-            if (gl.type.content_type == types::i32 || gl.type.content_type == types::f32) {
-               emit_mov(eax, *rcx);
-            } else {
-               emit_mov(rax, *rcx);
-            }
-         } else {
-            emit_pop_v128(xmm0);
-            emit_mov(ptr, rax);
-            emit_vmovups(xmm0, *rax);
+         // popq %rdx -- pass global value to %rdx, the third argument in set_global
+         emit_bytes(0x5a);
+         emit_setup_backtrace();
+         // pushq %rdi -- save %rdi content onto stack
+         emit_bytes(0x57);
+         // pushq %rsi -- save %rsi content onto stack
+         emit_bytes(0x56);
+         // movq $globalidx, %rsi -- pass globalidx to %rsi, the second argument
+         emit_bytes(0x48, 0xc7, 0xc6);
+         emit_operand32(globalidx);
+         // movabsq $set_global, %rax
+         emit_bytes(0x48, 0xb8);
+         //emit_operand_ptr(&set_global);
+         switch(gl.type.content_type) {
+            case types::i32: emit_operand_ptr(&set_global_i32); break;
+            case types::i64: emit_operand_ptr(&set_global_i64); break;
+            case types::f32: emit_operand_ptr(&set_global_f32); break;
+            case types::f64: emit_operand_ptr(&set_global_f64); break;
          }
+         // call *%rax
+         emit_bytes(0xff, 0xd0);
+         // pop %rsi
+         emit_bytes(0x5e);
+         // pop %rdi
+         emit_bytes(0x5f);
+         emit_restore_backtrace();
       }
 
       void emit_i32_load(uint32_t /*alignment*/, uint32_t offset) {
@@ -4261,7 +4277,7 @@ namespace eosio { namespace vm {
 
       using fn_type = native_value(*)(void* context, void* memory);
       void finalize(function_body& body) {
-         _mod.allocator.reclaim(code, _code_end - code);
+         _allocator.reclaim(code, _code_end - code);
          body.jit_code_offset = _code_start - (unsigned char*)_code_segment_base;
       }
 
@@ -5285,6 +5301,7 @@ namespace eosio { namespace vm {
       }
 
       module& _mod;
+      growable_allocator& _allocator;
       void * _code_segment_base;
       const func_type* _ft;
       function_parameters _params;
@@ -6252,6 +6269,33 @@ namespace eosio { namespace vm {
       }
 
       static void on_memory_error() { throw_<wasm_memory_exception>("wasm memory out-of-bounds"); }
+
+      static int32_t get_global_i32(Context* context /*rdi*/, uint32_t index /*rsi*/) {
+         return context->get_global_i32(index);
+      }
+      static int64_t get_global_i64(Context* context /*rdi*/, uint32_t index /*rsi*/) {
+         return context->get_global_i64(index);
+      }
+      static uint32_t get_global_f32(Context* context /*rdi*/, uint32_t index /*rsi*/) {
+         return context->get_global_f32(index);
+      }
+      static uint64_t get_global_f64(Context* context /*rdi*/, uint32_t index /*rsi*/) {
+         return context->get_global_f64(index);
+      }
+
+      static void set_global_i32(Context* context /*rdi*/, uint32_t index /*rsi*/, int32_t value /*rdx*/) {
+         context->set_global_i32(index, value);
+      }
+      static void set_global_i64(Context* context /*rdi*/, uint32_t index /*rsi*/, int64_t value /*rdx*/) {
+         context->set_global_i64(index, value);
+      }
+      static void set_global_f32(Context* context /*rdi*/, uint32_t index /*rsi*/, uint32_t value /*rdx*/) {
+         context->set_global_f32(index, value);
+      }
+      static void set_global_f64(Context* context /*rdi*/, uint32_t index /*rsi*/, uint64_t value /*rdx*/) {
+         context->set_global_f64(index, value);
+      }
+
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>( "unreachable" ); }
       static void on_fp_error() { vm::throw_<wasm_interpreter_exception>( "floating point error" ); }
       static void on_call_indirect_error() { vm::throw_<wasm_interpreter_exception>( "call_indirect out of range" ); }
