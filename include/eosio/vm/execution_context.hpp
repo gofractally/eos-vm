@@ -638,9 +638,13 @@ namespace eosio { namespace vm {
             const auto& ft = _mod.types[_mod.imports[index].type.func_t];
             type_check(ft);
             inc_pc();
+            std::uint32_t frame_size = _mod.get_function_stack_size(index);
+            EOS_VM_ASSERT (frame_size <= _remaining_call_depth, wasm_interpreter_exception, "stack overflow");
+            _remaining_call_depth -= frame_size;
             push_call( activation_frame{ nullptr, 0 } );
             _rhf(_state.host, get_interface(), _mod.import_functions[index]);
             pop_call();
+            _remaining_call_depth += frame_size;
          } else {
             // const auto& ft = _mod.types[_mod.functions[index - _mod.get_imported_functions_size()]];
             // type_check(ft);
@@ -682,18 +686,10 @@ namespace eosio { namespace vm {
          if constexpr (!Should_Exit)
             return_pc = _state.pc + 1;
 
-         if (index < _mod.get_imported_functions_size())
          {
-            if (!_mod.stack_limit_is_bytes)
-            {
-               this->_remaining_call_depth -= 1;
-            }
-         }
-         else
-         {
-            std::uint32_t frame_size = _mod.code[index - _mod.get_imported_functions_size()].stack_size;
-            EOS_VM_ASSERT (frame_size <= this->_remaining_call_depth, wasm_interpreter_exception, "stack overflow");
-            this->_remaining_call_depth -= frame_size;
+            std::uint32_t frame_size = _mod.get_function_stack_size(index);
+            EOS_VM_ASSERT (frame_size <= _remaining_call_depth, wasm_interpreter_exception, "stack overflow");
+            _remaining_call_depth -= frame_size;
          }
 
          _as.push( activation_frame{ return_pc, _last_op_index } );
@@ -709,7 +705,7 @@ namespace eosio { namespace vm {
          else
             eat_operands(get_operand_stack().size() - num_locals);
          {
-            this->_remaining_call_depth += frame_size;
+            _remaining_call_depth += frame_size;
          }
       }
       inline operand_stack_elem  pop_operand() { return get_operand_stack().pop(); }
@@ -851,6 +847,7 @@ namespace eosio { namespace vm {
                        "cannot execute function, function not found");
 
          auto last_last_op_index = _last_op_index;
+         auto saved_call_depth   = _remaining_call_depth;
 
          // save the state of the original calling context
          execution_state saved_state = _state;
@@ -865,6 +862,8 @@ namespace eosio { namespace vm {
             _state = saved_state;
 
             _last_op_index = last_last_op_index;
+
+            _remaining_call_depth = saved_call_depth;
          });
 
          this->type_check_args(_mod.get_function_type(func_index), static_cast<Args&&>(args)...);
