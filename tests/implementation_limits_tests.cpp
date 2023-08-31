@@ -50,6 +50,9 @@ BACKEND_TEST_CASE( "Test call depth", "[call_depth]") {
    CHECK_THROWS_AS(bkend.call("env", "call.host", (uint32_t)250), std::exception);
    CHECK(!bkend.call_with_return("env", "call.indirect.host", (uint32_t)249));
    CHECK_THROWS_AS(bkend.call("env", "call.indirect.host", (uint32_t)250), std::exception);
+   // Ensure that the stack is correctly popped
+   CHECK(bkend.call("env", "call.twice", (uint32_t)249, (uint32_t)249));
+   CHECK_THROWS_AS(bkend.call("env", "call.twice", (uint32_t)249, (uint32_t)250), std::exception);
 }
 
 BACKEND_TEST_CASE( "Test call depth dynamic", "[call_depth]") {

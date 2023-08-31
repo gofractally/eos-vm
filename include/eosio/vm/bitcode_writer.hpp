@@ -419,7 +419,7 @@ namespace eosio { namespace vm {
       guarded_vector<opcode> fb;
       module* _mod;
       std::size_t _base_offset = 0;
-      std::uint32_t stack_usage = 0;
+      std::uint32_t stack_usage = 1;
    };
 
 }}

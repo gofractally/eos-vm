@@ -247,6 +247,16 @@ namespace eosio { namespace vm {
          return types[functions[index - get_imported_functions_size()]];
       }
 
+      uint32_t get_function_stack_size(uint32_t index) const {
+         if (!stack_limit_is_bytes) {
+            return 1;
+         } else if (index < get_imported_functions_size()) {
+            return 0;
+         } else {
+            return code[index - get_imported_functions_size()].stack_size;
+         }
+      }
+
       uint32_t get_exported_function(const std::string_view str) {
          uint32_t index = std::numeric_limits<uint32_t>::max();
          for (uint32_t i = 0; i < exports.size(); i++) {
