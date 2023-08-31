@@ -1421,6 +1421,7 @@ namespace eosio { namespace vm {
 #undef STORELANE_OP
 
                      case vec_opcodes::v128_const: {
+                        check_in_bounds();
                         code_writer.emit_v128_const(parse_v128(code));
                         op_stack.push(types::v128);
                         break;
@@ -1751,6 +1752,7 @@ namespace eosio { namespace vm {
                      TRUNC_SAT_OP(i64, f64, u)
 #undef TRUNC_SAT_OP
                      case ext_opcodes::memory_init: {
+                        check_in_bounds();
                         EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
                         EOS_VM_ASSERT(_mod->memories.size() != 0, wasm_parse_exception, "memory.init requires memory");
                         op_stack.pop(types::i32);
@@ -1764,6 +1766,7 @@ namespace eosio { namespace vm {
                         code_writer.emit_memory_init(x);
                      } break;
                      case ext_opcodes::data_drop: {
+                        check_in_bounds();
                         EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
                         auto x = parse_varuint32(code);
                         EOS_VM_ASSERT(!!_datacount, wasm_parse_exception, "data.drop requires datacount section");
@@ -1771,6 +1774,7 @@ namespace eosio { namespace vm {
                         code_writer.emit_data_drop(x);
                      } break;
                      case ext_opcodes::memory_copy:
+                        check_in_bounds();
                         EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
                         EOS_VM_ASSERT(_mod->memories.size() != 0, wasm_parse_exception, "memory.copy requires memory");
                         op_stack.pop(types::i32);
@@ -1783,6 +1787,7 @@ namespace eosio { namespace vm {
                         code_writer.emit_memory_copy();
                         break;
                      case ext_opcodes::memory_fill:
+                        check_in_bounds();
                         EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
                         EOS_VM_ASSERT(_mod->memories.size() != 0, wasm_parse_exception, "memory.fill requires memory");
                         op_stack.pop(types::i32);
@@ -1793,6 +1798,7 @@ namespace eosio { namespace vm {
                         code_writer.emit_memory_fill();
                         break;
                      case ext_opcodes::table_init: {
+                        check_in_bounds();
                         EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
                         EOS_VM_ASSERT(_mod->tables.size() != 0, wasm_parse_exception, "table.init requires table");
                         auto x = parse_varuint32(code);
@@ -1804,12 +1810,14 @@ namespace eosio { namespace vm {
                         code_writer.emit_table_init(x);
                      } break;
                      case ext_opcodes::elem_drop: {
+                        check_in_bounds();
                         EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
                         auto x = parse_varuint32(code);
                         EOS_VM_ASSERT(x < _mod->elements.size(), wasm_parse_exception, "elem segment does not exist");
                         code_writer.emit_elem_drop(x);
                      } break;
                      case ext_opcodes::table_copy:
+                        check_in_bounds();
                         EOS_VM_ASSERT(detail::get_enable_bulk_memory(_options), wasm_parse_exception, "Bulk memory not enabled");
                         EOS_VM_ASSERT(_mod->tables.size() != 0, wasm_parse_exception, "table.copy requires table");
                         EOS_VM_ASSERT(*code == 0, wasm_parse_exception, "table.copy must end with 0x00 0x00");
