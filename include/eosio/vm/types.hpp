@@ -120,6 +120,7 @@ namespace eosio { namespace vm {
       uint32_t                    index;
       init_expr                   offset;
       elem_mode                   mode;
+      // TODO: move mutable data to execution_context
       bool                        dropped;
       guarded_vector<table_entry> elems;
    };
@@ -239,6 +240,14 @@ namespace eosio { namespace vm {
             external_kind        kind;
             uint32_t             index;
          };
+         struct jit_elem_segment {
+            uint32_t                    index;
+            init_expr                   offset;
+            elem_mode                   mode;
+            // TODO: move mutable data to execution_context
+            bool                        dropped;
+            std::vector<table_entry> elems;
+         };
          struct jit_data_segment {
             uint32_t              index;
             init_expr             offset;
@@ -252,7 +261,7 @@ namespace eosio { namespace vm {
          std::vector<memory_type>          memories;
          std::vector<global_variable>      globals;
          std::vector<jit_export_entry>     exports;
-         // elements not needed during JIT execution
+         std::vector<jit_elem_segment>     elements;
          std::vector<size_t>               jit_code_offset;
          std::vector<jit_data_segment>     data;
          std::vector<uint32_t>             import_functions;
@@ -323,6 +332,20 @@ namespace eosio { namespace vm {
                   entry.kind,
                   entry.index
                });
+            }
+         }
+
+         if (auto elem_size = elements.size(); elem_size > 0)
+         {
+            jit_mod->elements.reserve(elem_size);
+            for (uint32_t i = 0; i < elem_size; ++i)
+            {
+               const auto& elem_seg = elements[i];
+               jit_mod->elements.emplace_back(jit_mod_t::jit_elem_segment{
+                      .index = elem_seg.index,
+                      .offset = elem_seg.offset,
+                      .elems = {elem_seg.elems.data(), elem_seg.elems.data() + elem_seg.elems.size()}
+                  });
             }
          }
 
