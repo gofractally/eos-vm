@@ -219,8 +219,8 @@ namespace eosio { namespace vm {
 
       inline backend& initialize(stack_manager& alt_stack, host_t* host=nullptr) {
          if (memory_alloc) {
-            ctx.reset();
-            ctx.execute_start(alt_stack, host, interpret_visitor(ctx));
+            ctx->reset();
+            ctx->execute_start(alt_stack, host, interpret_visitor(*ctx));
          }
          return *this;
       }

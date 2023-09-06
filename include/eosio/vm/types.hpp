@@ -251,13 +251,15 @@ namespace eosio { namespace vm {
          struct jit_data_segment {
             uint32_t              index;
             init_expr             offset;
+            bool                  passive;
+            bool                  dropped;
             std::vector<uint8_t>  data;
          };
 
          std::vector<jit_func_type>        types;
          std::vector<jit_import_entry>     imports;
          std::vector<uint32_t>             functions;
-         // tables not needed during JIT execution
+         std::vector<table_type>           tables;
          std::vector<memory_type>          memories;
          std::vector<global_variable>      globals;
          std::vector<jit_export_entry>     exports;
@@ -319,6 +321,10 @@ namespace eosio { namespace vm {
             jit_mod->functions.assign(functions.data(), functions.data() + functions.size());
          }
 
+         if (tables.size() > 0) {
+            jit_mod->tables.assign(tables.data(), tables.data() + tables.size());
+         }
+
          if (globals.size() > 0) {
             jit_mod->globals.assign(globals.raw(), globals.raw() + globals.size());
          }
@@ -344,6 +350,7 @@ namespace eosio { namespace vm {
                jit_mod->elements.emplace_back(jit_mod_t::jit_elem_segment{
                       .index = elem_seg.index,
                       .offset = elem_seg.offset,
+                      .mode = elem_seg.mode,
                       .elems = {elem_seg.elems.data(), elem_seg.elems.data() + elem_seg.elems.size()}
                   });
             }
@@ -361,9 +368,10 @@ namespace eosio { namespace vm {
             for (uint32_t i = 0; i < data_size; ++i) {
                const auto& data_seg = data[i];
                jit_mod->data.emplace_back(jit_mod_t::jit_data_segment{
-                  data_seg.index,
-                  data_seg.offset,
-                  {data_seg.data.data(), data_seg.data.data() + data_seg.data.size()}
+                  .index = data_seg.index,
+                  .offset = data_seg.offset,
+                  .passive = data_seg.passive,
+                  .data = {data_seg.data.data(), data_seg.data.data() + data_seg.data.size()}
                });
             }
          }
@@ -441,8 +449,13 @@ namespace eosio { namespace vm {
          return index;
       }
 
-      bool indirect_table(std::size_t i) {
-         return i < tables.size() && (tables[i].limits.initial * sizeof(table_entry) > wasm_allocator::table_size());
+      bool indirect_table(std::size_t i)
+      {
+         return jit_mod? indirect_table_impl(*jit_mod, i) : indirect_table_impl(*this, i);
+      }
+
+      static bool indirect_table_impl(auto& mod, std::size_t i) {
+         return i < mod.tables.size() && (mod.tables[i].limits.initial * sizeof(table_entry) > wasm_allocator::table_size());
       }
 
       void normalize_types() {
