@@ -130,11 +130,7 @@ namespace eosio { namespace vm {
          }
       }
       execution_context_base() {}
-      execution_context_base(module* m) : _mod(m) {
-         if (_mod->indirect_table(0)) {
-            _alt_table.reset(new table_entry[_mod->tables[0].limits.initial]);
-         }
-      }
+      execution_context_base(module* m) : _mod(m) {}
 
       inline void initialize_globals() {
          if constexpr (IsJit) {
@@ -185,7 +181,10 @@ namespace eosio { namespace vm {
          throw wasm_exit_exception{"Exiting"};
       }
 
-      inline void        set_module(module* mod) { _mod = mod; }
+      inline void        set_module(module* mod) {
+         _mod = mod;
+         _alt_table.reset();
+      }
       inline module&     get_module() { return *_mod; }
       inline void        set_wasm_allocator(wasm_allocator* alloc) { _wasm_alloc = alloc; }
       inline auto        get_wasm_allocator() { return _wasm_alloc; }
@@ -240,6 +239,9 @@ namespace eosio { namespace vm {
             char* table_location = _linear_memory + wasm_allocator::table_offset();
             table_entry* table_start;
             if (_mod->indirect_table(0)) {
+               if (!_alt_table) {
+                  _alt_table.reset(new table_entry[mod.tables[0].limits.initial]);
+               }
                table_start = _alt_table.get();
                std::memcpy(table_location, &table_start, sizeof(table_start));
             } else {
