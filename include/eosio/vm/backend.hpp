@@ -110,6 +110,12 @@ namespace eosio { namespace vm {
          ctx->set_max_pages(detail::get_max_pages(options));
          construct();
       }
+      template <typename XDebugInfo>
+      backend(wasm_code& code, wasm_allocator* alloc, const Options& options, XDebugInfo& debug)
+         : memory_alloc(alloc), ctx(new context_t{(parse_module(code, options, debug)), detail::choose_stack_limit(options)}) {
+         ctx->set_max_pages(detail::get_max_pages(options));
+         construct();
+      }
       backend(wasm_code_ptr& ptr, size_t sz, host_t& host, wasm_allocator* alloc, const Options& options = Options{})
          : memory_alloc(alloc), ctx(new context_t{parse_module2(ptr, sz, options, true), detail::choose_stack_limit(options)}) { // single parsing. original behavior {
          ctx->set_max_pages(detail::get_max_pages(options));
@@ -142,6 +148,12 @@ namespace eosio { namespace vm {
       module& parse_module(wasm_code& code, const Options& options) {
          mod.allocator.use_default_memory();
          return parser_t{ mod.allocator, options }.parse_module(code, mod, debug);
+      }
+
+      template <typename XDebugInfo>
+      module& parse_module(wasm_code& code, const Options& options, XDebugInfo& debug) {
+         mod.allocator.use_default_memory();
+         return parser_tpl<XDebugInfo>{ mod.allocator, options }.parse_module(code, mod, debug);
       }
 
       module& parse_module2(wasm_code_ptr& ptr, size_t sz, const Options& options, bool single_parsing) {
@@ -252,9 +264,9 @@ namespace eosio { namespace vm {
       template <typename... Args>
       inline bool call(stack_manager& alt_stack, host_t& host, const std::string_view& mod, const std::string_view& func, Args... args) {
          if constexpr (eos_vm_debug) {
-            ctx.execute(alt_stack, &host, debug_visitor(ctx), func, args...);
+            ctx->execute(alt_stack, &host, debug_visitor(*ctx), func, args...);
          } else {
-            ctx.execute(alt_stack, &host, interpret_visitor(ctx), func, args...);
+            ctx->execute(alt_stack, &host, interpret_visitor(*ctx), func, args...);
          }
          return true;
       }
