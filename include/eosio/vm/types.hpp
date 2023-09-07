@@ -120,8 +120,6 @@ namespace eosio { namespace vm {
       uint32_t                    index;
       init_expr                   offset;
       elem_mode                   mode;
-      // TODO: move mutable data to execution_context
-      bool                        dropped;
       guarded_vector<table_entry> elems;
    };
 
@@ -159,7 +157,6 @@ namespace eosio { namespace vm {
       uint32_t                index;
       init_expr               offset;
       bool                    passive;
-      bool                    dropped;
       guarded_vector<uint8_t> data;
    };
 
@@ -244,15 +241,12 @@ namespace eosio { namespace vm {
             uint32_t                    index;
             init_expr                   offset;
             elem_mode                   mode;
-            // TODO: move mutable data to execution_context
-            bool                        dropped;
             std::vector<table_entry> elems;
          };
          struct jit_data_segment {
             uint32_t              index;
             init_expr             offset;
             bool                  passive;
-            bool                  dropped;
             std::vector<uint8_t>  data;
          };
 

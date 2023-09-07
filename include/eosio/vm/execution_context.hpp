@@ -211,18 +211,17 @@ namespace eosio { namespace vm {
          } else
             _wasm_alloc->reset();
 
+         _dropped_data.assign(mod.data.size(), false);
          for (uint32_t i = 0; i < mod.data.size(); i++) {
             auto& data_seg = mod.data[i];
             uint32_t offset = data_seg.offset.value.i32; // force to unsigned
-            if (data_seg.passive) {
-               data_seg.dropped = false;
-            } else {
+            if (!data_seg.passive) {
                auto available_memory =  mod.memories[0].limits.initial * static_cast<uint64_t>(page_size);
                auto required_memory = static_cast<uint64_t>(offset) + data_seg.data.size();
                EOS_VM_ASSERT(required_memory <= available_memory, wasm_memory_exception, "data out of range");
                auto addr = _linear_memory + offset;
                memcpy((char*)(addr), data_seg.data.data(), data_seg.data.size());
-               data_seg.dropped = true;
+               _dropped_data[i] = true;
             }
          }
 
@@ -248,17 +247,17 @@ namespace eosio { namespace vm {
                table_start = new (table_location) table_entry[mod.tables[0].limits.initial];
             }
             std::memset(table_start, 0xff, mod.tables[0].limits.initial * sizeof(table_entry));
+            _dropped_elems.assign(mod.elements.size(), false);
             for (uint32_t i = 0; i < mod.elements.size(); ++i) {
                auto& elem_seg = mod.elements[i];
                if (elem_seg.mode == elem_mode::passive) {
-                  elem_seg.dropped = false;
                } else if (elem_seg.mode == elem_mode::declarative) {
-                  elem_seg.dropped = true;
+                  _dropped_elems[i] = true;
                } else {
                   uint32_t offset = elem_seg.offset.value.i32;
                   EOS_VM_ASSERT(static_cast<std::uint64_t>(offset) + elem_seg.elems.size() <= mod.tables[0].limits.initial, wasm_memory_exception, "elem out of range");
                   std::memcpy(table_start + offset, elem_seg.elems.data(), elem_seg.elems.size() * sizeof(table_entry));
-                  elem_seg.dropped = true;
+                  _dropped_elems[i] = true;
                }
             }
          }
@@ -268,7 +267,7 @@ namespace eosio { namespace vm {
          auto& mod = resolve_module();
          assert(x < mod.data.size());
          const auto& data_seg = mod.data[x];
-         auto data_len = data_seg.dropped? 0 : data_seg.data.size();
+         auto data_len = _dropped_data[x]? 0 : data_seg.data.size();
          if (std::uint64_t{s} + n > data_len)
             throw_<wasm_memory_exception>("data out of range");
          void* dest = get_interface().template validate_pointer<unsigned char>(d, n);
@@ -279,7 +278,7 @@ namespace eosio { namespace vm {
          auto& mod = resolve_module();
          assert(x < mod.data.size());
          auto& data_seg = mod.data[x];
-         data_seg.dropped = true;
+         _dropped_data[x] = true;
       }
 
       table_entry* get_table_base() {
@@ -295,7 +294,7 @@ namespace eosio { namespace vm {
          auto& mod = resolve_module();
          assert(x < mod.elements.size());
          const auto& elem_seg = mod.elements[x];
-         auto elem_len = elem_seg.dropped? 0 : elem_seg.elems.size();
+         auto elem_len = _dropped_elems[x]? 0 : elem_seg.elems.size();
          if (std::uint64_t{s} + n > elem_len)
             throw_<wasm_memory_exception>("elem out of range");
          if (std::uint64_t{d} + n > mod.tables[0].limits.initial)
@@ -307,7 +306,7 @@ namespace eosio { namespace vm {
          auto& mod = resolve_module();
          assert(x < mod.elements.size());
          auto& elem_seg = mod.elements[x];
-         elem_seg.dropped = true;
+         _dropped_elems[x] = true;
       }
 
       table_entry* get_table_ptr(uint32_t base, uint32_t size) {
@@ -374,6 +373,8 @@ namespace eosio { namespace vm {
       operand_stack                   _os;
       std::unique_ptr<table_entry[]>  _alt_table;
       std::vector<init_expr>          _globals;
+      std::vector<bool>               _dropped_elems;
+      std::vector<bool>               _dropped_data;
    };
 
    struct jit_visitor { template<typename T> jit_visitor(T&&) {} };
