@@ -592,6 +592,8 @@ namespace eosio { namespace vm {
             case types::i64: emit_operand_ptr(&get_global_i64); break;
             case types::f32: emit_operand_ptr(&get_global_f32); break;
             case types::f64: emit_operand_ptr(&get_global_f64); break;
+            case types::v128: emit_operand_ptr(&get_global_v128); break;
+            default: assert(!"Unknown global type");
          }
          // call *%rax
          emit_bytes(0xff, 0xd0);
@@ -601,6 +603,9 @@ namespace eosio { namespace vm {
          emit_bytes(0x5f);
          emit_restore_backtrace();
          // push %rax -- return result
+         if (gl.type.content_type == types::v128) {
+            emit_push(rdx);
+         }
          emit_bytes(0x50);
       }
 
@@ -609,6 +614,9 @@ namespace eosio { namespace vm {
          auto& gl = _mod.globals[globalidx];
          // popq %rdx -- pass global value to %rdx, the third argument in set_global
          emit_bytes(0x5a);
+         if (gl.type.content_type == types::v128) {
+            emit_pop(rcx);
+         }
          emit_setup_backtrace();
          // pushq %rdi -- save %rdi content onto stack
          emit_bytes(0x57);
@@ -625,6 +633,8 @@ namespace eosio { namespace vm {
             case types::i64: emit_operand_ptr(&set_global_i64); break;
             case types::f32: emit_operand_ptr(&set_global_f32); break;
             case types::f64: emit_operand_ptr(&set_global_f64); break;
+            case types::v128: emit_operand_ptr(&set_global_v128); break;
+            default: assert(!"Unknown global type");
          }
          // call *%rax
          emit_bytes(0xff, 0xd0);
@@ -6282,6 +6292,9 @@ namespace eosio { namespace vm {
       static uint64_t get_global_f64(Context* context /*rdi*/, uint32_t index /*rsi*/) {
          return context->get_global_f64(index);
       }
+      static v128_t get_global_v128(Context* context /*rdi*/, uint32_t index /*rsi*/) {
+         return context->get_global_v128(index);
+      }
 
       static void set_global_i32(Context* context /*rdi*/, uint32_t index /*rsi*/, int32_t value /*rdx*/) {
          context->set_global_i32(index, value);
@@ -6294,6 +6307,9 @@ namespace eosio { namespace vm {
       }
       static void set_global_f64(Context* context /*rdi*/, uint32_t index /*rsi*/, uint64_t value /*rdx*/) {
          context->set_global_f64(index, value);
+      }
+      static void set_global_v128(Context* context /*rdi*/, uint32_t index /*rsi*/, v128_t value /*rdx+rcx*/) {
+         context->set_global_v128(index, value);
       }
 
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>( "unreachable" ); }

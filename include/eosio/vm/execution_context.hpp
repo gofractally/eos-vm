@@ -636,6 +636,10 @@ namespace eosio { namespace vm {
          return _globals[index].value.f64;
       }
 
+      inline v128_t get_global_v128(uint32_t index) {
+         return _globals[index].value.v128;
+      }
+
       inline void set_global_i32(uint32_t index, int32_t value) {
          _globals[index].value.i32 = value;
       }
@@ -650,6 +654,10 @@ namespace eosio { namespace vm {
 
       inline void set_global_f64(uint32_t index, uint64_t value) {
          _globals[index].value.f64 = value;
+      }
+
+      inline void set_global_v128(uint32_t index, v128_t value) {
+         _globals[index].value.v128 = value;
       }
 
    protected:
