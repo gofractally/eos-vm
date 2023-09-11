@@ -455,11 +455,7 @@ namespace eosio { namespace vm {
       }
 
       static void resolve(module& mod) {
-         if (mod.jit_mod != nullptr) {
-            resolve_impl(*mod.jit_mod);
-         } else {
-            resolve_impl(mod);
-         }
+         resolve_impl(mod);
       }
 
       template <typename Module>

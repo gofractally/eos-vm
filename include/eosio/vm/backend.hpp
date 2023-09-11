@@ -73,10 +73,7 @@ namespace eosio { namespace vm {
          // Now data required by JIT is finalized; create JIT module
          // such that memory used in parsing can be released.
          if constexpr (Impl::is_jit) {
-            mod.make_jit_module();
-
-            // Important. Release the memory used by parsing.
-            mod.allocator.release_base_memory();
+            assert(mod.allocator._base == nullptr);
          }
          if (exec_ctx_created_by_backend) {
             ctx->initialize_globals();

@@ -123,22 +123,13 @@ namespace eosio { namespace vm {
     public:
       Derived& derived() { return static_cast<Derived&>(*this); }
       auto& resolve_module() {
-         if constexpr (IsJit) {
-            return *_mod->jit_mod;
-         } else {
-            return *_mod;
-         }
+         return *_mod;
       }
       execution_context_base() {}
       execution_context_base(module* m) : _mod(m) {}
 
       inline void initialize_globals() {
-         if constexpr (IsJit) {
-            return initialize_globals_impl(*_mod->jit_mod);
-         }
-         else {
-            return initialize_globals_impl(*_mod);
-         }
+         return initialize_globals_impl(*_mod);
       }
 
       template<typename Module>
@@ -151,11 +142,7 @@ namespace eosio { namespace vm {
       }
 
       inline int32_t grow_linear_memory(int32_t pages) {
-         if constexpr (IsJit) {
-            return grow_linear_memory_impl(*_mod->jit_mod, pages);
-         } else {
-            return grow_linear_memory_impl(*_mod, pages);
-         }
+         return grow_linear_memory_impl(*_mod, pages);
       }
 
       template<typename Module>
@@ -428,7 +415,7 @@ namespace eosio { namespace vm {
       std::uint32_t get_remaining_call_depth() const { return this->_remaining_call_depth; }
 
       inline native_value call_host_function(native_value* stack, uint32_t index) {
-         const auto& ft = _mod->jit_mod->get_function_type(index);
+         const auto& ft = _mod->get_function_type(index);
          uint32_t num_params = ft.param_types.size();
 #ifndef NDEBUG
          uint32_t original_operands = get_operand_stack().size();
@@ -442,7 +429,7 @@ namespace eosio { namespace vm {
              default: assert(!"Unexpected type in param_types.");
             }
          }
-         _rhf(_host, get_interface(), _mod->jit_mod->import_functions[index]);
+         _rhf(_host, get_interface(), _mod->import_functions[index]);
          native_value result{uint64_t{0}};
          // guarantee that the junk bits are zero, to avoid problems.
          auto set_result = [&result](auto val) { std::memcpy(&result, &val, sizeof(val)); };
@@ -462,7 +449,7 @@ namespace eosio { namespace vm {
       }
 
       inline void reset() {
-         base_type::reset(*(_mod->jit_mod));
+         base_type::reset(*_mod);
          get_operand_stack().eat(0);
       }
 
@@ -500,7 +487,7 @@ namespace eosio { namespace vm {
 
          _host = host;
 
-         const auto& ft = _mod->jit_mod->get_function_type(func_index);
+         const auto& ft = _mod->get_function_type(func_index);
          this->type_check_args(ft, static_cast<Args&&>(args)...);
          native_value_extended result;
 
@@ -515,7 +502,7 @@ namespace eosio { namespace vm {
 #pragma GCC diagnostic pop
 
          try {
-            if (func_index < _mod->jit_mod->get_imported_functions_size()) {
+            if (func_index < _mod->get_imported_functions_size()) {
                std::reverse(args_raw + 0, args_raw + args_count);
                result.scalar = call_host_function(args_raw, func_index);
             } else {
@@ -524,7 +511,7 @@ namespace eosio { namespace vm {
                if(stack) {
                   stack = static_cast<char*>(stack) - 24;
                }
-               auto fn = reinterpret_cast<native_value (*)(void*, void*)>(_mod->jit_mod->jit_code_offset[func_index - _mod->jit_mod->get_imported_functions_size()] + _mod->allocator._code_base);
+               auto fn = reinterpret_cast<native_value (*)(void*, void*)>(_mod->code[func_index - _mod->get_imported_functions_size()].jit_code_offset + _mod->allocator._code_base);
 
                if constexpr(EnableBacktrace) {
                   sigset_t block_mask;
