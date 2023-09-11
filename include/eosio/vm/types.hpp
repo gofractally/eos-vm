@@ -198,8 +198,6 @@ namespace eosio { namespace vm {
 
       // not part of the spec for WASM
       std::vector<uint32_t>    import_functions;
-      guarded_vector<uint32_t> type_aliases     = { allocator, 0 };
-      guarded_vector<uint32_t> fast_functions   = { allocator, 0 };
       uint64_t                 maximum_stack    = 0;
       // The stack limit can be tracked as either frames or bytes
       bool                     stack_limit_is_bytes = false;
@@ -446,28 +444,6 @@ namespace eosio { namespace vm {
 
       static bool indirect_table_impl(auto& mod, std::size_t i) {
          return i < mod.tables.size() && (mod.tables[i].limits.initial * sizeof(table_entry) > wasm_allocator::table_size());
-      }
-
-      void normalize_types() {
-         type_aliases.resize(types.size());
-         for (uint32_t i = 0; i < types.size(); ++i) {
-            uint32_t j = 0;
-            for (; j < i; ++j) {
-               if (types[j] == types[i]) {
-                  break;
-               }
-            }
-            type_aliases[i] = j;
-         }
-
-         uint32_t imported_functions_size = get_imported_functions_size();
-         fast_functions.resize(functions.size() + imported_functions_size);
-         for (uint32_t i = 0; i < imported_functions_size; ++i) {
-            fast_functions[i] = type_aliases[imports[i].type.func_t];
-         }
-         for (uint32_t i = 0; i < functions.size(); ++i) {
-            fast_functions[i + imported_functions_size] = type_aliases[functions[i]];
-         }
       }
    };
 }} // namespace eosio::vm

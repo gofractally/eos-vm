@@ -389,7 +389,7 @@ namespace eosio { namespace vm {
                case section_id::import_section: parse_section<section_id::import_section>(code_ptr, mod.imports); break;
                case section_id::function_section:
                   parse_section<section_id::function_section>(code_ptr, mod.functions);
-                  mod.normalize_types();
+                  normalize_types();
                   break;
                case section_id::table_section: parse_section<section_id::table_section>(code_ptr, mod.tables); break;
                case section_id::memory_section:
@@ -579,6 +579,28 @@ namespace eosio { namespace vm {
          }
       }
 
+      void normalize_types() {
+         type_aliases.resize(_mod->types.size());
+         for (uint32_t i = 0; i < _mod->types.size(); ++i) {
+            uint32_t j = 0;
+            for (; j < i; ++j) {
+               if (_mod->types[j] == _mod->types[i]) {
+                  break;
+               }
+            }
+            type_aliases[i] = j;
+         }
+
+         uint32_t imported_functions_size = _mod->get_imported_functions_size();
+         fast_functions.resize(_mod->functions.size() + imported_functions_size);
+         for (uint32_t i = 0; i < imported_functions_size; ++i) {
+            fast_functions[i] = type_aliases.at(_mod->imports[i].type.func_t);
+         }
+         for (uint32_t i = 0; i < _mod->functions.size(); ++i) {
+            fast_functions[i + imported_functions_size] = type_aliases.at(_mod->functions[i]);
+         }
+      }
+
       void parse_elem_segment(wasm_code_ptr& code, elem_segment& es) {
          table_type* tt = nullptr;
          std::uint32_t flags = parse_varuint32(code);
@@ -620,7 +642,7 @@ namespace eosio { namespace vm {
          } else {
             for (uint32_t i = 0; i < size; i++) {
                uint32_t index    = parse_varuint32(code);
-               elems.at(i).type  = _mod->fast_functions[index];
+               elems.at(i).type  = fast_functions.at(index);
                elems.at(i).index = index;
                EOS_VM_ASSERT(index < _mod->get_functions_total(), wasm_parse_exception,  "elem for undefined function");
             }
@@ -639,7 +661,7 @@ namespace eosio { namespace vm {
             case opcodes::ref_func:
                te.index = parse_varuint32(code);
                EOS_VM_ASSERT(te.index < _mod->get_functions_total(), wasm_parse_exception, "elem for undefined function");
-               te.type = _mod->fast_functions[te.index];
+               te.type = fast_functions.at(te.index);
                break;
             default:
                EOS_VM_ASSERT(false, wasm_parse_exception,
@@ -1053,7 +1075,7 @@ namespace eosio { namespace vm {
                   EOS_VM_ASSERT(ft.return_count <= 1, wasm_parse_exception, "unsupported");
                   if(ft.return_count)
                      op_stack.push(ft.return_type);
-                  code_writer.emit_call_indirect(ft, functypeidx);
+                  code_writer.emit_call_indirect(ft, type_aliases[functypeidx]);
                   EOS_VM_ASSERT(*code == 0, wasm_parse_exception, "call_indirect must end with 0x00.");
                   code++; // 0x00
                   break;
@@ -2042,5 +2064,7 @@ namespace eosio { namespace vm {
       detail::eosio_max_nested_structures_checker<Options> _nested_checker;
       std::optional<std::uint32_t> _datacount;
       typename DebugInfo::builder imap;
+      std::vector<uint32_t> type_aliases;
+      std::vector<uint32_t> fast_functions;
    };
 }} // namespace eosio::vm

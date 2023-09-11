@@ -102,10 +102,11 @@ namespace eosio { namespace vm {
       }
       ~machine_code_writer() {
          _allocator.end_code<true>(_code_segment_base);
+         auto num_functions = _mod.get_functions_total();
          for (auto& elem : _mod.elements) {
             for (auto& entry : elem.elems) {
                void* addr;
-               if (entry.index < _mod.fast_functions.size()) {
+               if (entry.index < num_functions) {
                   addr = std::get<void*>(_function_relocations[entry.index]);
                } else {
                   addr = call_indirect_handler;
@@ -457,7 +458,6 @@ namespace eosio { namespace vm {
          auto icount = variable_size_instr(37, 64);
          emit_check_call_depth();
          std::uint32_t table_size = _mod.tables[0].limits.initial;
-         functypeidx = _mod.type_aliases[functypeidx];
          emit_pop(rax);
          emit_cmp(table_size, eax);
          fix_branch(emit_branchcc32(JAE), call_indirect_handler);
