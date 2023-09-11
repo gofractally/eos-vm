@@ -459,8 +459,8 @@ class null_writer {
    void emit_table_copy() {}
 
    void fix_branch(branch_t, label_t) {}
-   void emit_prologue(const func_type& /*ft*/, const guarded_vector<local_entry>& /*locals*/, uint32_t /*idx*/) {}
-   void emit_epilogue(const func_type& /*ft*/, const guarded_vector<local_entry>& /*locals*/, uint32_t /*idx*/) {}
+   void emit_prologue(const func_type& /*ft*/, const std::vector<local_entry>& /*locals*/, uint32_t /*idx*/) {}
+   void emit_epilogue(const func_type& /*ft*/, const std::vector<local_entry>& /*locals*/, uint32_t /*idx*/) {}
    void finalize(function_body& /*body*/) {}
 
    const void* get_addr() const { return nullptr; }

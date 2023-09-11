@@ -216,6 +216,7 @@ namespace eosio { namespace vm {
             auto& data_seg = mod.data[i];
             uint32_t offset = data_seg.offset.value.i32; // force to unsigned
             if (!data_seg.passive) {
+               assert(!mod.memories.empty() && "Validation should ensure that an active data segment has a valid memory");
                auto available_memory =  mod.memories[0].limits.initial * static_cast<uint64_t>(page_size);
                auto required_memory = static_cast<uint64_t>(offset) + data_seg.data.size();
                EOS_VM_ASSERT(required_memory <= available_memory, wasm_memory_exception, "data out of range");
@@ -773,7 +774,7 @@ namespace eosio { namespace vm {
       }
 
       inline uint32_t       table_elem(uint32_t i) {
-         EOS_VM_ASSERT(i < _mod->tables[0].limits.initial, wasm_interpreter_exception, "table index out of range");
+         EOS_VM_ASSERT(i < _mod->tables.at(0).limits.initial, wasm_interpreter_exception, "table index out of range");
          return this->get_table_base()[i].index;
       }
       inline void           push_operand(operand_stack_elem el) { get_operand_stack().push(std::move(el)); }

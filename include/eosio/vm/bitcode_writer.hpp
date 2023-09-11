@@ -364,12 +364,12 @@ namespace eosio { namespace vm {
       void emit_error() { fb[op_index++] = error_t{}; }
       
       void fix_branch(uint32_t* branch, uint32_t target) { if(branch) *branch = _base_offset + target; }
-      void emit_prologue(const func_type& ft, const guarded_vector<local_entry>&, uint32_t idx) {
+      void emit_prologue(const func_type& ft, const std::vector<local_entry>&, uint32_t idx) {
          op_index = 0;
          // pre-allocate for the function body code, so we have a big blob of memory to work with during function code parsing
          fb = guarded_vector<opcode>{_allocator, _mod->code[idx].size };
       }
-     void emit_epilogue(const func_type& ft, const guarded_vector<local_entry>& locals, uint32_t idx) {
+      void emit_epilogue(const func_type& ft, const std::vector<local_entry>& locals, uint32_t idx) {
          fb.resize(op_index + 1);
          uint32_t locals_count = 0;
          for(uint32_t i = 0; i < locals.size(); ++i) {

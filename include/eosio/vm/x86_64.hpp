@@ -187,7 +187,7 @@ namespace eosio { namespace vm {
 
       static constexpr std::size_t max_prologue_size = 33;
       static constexpr std::size_t max_epilogue_size = 16;
-      void emit_prologue(const func_type& /*ft*/, const guarded_vector<local_entry>& locals, uint32_t funcnum) {
+      void emit_prologue(const func_type& /*ft*/, const std::vector<local_entry>& locals, uint32_t funcnum) {
          _ft = &_mod.types[_mod.functions[funcnum]];
          _params = function_parameters{_ft};
          _locals = function_locals{locals};
@@ -245,7 +245,7 @@ namespace eosio { namespace vm {
          }
          assert((char*)code <= (char*)_code_start + max_prologue_size);
       }
-      void emit_epilogue(const func_type& ft, const guarded_vector<local_entry>& locals, uint32_t /*funcnum*/) {
+      void emit_epilogue(const func_type& ft, const std::vector<local_entry>& locals, uint32_t /*funcnum*/) {
 #ifndef NDEBUG
          void * epilogue_start = code;
 #endif
@@ -5274,7 +5274,7 @@ namespace eosio { namespace vm {
 
       struct function_locals {
          function_locals() = default;
-         function_locals(const guarded_vector<local_entry>& params) {
+         function_locals(const std::vector<local_entry>& params) {
             uint32_t offset = 0;
             int32_t frame_offset = 0;
             for(uint32_t i = 0; i < params.size(); ++i) {
