@@ -6277,38 +6277,6 @@ namespace eosio { namespace vm {
 
       static void on_memory_error() { throw_<wasm_memory_exception>("wasm memory out-of-bounds"); }
 
-      static int32_t get_global_i32(Context* context /*rdi*/, uint32_t index /*rsi*/) {
-         return context->get_global_i32(index);
-      }
-      static int64_t get_global_i64(Context* context /*rdi*/, uint32_t index /*rsi*/) {
-         return context->get_global_i64(index);
-      }
-      static uint32_t get_global_f32(Context* context /*rdi*/, uint32_t index /*rsi*/) {
-         return context->get_global_f32(index);
-      }
-      static uint64_t get_global_f64(Context* context /*rdi*/, uint32_t index /*rsi*/) {
-         return context->get_global_f64(index);
-      }
-      static v128_t get_global_v128(Context* context /*rdi*/, uint32_t index /*rsi*/) {
-         return context->get_global_v128(index);
-      }
-
-      static void set_global_i32(Context* context /*rdi*/, uint32_t index /*rsi*/, int32_t value /*rdx*/) {
-         context->set_global_i32(index, value);
-      }
-      static void set_global_i64(Context* context /*rdi*/, uint32_t index /*rsi*/, int64_t value /*rdx*/) {
-         context->set_global_i64(index, value);
-      }
-      static void set_global_f32(Context* context /*rdi*/, uint32_t index /*rsi*/, uint32_t value /*rdx*/) {
-         context->set_global_f32(index, value);
-      }
-      static void set_global_f64(Context* context /*rdi*/, uint32_t index /*rsi*/, uint64_t value /*rdx*/) {
-         context->set_global_f64(index, value);
-      }
-      static void set_global_v128(Context* context /*rdi*/, uint32_t index /*rsi*/, v128_t value /*rdx+rcx*/) {
-         context->set_global_v128(index, value);
-      }
-
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>( "unreachable" ); }
       static void on_fp_error() { vm::throw_<wasm_interpreter_exception>( "floating point error" ); }
       static void on_call_indirect_error() { vm::throw_<wasm_interpreter_exception>( "call_indirect out of range" ); }
