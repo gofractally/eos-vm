@@ -482,6 +482,9 @@ namespace eosio { namespace vm {
       static std::size_t table_size() {
          return syspagesize();
       }
+      static std::int32_t globals_end() {
+         return -static_cast<std::int32_t>(syspagesize());
+      }
       template <typename T>
       void alloc(size_t size = 1 /*in pages*/) {
          if (size == 0) return;

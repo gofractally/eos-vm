@@ -270,13 +270,18 @@ namespace eosio { namespace vm {
          return index;
       }
 
+      static std::size_t get_global_offset(std::uint32_t idx)
+      {
+         return idx * sizeof(init_expr) + offsetof(init_expr, value);
+      }
+
       bool indirect_table(std::size_t i)
       {
          return indirect_table_impl(*this, i);
       }
 
       static bool indirect_table_impl(auto& mod, std::size_t i) {
-         return i < mod.tables.size() && (mod.tables[i].limits.initial * sizeof(table_entry) > wasm_allocator::table_size());
+         return i < mod.tables.size() && (mod.tables[i].limits.initial * sizeof(table_entry) > (wasm_allocator::table_size()) - sizeof(void*));
       }
    };
 }} // namespace eosio::vm

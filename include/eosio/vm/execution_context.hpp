@@ -220,6 +220,10 @@ namespace eosio { namespace vm {
          for (uint32_t i = 0; i < mod.globals.size(); i++) {
             _globals.emplace_back(mod.globals[i].init);
          }
+         // Write a pointer to the globals into the context page
+         auto* globals_start = _globals.data();
+         char* globals_location = _linear_memory + wasm_allocator::globals_end();
+         std::memcpy(globals_location - sizeof(globals_start), &globals_start, sizeof(globals_start));
 
          // reset the table
          if (mod.tables.size() != 0) {

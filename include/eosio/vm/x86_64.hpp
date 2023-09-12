@@ -574,75 +574,72 @@ namespace eosio { namespace vm {
          }
       }
 
-      void emit_get_global(uint32_t globalidx) {
-         auto icount = variable_size_instr(24, 42); // emit_setup_backtrace can be 0 or 9, and emit_restore_backtrace 0 or 9, the total of the rest 24
+      auto emit_global_loc(uint32_t globalidx)
+      {
          auto& gl = _mod.globals[globalidx];
-         emit_setup_backtrace();
-         // pushq %rdi -- save %rdi content onto stack
-         emit_bytes(0x57);
-         // pushq %rsi -- save %rsi content onto stack
-         emit_bytes(0x56);
-         // movq $globalidx, %rsi -- pass globalidx to %rsi, the second argument
-         emit_bytes(0x48, 0xc7, 0xc6);
-         emit_operand32(globalidx);
-         // movabsq $get_global, %rax
-         emit_bytes(0x48, 0xb8);
+
+         auto offset = _mod.get_global_offset(globalidx);
+         emit_mov(*(rsi + (wasm_allocator::globals_end() - 8)), rcx);
+         if (offset > 0x7fffffff) {
+            // This isn't quite optimal, but realistically, no one should
+            // ever have this many globals
+            emit_mov(static_cast<std::uint64_t>(offset), rdx);
+            emit_add(rdx, rcx);
+            offset = 0;
+         }
+         return *(rcx + static_cast<std::int32_t>(offset));
+      }
+
+      void emit_get_global(uint32_t globalidx) {
+         COUNT_INSTR();
+         auto icount = variable_size_instr(11, 36);
+
+         auto& gl = _mod.globals[globalidx];
+         auto loc = emit_global_loc(globalidx);
          switch(gl.type.content_type) {
-            case types::i32: emit_operand_ptr(&get_global_i32); break;
-            case types::i64: emit_operand_ptr(&get_global_i64); break;
-            case types::f32: emit_operand_ptr(&get_global_f32); break;
-            case types::f64: emit_operand_ptr(&get_global_f64); break;
-            case types::v128: emit_operand_ptr(&get_global_v128); break;
+            case types::i32:
+               emit_mov(loc, eax); // min = op + modr/m + disp8 = 3
+               emit_push(rax);
+               break;
+            case types::i64:
+               emit_mov(loc, rax);
+               emit_push(rax);
+               break;
+            case types::f32:
+               emit_mov(loc, eax);
+               emit_push(rax);
+               break;
+            case types::f64:
+               emit_mov(loc, rax);
+               emit_push(rax);
+               break;
+            case types::v128:
+               emit_vmovdqu(loc, xmm0); // 3 + disp32 = 7
+               emit_push_v128(xmm0); // 4 + 5 = 9
+               break;
             default: assert(!"Unknown global type");
          }
-         // call *%rax
-         emit_bytes(0xff, 0xd0);
-         // pop %rsi
-         emit_bytes(0x5e);
-         // pop %rdi
-         emit_bytes(0x5f);
-         emit_restore_backtrace();
-         // push %rax -- return result
-         if (gl.type.content_type == types::v128) {
-            emit_push(rdx);
-         }
-         emit_bytes(0x50);
       }
 
       void emit_set_global(uint32_t globalidx) {
-         auto icount = variable_size_instr(24, 42); // emit_setup_backtrace can be 0 or 9, and emit_restore_backtrace 0 or 9, the total of the rest 24
+         COUNT_INSTR();
+         auto icount = variable_size_instr(11, 36);
+
          auto& gl = _mod.globals[globalidx];
-         // popq %rdx -- pass global value to %rdx, the third argument in set_global
-         emit_bytes(0x5a);
          if (gl.type.content_type == types::v128) {
-            emit_pop(rcx);
+            emit_pop_v128(xmm0);
+         } else {
+            emit_pop(rax);
          }
-         emit_setup_backtrace();
-         // pushq %rdi -- save %rdi content onto stack
-         emit_bytes(0x57);
-         // pushq %rsi -- save %rsi content onto stack
-         emit_bytes(0x56);
-         // movq $globalidx, %rsi -- pass globalidx to %rsi, the second argument
-         emit_bytes(0x48, 0xc7, 0xc6);
-         emit_operand32(globalidx);
-         // movabsq $set_global, %rax
-         emit_bytes(0x48, 0xb8);
-         //emit_operand_ptr(&set_global);
+         auto loc = emit_global_loc(globalidx);
          switch(gl.type.content_type) {
-            case types::i32: emit_operand_ptr(&set_global_i32); break;
-            case types::i64: emit_operand_ptr(&set_global_i64); break;
-            case types::f32: emit_operand_ptr(&set_global_f32); break;
-            case types::f64: emit_operand_ptr(&set_global_f64); break;
-            case types::v128: emit_operand_ptr(&set_global_v128); break;
+            case types::i32: emit_mov(eax, loc); break;
+            case types::i64: emit_mov(rax, loc); break;
+            case types::f32: emit_mov(eax, loc); break;
+            case types::f64: emit_mov(rax, loc); break;
+            case types::v128: emit_vmovdqu(xmm0, loc); break;
             default: assert(!"Unknown global type");
          }
-         // call *%rax
-         emit_bytes(0xff, 0xd0);
-         // pop %rsi
-         emit_bytes(0x5e);
-         // pop %rdi
-         emit_bytes(0x5f);
-         emit_restore_backtrace();
       }
 
       void emit_i32_load(uint32_t /*alignment*/, uint32_t offset) {
