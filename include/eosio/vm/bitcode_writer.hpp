@@ -61,12 +61,12 @@ namespace eosio { namespace vm {
             _this{ &base },
             _i{ 0 } {
             br_table_t& bt = _this->append_instr(br_table_t{});
-            bt.offset = static_cast<uint32_t>(((table_size * sizeof(br_table_t::elem_t))/sizeof(opcode))+2);
+            auto offset = static_cast<uint32_t>(((table_size * sizeof(br_table_t::elem_t))/sizeof(opcode))+2);
 
             // point the branch table data to after the br_table instruction
-            _br_tab = bt.table = reinterpret_cast<br_table_t::elem_t*>(&_this->fb[_this->op_index]);
+            _br_tab = reinterpret_cast<br_table_t::elem_t*>(&_this->fb[_this->op_index]);
 
-            _this->op_index += bt.offset;
+            _this->op_index += offset;
 
             // canary to throw if we have overbounded our allocated memory
             _this->fb[_this->op_index] = error_t{};
