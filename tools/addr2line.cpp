@@ -27,7 +27,7 @@ struct nm_debug_info {
    std::vector<uint32_t> function_offsets;
 };
 
-eosio::vm::guarded_vector<uint8_t>* find_export_name(eosio::vm::module& mod, uint32_t idx) {
+std::vector<uint8_t>* find_export_name(eosio::vm::module& mod, uint32_t idx) {
    if(mod.names && mod.names->function_names) {
       for(uint32_t i = 0; i < mod.names->function_names->size(); ++i) {
          if((*mod.names->function_names)[i].idx == idx) {
@@ -101,8 +101,8 @@ int main(int argc, const char** argv) {
    parser.parse_module(code, mod, info);
    {
       for(std::size_t i = 0; i < info.function_offsets.size(); ++i) {
-         if(guarded_vector<uint8_t>* name = find_export_name(mod, i + mod.get_imported_functions_size())) {
-            function_names.push_back(std::string(reinterpret_cast<const char*>(name->raw()), name->size()));
+         if(std::vector<uint8_t>* name = find_export_name(mod, i + mod.get_imported_functions_size())) {
+            function_names.push_back(std::string(reinterpret_cast<const char*>(name->data()), name->size()));
          } else {
             function_names.push_back("fn" + std::to_string( i + mod.get_imported_functions_size()));
          }

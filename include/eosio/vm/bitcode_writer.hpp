@@ -61,12 +61,12 @@ namespace eosio { namespace vm {
             _this{ &base },
             _i{ 0 } {
             br_table_t& bt = _this->append_instr(br_table_t{});
-            bt.offset = static_cast<uint32_t>(((table_size * sizeof(br_table_t::elem_t))/sizeof(opcode))+2);
+            auto offset = static_cast<uint32_t>(((table_size * sizeof(br_table_t::elem_t))/sizeof(opcode))+2);
 
             // point the branch table data to after the br_table instruction
-            _br_tab = bt.table = reinterpret_cast<br_table_t::elem_t*>(&_this->fb[_this->op_index]);
+            _br_tab = reinterpret_cast<br_table_t::elem_t*>(&_this->fb[_this->op_index]);
 
-            _this->op_index += bt.offset;
+            _this->op_index += offset;
 
             // canary to throw if we have overbounded our allocated memory
             _this->fb[_this->op_index] = error_t{};
@@ -364,12 +364,12 @@ namespace eosio { namespace vm {
       void emit_error() { fb[op_index++] = error_t{}; }
       
       void fix_branch(uint32_t* branch, uint32_t target) { if(branch) *branch = _base_offset + target; }
-      void emit_prologue(const func_type& ft, const guarded_vector<local_entry>&, uint32_t idx) {
+      void emit_prologue(const func_type& ft, const std::vector<local_entry>&, uint32_t idx) {
          op_index = 0;
          // pre-allocate for the function body code, so we have a big blob of memory to work with during function code parsing
          fb = guarded_vector<opcode>{_allocator, _mod->code[idx].size };
       }
-     void emit_epilogue(const func_type& ft, const guarded_vector<local_entry>& locals, uint32_t idx) {
+      void emit_epilogue(const func_type& ft, const std::vector<local_entry>& locals, uint32_t idx) {
          fb.resize(op_index + 1);
          uint32_t locals_count = 0;
          for(uint32_t i = 0; i < locals.size(); ++i) {

@@ -41,7 +41,7 @@ namespace eosio { namespace vm {
 
    struct func_type {
       value_type                 form; // value for the func type constructor
-      guarded_vector<value_type> param_types;
+      std::vector<value_type>    param_types;
       uint8_t                    return_count;
       value_type                 return_type;
    };
@@ -49,7 +49,7 @@ namespace eosio { namespace vm {
    inline bool operator==(const func_type& lhs, const func_type& rhs) {
       return lhs.form == rhs.form &&
         lhs.param_types.size() == rhs.param_types.size() &&
-        std::equal(lhs.param_types.raw(), lhs.param_types.raw() + lhs.param_types.size(), rhs.param_types.raw()) &&
+        std::equal(lhs.param_types.data(), lhs.param_types.data() + lhs.param_types.size(), rhs.param_types.data()) &&
         lhs.return_count == rhs.return_count &&
         (lhs.return_count || lhs.return_type == rhs.return_type);
    }
@@ -75,7 +75,6 @@ namespace eosio { namespace vm {
    struct global_variable {
       global_type type;
       init_expr   init;
-      init_expr   current;
    };
 
    struct table_type {
@@ -103,14 +102,14 @@ namespace eosio { namespace vm {
    };
 
    struct import_entry {
-      guarded_vector<uint8_t> module_str;
-      guarded_vector<uint8_t> field_str;
+      std::vector<uint8_t>    module_str;
+      std::vector<uint8_t>    field_str;
       external_kind           kind;
       import_type             type;
    };
 
    struct export_entry {
-      guarded_vector<uint8_t> field_str;
+      std::vector<uint8_t>    field_str;
       external_kind           kind;
       uint32_t                index;
    };
@@ -121,8 +120,7 @@ namespace eosio { namespace vm {
       uint32_t                    index;
       init_expr                   offset;
       elem_mode                   mode;
-      bool                        dropped;
-      guarded_vector<table_entry> elems;
+      std::vector<table_entry>    elems;
    };
 
    struct local_entry {
@@ -149,7 +147,7 @@ namespace eosio { namespace vm {
 
    struct function_body {
       uint32_t                    size;
-      guarded_vector<local_entry> locals;
+      std::vector<local_entry>    locals;
       opcode*                     code;
       std::size_t                 jit_code_offset;
       std::uint32_t               stack_size = 0;
@@ -159,8 +157,7 @@ namespace eosio { namespace vm {
       uint32_t                index;
       init_expr               offset;
       bool                    passive;
-      bool                    dropped;
-      guarded_vector<uint8_t> data;
+      std::vector<uint8_t>    data;
    };
 
    using wasm_code     = std::vector<uint8_t>;
@@ -170,39 +167,37 @@ namespace eosio { namespace vm {
 
    struct name_assoc {
       std::uint32_t idx;
-      guarded_vector<uint8_t> name;
+      std::vector<uint8_t> name;
    };
    struct indirect_name_assoc {
       std::uint32_t idx;
-      guarded_vector<name_assoc> namemap;
+      std::vector<name_assoc> namemap;
    };
    struct name_section {
-      guarded_vector<uint8_t>* module_name = nullptr;
-      guarded_vector<name_assoc>* function_names = nullptr;
-      guarded_vector<indirect_name_assoc>* local_names = nullptr;
+      std::optional<std::vector<uint8_t>> module_name;
+      std::optional<std::vector<name_assoc>> function_names;
+      std::optional<std::vector<indirect_name_assoc>> local_names;
    };
 
    struct module {
-      growable_allocator              allocator = { constants::initial_module_size };
+      growable_allocator              allocator;
       uint32_t                        start     = std::numeric_limits<uint32_t>::max();
-      guarded_vector<func_type>       types     = { allocator, 0 };
-      guarded_vector<import_entry>    imports   = { allocator, 0 };
-      guarded_vector<uint32_t>        functions = { allocator, 0 };
-      guarded_vector<table_type>      tables    = { allocator, 0 };
-      guarded_vector<memory_type>     memories  = { allocator, 0 };
-      guarded_vector<global_variable> globals   = { allocator, 0 };
-      guarded_vector<export_entry>    exports   = { allocator, 0 };
-      guarded_vector<elem_segment>    elements  = { allocator, 0 };
-      guarded_vector<function_body>   code      = { allocator, 0 };
-      guarded_vector<data_segment>    data      = { allocator, 0 };
+      std::vector<func_type>          types;
+      std::vector<import_entry>       imports;
+      std::vector<uint32_t>           functions;
+      std::vector<table_type>         tables;
+      std::vector<memory_type>        memories;
+      std::vector<global_variable>    globals;
+      std::vector<export_entry>       exports;
+      std::vector<elem_segment>       elements;
+      std::vector<function_body>      code;
+      std::vector<data_segment>       data;
 
       // Custom sections:
-      name_section* names = nullptr;
+      std::optional<name_section> names;
 
       // not part of the spec for WASM
-      guarded_vector<uint32_t> import_functions = { allocator, 0 };
-      guarded_vector<uint32_t> type_aliases     = { allocator, 0 };
-      guarded_vector<uint32_t> fast_functions   = { allocator, 0 };
+      std::vector<uint32_t>    import_functions;
       uint64_t                 maximum_stack    = 0;
       // The stack limit can be tracked as either frames or bytes
       bool                     stack_limit_is_bytes = false;
@@ -218,6 +213,10 @@ namespace eosio { namespace vm {
          allocator.finalize();
       }
       uint32_t get_imported_functions_size() const {
+         return get_imported_functions_size_impl(imports);
+      }
+      template<typename Imports>
+      static uint32_t get_imported_functions_size_impl(const Imports& imports) {
          uint32_t number_of_imports = 0;
          for (uint32_t i = 0; i < imports.size(); i++) {
             if (imports[i].kind == external_kind::Function)
@@ -229,22 +228,18 @@ namespace eosio { namespace vm {
       inline uint32_t get_functions_total() const { return get_imported_functions_size() + get_functions_size(); }
       inline opcode* get_function_pc( uint32_t fidx ) const {
          EOS_VM_ASSERT( fidx >= get_imported_functions_size(), wasm_interpreter_exception, "trying to get the PC of an imported function" );
-         return code[fidx-get_imported_functions_size()].code;
-      }
-
-      inline auto& get_opcode(uint32_t pc) const {
-         return ((opcode*)&code[0].code[0])[pc];
+         return code.at(fidx-get_imported_functions_size()).code;
       }
 
       inline uint32_t get_function_locals_size(uint32_t index) const {
          EOS_VM_ASSERT(index >= get_imported_functions_size(), wasm_interpreter_exception, "imported functions do not have locals");
-         return code[index - get_imported_functions_size()].locals.size();
+         return code.at(index - get_imported_functions_size()).locals.size();
       }
 
       auto& get_function_type(uint32_t index) const {
          if (index < get_imported_functions_size())
             return types[imports[index].type.func_t];
-         return types[functions[index - get_imported_functions_size()]];
+         return types.at(functions.at(index - get_imported_functions_size()));
       }
 
       uint32_t get_function_stack_size(uint32_t index) const {
@@ -253,15 +248,20 @@ namespace eosio { namespace vm {
          } else if (index < get_imported_functions_size()) {
             return 0;
          } else {
-            return code[index - get_imported_functions_size()].stack_size;
+            return code.at(index - get_imported_functions_size()).stack_size;
          }
       }
 
       uint32_t get_exported_function(const std::string_view str) {
+         return get_exported_function_impl(exports, str);
+      }
+
+      template<typename Exports>
+      static uint32_t get_exported_function_impl(const Exports& exports, const std::string_view str) {
          uint32_t index = std::numeric_limits<uint32_t>::max();
          for (uint32_t i = 0; i < exports.size(); i++) {
             if (exports[i].kind == external_kind::Function && exports[i].field_str.size() == str.size() &&
-                memcmp((const char*)str.data(), (const char*)exports[i].field_str.raw(), exports[i].field_str.size()) ==
+                memcmp((const char*)str.data(), (const char*)exports[i].field_str.data(), exports[i].field_str.size()) ==
                       0) {
                index = exports[i].index;
                break;
@@ -270,30 +270,18 @@ namespace eosio { namespace vm {
          return index;
       }
 
-      bool indirect_table(std::size_t i) {
-         return i < tables.size() && (tables[i].limits.initial * sizeof(table_entry) > wasm_allocator::table_size());
+      static std::size_t get_global_offset(std::uint32_t idx)
+      {
+         return idx * sizeof(init_expr) + offsetof(init_expr, value);
       }
 
-      void normalize_types() {
-         type_aliases.resize(types.size());
-         for (uint32_t i = 0; i < types.size(); ++i) {
-            uint32_t j = 0;
-            for (; j < i; ++j) {
-               if (types[j] == types[i]) {
-                  break;
-               }
-            }
-            type_aliases[i] = j;
-         }
+      bool indirect_table(std::size_t i)
+      {
+         return indirect_table_impl(*this, i);
+      }
 
-         uint32_t imported_functions_size = get_imported_functions_size();
-         fast_functions.resize(functions.size() + imported_functions_size);
-         for (uint32_t i = 0; i < imported_functions_size; ++i) {
-            fast_functions[i] = type_aliases[imports[i].type.func_t];
-         }
-         for (uint32_t i = 0; i < functions.size(); ++i) {
-            fast_functions[i + imported_functions_size] = type_aliases[functions[i]];
-         }
+      static bool indirect_table_impl(auto& mod, std::size_t i) {
+         return i < mod.tables.size() && (mod.tables[i].limits.initial * sizeof(table_entry) > (wasm_allocator::table_size()) - sizeof(void*));
       }
    };
 }} // namespace eosio::vm

@@ -66,16 +66,16 @@ namespace eosio { namespace vm {
    class machine_code_writer {
     public:
       machine_code_writer(growable_allocator& alloc, std::size_t source_bytes, module& mod) :
-         _mod(mod), _code_segment_base(alloc.start_code()) {
-         _code_start = _mod.allocator.alloc<unsigned char>(128);
+         _mod(mod), _allocator(alloc), _code_segment_base(_allocator.start_code()) {
+         _code_start = _allocator.alloc<unsigned char>(128);
          _code_end = _code_start + 128;
          code = _code_start;
          emit_sysv_abi_interface();
          assert(code <= _code_end);
-         _mod.allocator.reclaim(code, _code_end - code);
+         _allocator.reclaim(code, _code_end - code);
 
          const std::size_t code_size = 5 * 16; // 5 error handlers, each is 16 bytes.
-         _code_start = _mod.allocator.alloc<unsigned char>(code_size);
+         _code_start = _allocator.alloc<unsigned char>(code_size);
          _code_end = _code_start + code_size;
          code = _code_start;
 
@@ -91,7 +91,7 @@ namespace eosio { namespace vm {
          // emit host functions
          const uint32_t num_imported = mod.get_imported_functions_size();
          const std::size_t host_functions_size = (42 + 10 * Context::async_backtrace()) * num_imported;
-         _code_start = _mod.allocator.alloc<unsigned char>(host_functions_size);
+         _code_start = _allocator.alloc<unsigned char>(host_functions_size);
          _code_end = _code_start + host_functions_size;
          // code already set
          for(uint32_t i = 0; i < num_imported; ++i) {
@@ -101,11 +101,12 @@ namespace eosio { namespace vm {
          assert(code == _code_end);
       }
       ~machine_code_writer() {
-         _mod.allocator.end_code<true>(_code_segment_base);
+         _allocator.end_code<true>(_code_segment_base);
+         auto num_functions = _mod.get_functions_total();
          for (auto& elem : _mod.elements) {
             for (auto& entry : elem.elems) {
                void* addr;
-               if (entry.index < _mod.fast_functions.size()) {
+               if (entry.index < num_functions) {
                   addr = std::get<void*>(_function_relocations[entry.index]);
                } else {
                   addr = call_indirect_handler;
@@ -187,14 +188,14 @@ namespace eosio { namespace vm {
 
       static constexpr std::size_t max_prologue_size = 33;
       static constexpr std::size_t max_epilogue_size = 16;
-      void emit_prologue(const func_type& /*ft*/, const guarded_vector<local_entry>& locals, uint32_t funcnum) {
+      void emit_prologue(const func_type& /*ft*/, const std::vector<local_entry>& locals, uint32_t funcnum) {
          _ft = &_mod.types[_mod.functions[funcnum]];
          _params = function_parameters{_ft};
          _locals = function_locals{locals};
          // FIXME: This is not a tight upper bound
          const std::size_t instruction_size_ratio_upper_bound = use_softfloat?(Context::async_backtrace()?63:49):79;
          std::size_t code_size = max_prologue_size + _mod.code[funcnum].size * instruction_size_ratio_upper_bound + max_epilogue_size;
-         _code_start = _mod.allocator.alloc<unsigned char>(code_size);
+         _code_start = _allocator.alloc<unsigned char>(code_size);
          _code_end = _code_start + code_size;
          code = _code_start;
          start_function(code, funcnum + _mod.get_imported_functions_size());
@@ -245,7 +246,7 @@ namespace eosio { namespace vm {
          }
          assert((char*)code <= (char*)_code_start + max_prologue_size);
       }
-      void emit_epilogue(const func_type& ft, const guarded_vector<local_entry>& locals, uint32_t /*funcnum*/) {
+      void emit_epilogue(const func_type& ft, const std::vector<local_entry>& locals, uint32_t /*funcnum*/) {
 #ifndef NDEBUG
          void * epilogue_start = code;
 #endif
@@ -457,7 +458,6 @@ namespace eosio { namespace vm {
          auto icount = variable_size_instr(37, 64);
          emit_check_call_depth();
          std::uint32_t table_size = _mod.tables[0].limits.initial;
-         functypeidx = _mod.type_aliases[functypeidx];
          emit_pop(rax);
          emit_cmp(table_size, eax);
          fix_branch(emit_branchcc32(JAE), call_indirect_handler);
@@ -574,48 +574,71 @@ namespace eosio { namespace vm {
          }
       }
 
+      auto emit_global_loc(uint32_t globalidx)
+      {
+         auto& gl = _mod.globals[globalidx];
+
+         auto offset = _mod.get_global_offset(globalidx);
+         emit_mov(*(rsi + (wasm_allocator::globals_end() - 8)), rcx);
+         if (offset > 0x7fffffff) {
+            // This isn't quite optimal, but realistically, no one should
+            // ever have this many globals
+            emit_mov(static_cast<std::uint64_t>(offset), rdx);
+            emit_add(rdx, rcx);
+            offset = 0;
+         }
+         return *(rcx + static_cast<std::int32_t>(offset));
+      }
+
       void emit_get_global(uint32_t globalidx) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(13, 23);
+         auto icount = variable_size_instr(11, 36);
+
          auto& gl = _mod.globals[globalidx];
-         void *ptr = &gl.current.value;
+         auto loc = emit_global_loc(globalidx);
          switch(gl.type.content_type) {
-          case types::i32:
-          case types::f32:
-            emit_mov(ptr, rax);
-            emit_mov(*rax, eax);
-            emit_push(rax);
-            break;
-          case types::i64:
-          case types::f64:
-            emit_mov(ptr, rax);
-            emit_mov(*rax, rax);
-            emit_push(rax);
-            break;
-          case types::v128:
-            emit_mov(ptr, rax);
-            emit_vmovups(*rax, xmm0);
-            emit_push_v128(xmm0);
-            break;
+            case types::i32:
+               emit_mov(loc, eax); // min = op + modr/m + disp8 = 3
+               emit_push(rax);
+               break;
+            case types::i64:
+               emit_mov(loc, rax);
+               emit_push(rax);
+               break;
+            case types::f32:
+               emit_mov(loc, eax);
+               emit_push(rax);
+               break;
+            case types::f64:
+               emit_mov(loc, rax);
+               emit_push(rax);
+               break;
+            case types::v128:
+               emit_vmovdqu(loc, xmm0); // 3 + disp32 = 7
+               emit_push_v128(xmm0); // 4 + 5 = 9
+               break;
+            default: assert(!"Unknown global type");
          }
       }
+
       void emit_set_global(uint32_t globalidx) {
          COUNT_INSTR();
-         auto icount = variable_size_instr(13, 23);
+         auto icount = variable_size_instr(11, 36);
+
          auto& gl = _mod.globals[globalidx];
-         void *ptr = &gl.current.value;
-         if(gl.type.content_type != types::v128) {
-            emit_pop(rax);
-            emit_mov(ptr, rcx);
-            if (gl.type.content_type == types::i32 || gl.type.content_type == types::f32) {
-               emit_mov(eax, *rcx);
-            } else {
-               emit_mov(rax, *rcx);
-            }
-         } else {
+         if (gl.type.content_type == types::v128) {
             emit_pop_v128(xmm0);
-            emit_mov(ptr, rax);
-            emit_vmovups(xmm0, *rax);
+         } else {
+            emit_pop(rax);
+         }
+         auto loc = emit_global_loc(globalidx);
+         switch(gl.type.content_type) {
+            case types::i32: emit_mov(eax, loc); break;
+            case types::i64: emit_mov(rax, loc); break;
+            case types::f32: emit_mov(eax, loc); break;
+            case types::f64: emit_mov(rax, loc); break;
+            case types::v128: emit_vmovdqu(xmm0, loc); break;
+            default: assert(!"Unknown global type");
          }
       }
 
@@ -4261,7 +4284,7 @@ namespace eosio { namespace vm {
 
       using fn_type = native_value(*)(void* context, void* memory);
       void finalize(function_body& body) {
-         _mod.allocator.reclaim(code, _code_end - code);
+         _allocator.reclaim(code, _code_end - code);
          body.jit_code_offset = _code_start - (unsigned char*)_code_segment_base;
       }
 
@@ -5248,7 +5271,7 @@ namespace eosio { namespace vm {
 
       struct function_locals {
          function_locals() = default;
-         function_locals(const guarded_vector<local_entry>& params) {
+         function_locals(const std::vector<local_entry>& params) {
             uint32_t offset = 0;
             int32_t frame_offset = 0;
             for(uint32_t i = 0; i < params.size(); ++i) {
@@ -5285,6 +5308,7 @@ namespace eosio { namespace vm {
       }
 
       module& _mod;
+      growable_allocator& _allocator;
       void * _code_segment_base;
       const func_type* _ft;
       function_parameters _params;
@@ -6252,6 +6276,7 @@ namespace eosio { namespace vm {
       }
 
       static void on_memory_error() { throw_<wasm_memory_exception>("wasm memory out-of-bounds"); }
+
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>( "unreachable" ); }
       static void on_fp_error() { vm::throw_<wasm_interpreter_exception>( "floating point error" ); }
       static void on_call_indirect_error() { vm::throw_<wasm_interpreter_exception>( "call_indirect out of range" ); }
