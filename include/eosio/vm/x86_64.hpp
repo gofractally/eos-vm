@@ -892,10 +892,12 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_const(uint64_t value) {
+         auto start = code;
          COUNT_INSTR();
          auto icount = fixed_size_instr(11);
          emit_mov(value, rax);
          emit_push(rax);
+         push_recent_op(start, i64_const_op{value});
       }
 
       void emit_f32_const(float value) {
@@ -1570,9 +1572,20 @@ namespace eosio { namespace vm {
       // --------------- i64 binops ----------------------
 
       void emit_i64_add() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit_mov(c->value, rcx);
+            emit_add(rcx, rax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(6);
-         emit_i64_binop(0x48, 0x01, 0xc8, 0x50);
+         emit_pop(rax);
+         emit_pop(rcx);
+         emit_add(rcx, rax);
+         emit_push(rax);
       }
       void emit_i64_sub() {
          COUNT_INSTR();
@@ -1582,7 +1595,10 @@ namespace eosio { namespace vm {
       void emit_i64_mul() {
          COUNT_INSTR();
          auto icount = fixed_size_instr(7);
-         emit_i64_binop(0x48, 0x0f, 0xaf, 0xc1, 0x50);
+         emit_pop(rax);
+         emit_pop(rcx);
+         emit(IMUL, rcx, rax);
+         emit_push(rax);
       }
       // cdq; idiv %rcx; pushq %rax
       void emit_i64_div_s() {
@@ -1644,19 +1660,49 @@ namespace eosio { namespace vm {
          emit_i64_binop(0x48, 0x31, 0xc8, 0x50);
       }
       void emit_i64_shl() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(SHL_imm8, static_cast<imm8>(c->value & 0x3f), rax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(6);
-         emit_i64_binop(0x48, 0xd3, 0xe0, 0x50);
+         emit_pop(rcx);
+         emit_pop(rax);
+         emit(SHL_cl, rax);
+         emit_push(rax);
       }
       void emit_i64_shr_s() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(SAR_imm8, static_cast<imm8>(c->value & 0x3f), rax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(6);
-         emit_i64_binop(0x48, 0xd3, 0xf8, 0x50);
+         emit_pop(rcx);
+         emit_pop(rax);
+         emit(SAR_cl, rax);
+         emit_push(rax);
       }
       void emit_i64_shr_u() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(SHR_imm8, static_cast<imm8>(c->value & 0x3f), rax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(6);
-         emit_i64_binop(0x48, 0xd3, 0xe8, 0x50);
+         emit_pop(rcx);
+         emit_pop(rax);
+         emit(SHR_cl, rax);
+         emit_push(rax);
       }
       void emit_i64_rotl() {
          COUNT_INSTR();
@@ -2117,12 +2163,10 @@ namespace eosio { namespace vm {
 
       void emit_i32_wrap_i64() {
          COUNT_INSTR();
-         auto icount = fixed_size_instr(6);
-         // Zero out the high 4 bytes
-         // xor %eax, %eax
-         emit_bytes(0x31, 0xc0);
-         // mov %eax, 4(%rsp)
-         emit_bytes(0x89, 0x44, 0x24, 0x04);
+         auto icount = fixed_size_instr(4);
+         emit_pop(rax);
+         emit_mov(eax, eax);
+         emit_push(rax);
       }
 
       void emit_i32_trunc_s_f32() {
@@ -4569,6 +4613,10 @@ namespace eosio { namespace vm {
             emit_mov(c->value, static_cast<general_register32>(reg));
             return;
          }
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            emit_mov(c->value, reg);
+            return;
+         }
          if (auto push = try_undo_push()) {
             if (push->reg != reg) {
                emit_mov(push->reg, reg);
@@ -4790,6 +4838,7 @@ namespace eosio { namespace vm {
       static constexpr auto SETZ = IA32(0x0f, 0x94);
       static constexpr auto SETNZ = IA32(0x0f, 0x95);
       static constexpr auto SAR_cl = IA32_WX(0xd3)/7;
+      static constexpr auto SAR_imm8 = IA32_WX(0xc1)/7;
       static constexpr auto SHL_cl = IA32_WX(0xd3)/4;
       static constexpr auto SHL_imm8 = IA32_WX(0xc1)/4;
       static constexpr auto SHR_cl = IA32_WX(0xd3)/5;
@@ -5336,6 +5385,10 @@ namespace eosio { namespace vm {
          uint32_t value;
       };
 
+      struct i64_const_op {
+         uint64_t value;
+      };
+
       struct generic_register_push_op {
          general_register64 reg;
       };
@@ -5351,7 +5404,7 @@ namespace eosio { namespace vm {
       struct recent_op_t {
          unsigned char* start;
          unsigned char* end;
-         std::variant<std::monostate, generic_register_push_op, get_local_op, i32_const_op, condition_op, xmm_register_push_op> data;
+         std::variant<std::monostate, generic_register_push_op, get_local_op, i32_const_op, i64_const_op, condition_op, xmm_register_push_op> data;
       };
 
       // This is used to fold common instruction sequences
@@ -5386,7 +5439,8 @@ namespace eosio { namespace vm {
                return res;
             }
             if (std::holds_alternative<get_local_op>(recent_ops[1].data) ||
-                std::holds_alternative<i32_const_op>(recent_ops[1].data)) {
+                std::holds_alternative<i32_const_op>(recent_ops[1].data) ||
+                std::holds_alternative<i64_const_op>(recent_ops[1].data)) {
                --code;
                recent_ops[1] = {};
                recent_ops[0] = {};
