@@ -21,7 +21,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_EXTENSIONS ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-set(CMAKE_CXX_FLAGS "-fdiagnostics-color=always")
+set(CMAKE_CXX_FLAGS "-fdiagnostics-color=always -fbracket-depth=512")
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 find_package(Threads)
 link_libraries(Threads::Threads)
@@ -58,7 +58,7 @@ target_include_directories(eos-vm
                            INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include
                                      ${CMAKE_CURRENT_SOURCE_DIR}/external/softfloat/source/include)
 # ignore the C++17 register warning until clean up
-target_compile_options( eos-vm INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-Wno-register> )
+target_compile_options( eos-vm INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-Wno-register> -fbracket-depth=512 )
 
 # ##################################################################################################
 # Enable debugging stats for eos-vm.
