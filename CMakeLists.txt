@@ -58,7 +58,7 @@ target_include_directories(eos-vm
                            INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include
                                      ${CMAKE_CURRENT_SOURCE_DIR}/external/softfloat/source/include)
 # ignore the C++17 register warning until clean up
-target_compile_options( eos-vm INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-Wno-register> )
+target_compile_options( eos-vm INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-Wno-register>  $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>:-fbracket-depth=512> )
 
 # ##################################################################################################
 # Enable debugging stats for eos-vm.
