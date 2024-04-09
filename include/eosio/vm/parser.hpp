@@ -355,7 +355,7 @@ namespace eosio { namespace vm {
       }
 
       static constexpr auto make_section_order() {
-         std::array<std::uint8_t, section_id::num_of_elems> result;
+         std::array<std::uint8_t, section_id::num_of_elems> result{};
          std::uint8_t i = 1;
          for (std::uint8_t sec : {type_section, import_section, function_section, table_section, memory_section, global_section, export_section, start_section, element_section, data_count_section, code_section, data_section}) {
             result[sec] = i++;
