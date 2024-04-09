@@ -249,7 +249,8 @@ namespace eosio { namespace vm {
                } else {
                   uint32_t offset = elem_seg.offset.value.i32;
                   EOS_VM_ASSERT(static_cast<std::uint64_t>(offset) + elem_seg.elems.size() <= mod.tables[0].limits.initial, wasm_memory_exception, "elem out of range");
-                  std::memcpy(table_start + offset, elem_seg.elems.data(), elem_seg.elems.size() * sizeof(table_entry));
+                  if (elem_seg.elems.size())
+                     std::memcpy(table_start + offset, elem_seg.elems.data(), elem_seg.elems.size() * sizeof(table_entry));
                   _dropped_elems[i] = true;
                }
             }
@@ -264,7 +265,8 @@ namespace eosio { namespace vm {
          if (std::uint64_t{s} + n > data_len)
             throw_<wasm_memory_exception>("data out of range");
          void* dest = get_interface().template validate_pointer<unsigned char>(d, n);
-         std::memcpy(dest, data_seg.data.data() + s, n);
+         if (data_len)
+            std::memcpy(dest, data_seg.data.data() + s, n);
       }
 
       void drop_data(uint32_t x) {
@@ -292,7 +294,8 @@ namespace eosio { namespace vm {
             throw_<wasm_memory_exception>("elem out of range");
          if (std::uint64_t{d} + n > mod.tables[0].limits.initial)
             throw_<wasm_memory_exception>("wasm memory out-of-bounds");
-         std::memcpy(get_table_base() + d, elem_seg.elems.data() + s, n * sizeof(table_entry));
+         if (elem_len)
+            std::memcpy(get_table_base() + d, elem_seg.elems.data() + s, n * sizeof(table_entry));
       }
 
       void drop_elem(uint32_t x) {
