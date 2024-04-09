@@ -18,7 +18,7 @@ namespace eosio { namespace vm {
    inline thread_local std::atomic<sigjmp_buf*> signal_dest{nullptr};
 
    __attribute__((visibility("default")))
-   inline thread_local std::vector<std::span<std::byte>> protected_memory_ranges;
+   inline thread_local std::atomic<const std::vector<std::span<std::byte>>*> protected_memory_ranges;
 
    // Fixes a duplicate symbol build issue when building with `-fvisibility=hidden`
    __attribute__((visibility("default")))
@@ -29,10 +29,11 @@ namespace eosio { namespace vm {
 
    inline bool in_protected_range(void* addr) {
       //empty protection list means legacy catch-all behavior; useful for some of the old tests
-      if(protected_memory_ranges.empty())
+      const auto* ranges = protected_memory_ranges.load();
+      if(!ranges || ranges->empty())
          return true;
 
-      for(const std::span<std::byte>& range : protected_memory_ranges) {
+      for(const std::span<std::byte>& range : *ranges) {
          if(addr >= range.data() && addr < range.data() + range.size())
             return true;
       }
@@ -143,7 +144,7 @@ namespace eosio { namespace vm {
       setup_signal_handler();
       sigjmp_buf dest;
       sigjmp_buf* volatile old_signal_handler = nullptr;
-      protected_memory_ranges = protect_ranges;
+      const auto old_protected_memory_ranges = protected_memory_ranges.exchange(&protect_ranges);
       int sig;
       if((sig = sigsetjmp(dest, 1)) == 0) {
          // Note: Cannot use RAII, as non-trivial destructors w/ longjmp
@@ -165,13 +166,16 @@ namespace eosio { namespace vm {
             f();
             pthread_sigmask(SIG_SETMASK, &old_sigmask, nullptr);
             std::atomic_store(&signal_dest, old_signal_handler);
+            std::atomic_store(&protected_memory_ranges, old_protected_memory_ranges);
          } catch(...) {
             pthread_sigmask(SIG_SETMASK, &old_sigmask, nullptr);
             std::atomic_store(&signal_dest, old_signal_handler);
+            std::atomic_store(&protected_memory_ranges, old_protected_memory_ranges);
             throw;
          }
       } else {
          std::atomic_store(&signal_dest, old_signal_handler);
+         std::atomic_store(&protected_memory_ranges, old_protected_memory_ranges);
          if (sig == -1) {
             std::exception_ptr exception = std::move(saved_exception);
             saved_exception = nullptr;
