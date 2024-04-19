@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <exception>
 #include <utility>
+#include <span>
 #include <signal.h>
 #include <setjmp.h>
 
@@ -14,7 +15,10 @@ namespace eosio { namespace vm {
 
    // Fixes a duplicate symbol build issue when building with `-fvisibility=hidden`
    __attribute__((visibility("default")))
-   inline thread_local std::atomic<sigjmp_buf*> signal_dest = ATOMIC_VAR_INIT(nullptr);
+   inline thread_local std::atomic<sigjmp_buf*> signal_dest{nullptr};
+
+   __attribute__((visibility("default")))
+   inline thread_local std::atomic<const std::vector<std::span<std::byte>>*> protected_memory_ranges;
 
    // Fixes a duplicate symbol build issue when building with `-fvisibility=hidden`
    __attribute__((visibility("default")))
@@ -23,9 +27,23 @@ namespace eosio { namespace vm {
    template<int Sig>
    inline struct sigaction prev_signal_handler;
 
+   inline bool in_protected_range(void* addr) {
+      //empty protection list means legacy catch-all behavior; useful for some of the old tests
+      const auto* ranges = protected_memory_ranges.load();
+      if(!ranges || ranges->empty())
+         return true;
+
+      for(const std::span<std::byte>& range : *ranges) {
+         if(addr >= range.data() && addr < range.data() + range.size())
+            return true;
+      }
+      return false;
+   }
+
    inline void signal_handler(int sig, siginfo_t* info, void* uap) {
       sigjmp_buf* dest = std::atomic_load(&signal_dest);
-      if (dest) {
+
+      if (dest && in_protected_range(info->si_addr)) {
          siglongjmp(*dest, sig);
       } else {
          struct sigaction* prev_action;
@@ -98,7 +116,9 @@ namespace eosio { namespace vm {
       sigaddset(&sa.sa_mask, SIGPROF);
       sa.sa_flags = SA_NODEFER | SA_SIGINFO;
       sigaction(SIGSEGV, &sa, &prev_signal_handler<SIGSEGV>);
+#ifndef __linux__
       sigaction(SIGBUS, &sa, &prev_signal_handler<SIGBUS>);
+#endif
       sigaction(SIGFPE, &sa, &prev_signal_handler<SIGFPE>);
    }
 
@@ -114,16 +134,17 @@ namespace eosio { namespace vm {
    /// with non-trivial destructors, then it must mask the relevant signals
    /// during the lifetime of these objects or the behavior is undefined.
    ///
-   /// signals handled: SIGSEGV, SIGBUS, SIGFPE
+   /// signals handled: SIGSEGV, SIGBUS (except on Linux), SIGFPE
    ///
    // Make this noinline to prevent possible corruption of the caller's local variables.
    // It's unlikely, but I'm not sure that it can definitely be ruled out if both
    // this and f are inlined and f modifies locals from the caller.
    template<typename F, typename E>
-   [[gnu::noinline]] auto invoke_with_signal_handler(F&& f, E&& e) {
+   [[gnu::noinline]] auto invoke_with_signal_handler(F&& f, E&& e, const std::vector<std::span<std::byte>>& protect_ranges) {
       setup_signal_handler();
       sigjmp_buf dest;
       sigjmp_buf* volatile old_signal_handler = nullptr;
+      const auto old_protected_memory_ranges = protected_memory_ranges.exchange(&protect_ranges);
       int sig;
       if((sig = sigsetjmp(dest, 1)) == 0) {
          // Note: Cannot use RAII, as non-trivial destructors w/ longjmp
@@ -145,13 +166,16 @@ namespace eosio { namespace vm {
             f();
             pthread_sigmask(SIG_SETMASK, &old_sigmask, nullptr);
             std::atomic_store(&signal_dest, old_signal_handler);
+            std::atomic_store(&protected_memory_ranges, old_protected_memory_ranges);
          } catch(...) {
             pthread_sigmask(SIG_SETMASK, &old_sigmask, nullptr);
             std::atomic_store(&signal_dest, old_signal_handler);
+            std::atomic_store(&protected_memory_ranges, old_protected_memory_ranges);
             throw;
          }
       } else {
          std::atomic_store(&signal_dest, old_signal_handler);
+         std::atomic_store(&protected_memory_ranges, old_protected_memory_ranges);
          if (sig == -1) {
             std::exception_ptr exception = std::move(saved_exception);
             saved_exception = nullptr;

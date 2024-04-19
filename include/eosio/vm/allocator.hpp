@@ -9,6 +9,7 @@
 #include <cstring>
 #include <map>
 #include <set>
+#include <span>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -386,6 +387,8 @@ namespace eosio { namespace vm {
 
       const void* get_code_start() const { return _code_base; }
 
+      std::span<std::byte> get_code_span() const {return {(std::byte*)_code_base, _code_size};}
+
       /* different semantics than free,
        * the memory must be at the end of the most recently allocated block.
        */
@@ -557,5 +560,7 @@ namespace eosio { namespace vm {
       {
          return { raw - prefix_size(), max_memory + prefix_size() + suffix_size() };
       }
+
+      std::span<std::byte> get_span() const {return {(std::byte*)raw, max_memory};}
    };
 }} // namespace eosio::vm
