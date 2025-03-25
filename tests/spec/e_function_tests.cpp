@@ -33,3 +33,9 @@ BACKEND_TEST_CASE( "Testing wasm <e_function_2_wasm>", "[e_function_2_wasm_tests
    CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
 }
 
+BACKEND_TEST_CASE( "Testing wasm <e_function_3_wasm>", "[e_function_3_wasm_tests]" ) {
+   using backend_t = backend<standalone_function_t, TestType>;
+   auto code = read_wasm( std::string(wasm_directory) + "e_function.3.wasm");
+   CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
+}
+

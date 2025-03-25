@@ -103,16 +103,19 @@ namespace eosio { namespace vm {
       ~machine_code_writer() {
          _allocator.end_code<true>(_code_segment_base);
          auto num_functions = _mod.get_functions_total();
-         for (auto& elem : _mod.elements) {
-            for (auto& entry : elem.elems) {
-               void* addr;
-               if (entry.index < num_functions) {
-                  addr = std::get<void*>(_function_relocations[entry.index]);
-               } else {
-                  addr = call_indirect_handler;
+         if (num_functions <= _function_relocations.size()) {
+            for (auto& elem : _mod.elements) {
+               for (auto& entry : elem.elems) {
+                  void* addr = call_indirect_handler;
+                  if (entry.index < num_functions) {
+                     assert(entry.index < _function_relocations.size());
+                     if (auto reloc = std::get_if<void*>(&_function_relocations[entry.index])) {
+                        addr = *reloc;
+                     }
+                  }
+                  std::size_t offset = static_cast<char*>(addr) - static_cast<char*>(_code_segment_base);
+                  entry.code_ptr = _mod.allocator._code_base + offset;
                }
-               std::size_t offset = static_cast<char*>(addr) - static_cast<char*>(_code_segment_base);
-               entry.code_ptr = _mod.allocator._code_base + offset;
             }
          }
       }
