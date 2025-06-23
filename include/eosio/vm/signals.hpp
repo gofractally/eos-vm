@@ -1,13 +1,13 @@
 #pragma once
 
 #include <eosio/vm/exceptions.hpp>
+#include <eosio/vm/span.hpp>
 #include <eosio/vm/utils.hpp>
 
 #include <atomic>
 #include <cstdlib>
 #include <exception>
 #include <utility>
-#include <span>
 #include <signal.h>
 #include <setjmp.h>
 
@@ -18,7 +18,13 @@ namespace eosio { namespace vm {
    inline thread_local std::atomic<sigjmp_buf*> signal_dest{nullptr};
 
    __attribute__((visibility("default")))
-   inline thread_local std::atomic<const std::vector<std::span<std::byte>>*> protected_memory_ranges;
+   inline thread_local std::span<std::byte> code_memory_range;
+
+   __attribute__((visibility("default")))
+   inline thread_local std::span<std::byte> memory_range;
+
+   __attribute__((visibility("default")))
+   inline thread_local std::atomic<bool> timed_run_has_timed_out{false};
 
    // Fixes a duplicate symbol build issue when building with `-fvisibility=hidden`
    __attribute__((visibility("default")))
@@ -27,47 +33,56 @@ namespace eosio { namespace vm {
    template<int Sig>
    inline struct sigaction prev_signal_handler;
 
-   inline bool in_protected_range(void* addr) {
-      //empty protection list means legacy catch-all behavior; useful for some of the old tests
-      const auto* ranges = protected_memory_ranges.load();
-      if(!ranges || ranges->empty())
-         return true;
-
-      for(const std::span<std::byte>& range : *ranges) {
-         if(addr >= range.data() && addr < range.data() + range.size())
-            return true;
-      }
-      return false;
-   }
-
    inline void signal_handler(int sig, siginfo_t* info, void* uap) {
       sigjmp_buf* dest = std::atomic_load(&signal_dest);
 
-      if (dest && in_protected_range(info->si_addr)) {
-         siglongjmp(*dest, sig);
-      } else {
-         struct sigaction* prev_action;
-         switch(sig) {
-            case SIGSEGV: prev_action = &prev_signal_handler<SIGSEGV>; break;
-            case SIGBUS: prev_action = &prev_signal_handler<SIGBUS>; break;
-            case SIGFPE: prev_action = &prev_signal_handler<SIGFPE>; break;
-            default: std::abort();
+      if (dest) {
+         const void* addr = info->si_addr;
+
+         //neither range set means legacy catch-all behavior; useful for some of the old tests
+         if (code_memory_range.empty() && memory_range.empty())
+            siglongjmp(*dest, sig);
+
+         //a failure in the memory range is always jumped out of
+         if (addr >= memory_range.data() && addr < memory_range.data() + memory_range.size())
+            siglongjmp(*dest, sig);
+
+         //a failure in the code range...
+         if (addr >= code_memory_range.data() && addr < code_memory_range.data() + code_memory_range.size()) {
+            //a SEGV/BUS in the code range when timed_run_has_timed_out=false is due to a _different_ thread's execution activating a deadline
+            // timer. Return and retry executing the same code again. Eventually timed_run() on the other thread will reset the page
+            // permissions and progress on this thread can continue
+            //on linux no SIGBUS handler is registered (see setup_signal_handler_impl()) so it will never occur here
+            if ((sig == SIGSEGV || sig == SIGBUS) && timed_run_has_timed_out.load(std::memory_order_acquire) == false)
+               return;
+            //otherwise, jump out
+            siglongjmp(*dest, sig);
          }
-         if (!prev_action) std::abort();
-         if (prev_action->sa_flags & SA_SIGINFO) {
-            // FIXME: We need to be at least as strict as the original
-            // flags and relax the mask as needed.
-            prev_action->sa_sigaction(sig, info, uap);
+
+         //if in neither range, fall through and let chained handler an opportunity to handle
+      }
+
+      struct sigaction* prev_action;
+      switch(sig) {
+         case SIGSEGV: prev_action = &prev_signal_handler<SIGSEGV>; break;
+         case SIGBUS: prev_action = &prev_signal_handler<SIGBUS>; break;
+         case SIGFPE: prev_action = &prev_signal_handler<SIGFPE>; break;
+         default: std::abort();
+      }
+      if (!prev_action) std::abort();
+      if (prev_action->sa_flags & SA_SIGINFO) {
+         // FIXME: We need to be at least as strict as the original
+         // flags and relax the mask as needed.
+         prev_action->sa_sigaction(sig, info, uap);
+      } else {
+         if(prev_action->sa_handler == SIG_DFL) {
+            // The default for all three signals is to terminate the process.
+            sigaction(sig, prev_action, nullptr);
+            raise(sig);
+         } else if(prev_action->sa_handler == SIG_IGN) {
+            // Do nothing
          } else {
-            if(prev_action->sa_handler == SIG_DFL) {
-               // The default for all three signals is to terminate the process.
-               sigaction(sig, prev_action, nullptr);
-               raise(sig);
-            } else if(prev_action->sa_handler == SIG_IGN) {
-               // Do nothing
-            } else {
-               prev_action->sa_handler(sig);
-            }
+            prev_action->sa_handler(sig);
          }
       }
    }
@@ -140,11 +155,14 @@ namespace eosio { namespace vm {
    // It's unlikely, but I'm not sure that it can definitely be ruled out if both
    // this and f are inlined and f modifies locals from the caller.
    template<typename F, typename E>
-   [[gnu::noinline]] auto invoke_with_signal_handler(F&& f, E&& e, const std::vector<std::span<std::byte>>& protect_ranges) {
+   [[gnu::noinline]] auto invoke_with_signal_handler(F&& f, E&& e, growable_allocator& code_allocator, wasm_allocator* mem_allocator) {
       setup_signal_handler();
       sigjmp_buf dest;
       sigjmp_buf* volatile old_signal_handler = nullptr;
-      const auto old_protected_memory_ranges = protected_memory_ranges.exchange(&protect_ranges);
+      const auto old_code_memory_range = code_memory_range;
+      const auto old_memory_range = memory_range;
+      code_memory_range = code_allocator.get_code_span();
+      memory_range = mem_allocator->get_span();
       int sig;
       if((sig = sigsetjmp(dest, 1)) == 0) {
          // Note: Cannot use RAII, as non-trivial destructors w/ longjmp
@@ -166,16 +184,19 @@ namespace eosio { namespace vm {
             f();
             pthread_sigmask(SIG_SETMASK, &old_sigmask, nullptr);
             std::atomic_store(&signal_dest, old_signal_handler);
-            std::atomic_store(&protected_memory_ranges, old_protected_memory_ranges);
+            memory_range = old_memory_range;
+            code_memory_range = old_code_memory_range;
          } catch(...) {
             pthread_sigmask(SIG_SETMASK, &old_sigmask, nullptr);
             std::atomic_store(&signal_dest, old_signal_handler);
-            std::atomic_store(&protected_memory_ranges, old_protected_memory_ranges);
+            memory_range = old_memory_range;
+            code_memory_range = old_code_memory_range;
             throw;
          }
       } else {
          std::atomic_store(&signal_dest, old_signal_handler);
-         std::atomic_store(&protected_memory_ranges, old_protected_memory_ranges);
+         memory_range = old_memory_range;
+         code_memory_range = old_code_memory_range;
          if (sig == -1) {
             std::exception_ptr exception = std::move(saved_exception);
             saved_exception = nullptr;
