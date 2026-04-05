@@ -311,6 +311,11 @@ target_compile_definitions(
    softfloat PUBLIC
    "-DSOFTFLOAT_FAST_INT64 -DSOFTFLOAT_ROUND_EVEN -DINLINE_LEVEL=5 -DSOFTFLOAT_FAST_DIV32TO16 -DSOFTFLOAT_FAST_DIV64TO32"
    )
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+   set(SOFTFLOAT_PLATFORM_DIR ${SOFTFLOAT_BUILD}/Linux-x86_64-GCC)
+else()
+   set(SOFTFLOAT_PLATFORM_DIR ${SOFTFLOAT_BUILD}/Linux-x86_64-GCC)
+endif()
 target_include_directories(softfloat
                            PUBLIC ${SOFTFLOAT_SRC}/include ${SOFTFLOAT_SRC}/8086-SSE
-                                  ${SOFTFLOAT_BUILD}/Linux-x86_64-GCC)
+                                  ${SOFTFLOAT_PLATFORM_DIR})

@@ -463,13 +463,20 @@ namespace eosio { namespace vm {
 
       std::size_t get_maximum_stack_size()
       {
+         // ARM64 JIT uses 16-byte stack slots (for SP alignment), so double the size.
+         constexpr std::size_t slot_size =
+#ifdef __aarch64__
+            16;
+#else
+            sizeof(native_value);
+#endif
          if (_mod->stack_limit_is_bytes)
          {
             return this->_remaining_call_depth * 2;
          }
          else
          {
-            return (_mod->maximum_stack + 2 /*frame ptr + return ptr*/) * (this->_remaining_call_depth + 1) * sizeof(native_value);
+            return (_mod->maximum_stack + 2 /*frame ptr + return ptr*/) * (this->_remaining_call_depth + 1) * slot_size;
          }
       }
 
@@ -516,10 +523,15 @@ namespace eosio { namespace vm {
                std::reverse(args_raw + 0, args_raw + args_count);
                result.scalar = call_host_function(args_raw, func_index);
             } else {
-               // reserve 24 bytes for data accessed by inline assembly
+               // reserve space for data accessed by inline assembly.
+               // ARM64 requires 16-byte SP alignment; x86_64 uses 24 bytes for inline asm data.
                void* stack = alt_stack.top();
                if(stack) {
+#ifdef __aarch64__
+                  stack = static_cast<char*>(stack) - 16;
+#else
                   stack = static_cast<char*>(stack) - 24;
+#endif
                }
                auto fn = reinterpret_cast<native_value (*)(void*, void*)>(_mod->code[func_index - _mod->get_imported_functions_size()].jit_code_offset + _mod->allocator._code_base);
 
@@ -619,6 +631,8 @@ namespace eosio { namespace vm {
       }
 
       static constexpr bool async_backtrace() { return EnableBacktrace; }
+#else
+      static constexpr bool async_backtrace() { return false; }
 #endif
 
       inline int32_t get_global_i32(uint32_t index) {

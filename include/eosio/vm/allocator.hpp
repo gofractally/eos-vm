@@ -18,6 +18,9 @@
 
 #include <sys/mman.h>
 #include <unistd.h>
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <pthread.h>
+#endif
 
 namespace eosio { namespace vm {
    class bounded_allocator {
@@ -233,7 +236,13 @@ namespace eosio { namespace vm {
          // from PROT_EXEC to PROT_READ | PROT_WRITE, and back to PROT_EXEC,
          // set permisions to PROT_READ | PROT_WRITE initially.
          // The permission will be changed to PROT_EXEC after executible code is copied.
-         void* base = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+         int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+         int prot = PROT_READ | PROT_WRITE;
+#if defined(__APPLE__) && defined(__aarch64__)
+         flags |= MAP_JIT;
+         prot |= PROT_EXEC;  // MAP_JIT requires all permissions upfront; mprotect fails on MAP_JIT pages
+#endif
+         void* base = mmap(nullptr, size, prot, flags, -1, 0);
          EOS_VM_ASSERT(base != MAP_FAILED, wasm_bad_alloc, "failed to allocate jit segment");
          segment s{base, size};
          _segments.emplace_back(std::move(s));
@@ -365,9 +374,16 @@ namespace eosio { namespace vm {
          if constexpr (IsJit) {
             auto & jit_alloc = jit_allocator::instance();
             void * executable_code = jit_alloc.alloc(_code_size);
-            int err = mprotect(executable_code, _code_size, PROT_READ | PROT_WRITE);
-            EOS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
+#if defined(__APPLE__) && defined(__aarch64__)
+            // On Apple Silicon with MAP_JIT, use pthread_jit_write_protect_np
+            // to toggle between write and execute modes.
+            pthread_jit_write_protect_np(false); // enable writing
+#endif
+            // The jit_allocator pages are initially PROT_READ|PROT_WRITE,
+            // so no mprotect needed before memcpy.
             std::memcpy(executable_code, _code_base, _code_size);
+            __builtin___clear_cache(static_cast<char*>(executable_code),
+                                    static_cast<char*>(executable_code) + _code_size);
             _code_base = (char*)executable_code;
             enable_code(IsJit);
             _is_jit = true;
@@ -377,12 +393,27 @@ namespace eosio { namespace vm {
 
       // Sets protection on code pages to allow them to be executed.
       void enable_code(bool is_jit) {
+#if defined(__APPLE__) && defined(__aarch64__)
+         if (is_jit) {
+            pthread_jit_write_protect_np(true); // switch to execute mode
+         } else {
+            mprotect(_code_base, _code_size, PROT_READ|PROT_WRITE);
+         }
+#else
          mprotect(_code_base, _code_size, is_jit?PROT_EXEC:(PROT_READ|PROT_WRITE));
+#endif
       }
       // Make code pages unexecutable so deadline timer can kill an
       // execution (in both JIT and Interpreter)
       void disable_code() {
+#if defined(__APPLE__) && defined(__aarch64__)
+         if (!_is_jit)
+            mprotect(_code_base, _code_size, PROT_NONE);
+         // For JIT on Apple Silicon, mprotect fails on MAP_JIT pages.
+         // TODO: implement alternative deadline timer mechanism.
+#else
          mprotect(_code_base, _code_size, PROT_NONE);
+#endif
       }
 
       const void* get_code_start() const { return _code_base; }

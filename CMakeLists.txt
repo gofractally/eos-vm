@@ -39,6 +39,7 @@ endif()
 include(CMakeDependentOption)
 option(ENABLE_SOFTFLOAT "enable the backend to use deterministic software floating point operations"
 	ON)
+option(ENABLE_NATIVE_FP "use native FP instructions in JIT with hardware NaN canonicalization (aarch64 only)" OFF)
 option(FULL_DEBUG_BUILD "enables stack dumping and instruction tracing" OFF)
 option(ENABLE_INSTALL "enable this library to be installed" ON)
 option(ENABLE_MEMORY_OPS_ALIGNMENT "enable the backend to obey alignment hints" OFF)
@@ -79,6 +80,10 @@ if(ENABLE_SOFTFLOAT)
    endif()
    target_compile_definitions(eos-vm INTERFACE -DEOS_VM_SOFTFLOAT)
    target_link_libraries(eos-vm INTERFACE softfloat)
+endif()
+
+if(ENABLE_NATIVE_FP)
+   target_compile_definitions(eos-vm INTERFACE -DEOS_VM_NATIVE_FP)
 endif()
 
 if(ENABLE_MEMORY_OPS_ALIGNMENT)

@@ -178,11 +178,11 @@ inline eosio::vm::wasm_allocator* get_wasm_allocator() {
 
 extern template void eosio::vm::execution_context<eosio::vm::standalone_function_t>::execute(eosio::vm::interpret_visitor<eosio::vm::execution_context<eosio::vm::standalone_function_t>>& visitor);
 extern template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::interpreter>;
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(__aarch64__)
 extern template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::jit>;
 #endif
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(__aarch64__)
 #define BACKEND_TEST_CASE(name, tags) \
   TEMPLATE_TEST_CASE(name, tags, eosio::vm::interpreter, eosio::vm::jit)
 #elif 1
