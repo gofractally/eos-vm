@@ -301,6 +301,26 @@ if(ENABLE_BENCH_COMPUTE)
    )
 
    add_custom_target(compute-wasm ALL DEPENDS "${SHA256_WASM}" "${ECDSA_WASM}")
+
+   # --- Native baseline: compile the same C code as a native static library ---
+   add_library(bench-native STATIC
+      "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_sha256.c"
+      "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_ecdsa.c"
+      "${micro_ecc_SOURCE_DIR}/uECC.c"
+   )
+   target_include_directories(bench-native PRIVATE "${micro_ecc_SOURCE_DIR}")
+   target_compile_definitions(bench-native PRIVATE
+      uECC_OPTIMIZATION_LEVEL=3
+      uECC_SUPPORTS_secp160r1=0
+      uECC_SUPPORTS_secp192r1=0
+      uECC_SUPPORTS_secp224r1=0
+      uECC_SUPPORTS_secp256r1=0
+      uECC_SUPPORTS_secp256k1=1
+      uECC_SUPPORT_COMPRESSED_POINT=0
+   )
+   target_compile_options(bench-native PRIVATE -O3 -w)
+
+   list(APPEND BENCH_LIBS bench-native)
    list(APPEND BENCH_DEFS BENCH_HAS_COMPUTE)
    message(STATUS "Compute benchmarks: ENABLED (SHA-256, ECDSA secp256k1)")
 endif()

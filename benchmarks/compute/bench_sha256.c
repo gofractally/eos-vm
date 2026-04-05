@@ -109,7 +109,13 @@ static void sha256_final(sha256_ctx* ctx, uint8_t out[32]) {
 // Benchmark entry point
 // ============================================================================
 
-__attribute__((export_name("bench_sha256")))
+#ifdef __wasm__
+#define WASM_EXPORT(name) __attribute__((export_name(name)))
+#else
+#define WASM_EXPORT(name)
+#endif
+
+WASM_EXPORT("bench_sha256")
 int64_t bench_sha256(int32_t iterations) {
    // Hash a 64-byte message repeatedly. Each iteration hashes the
    // previous output, creating a chain: H(H(H(...H(seed)...)))

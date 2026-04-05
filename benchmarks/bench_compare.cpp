@@ -16,6 +16,13 @@
 
 #ifdef BENCH_HAS_COMPUTE
 #include <eosio/vm/utils.hpp>
+
+// Native baseline — same C code compiled natively
+extern "C" {
+   int64_t bench_sha256(int32_t iterations);
+   int64_t bench_ecdsa_verify(int32_t iterations);
+   int64_t bench_ecdsa_sign(int32_t iterations);
+}
 #endif
 
 #ifdef BENCH_HAS_WASM3
@@ -529,9 +536,10 @@ int main() {
       const char* name;
       bool        enabled;
    };
-   enum RT { RT_INTERP, RT_JIT, RT_WASM3, RT_WAMR, RT_WASMTIME, RT_WASMER, RT_COUNT };
+   enum RT { RT_NATIVE, RT_INTERP, RT_JIT, RT_WASM3, RT_WAMR, RT_WASMTIME, RT_WASMER, RT_COUNT };
 
    runtime_info runtimes[RT_COUNT] = {
+      {"native",        false},  // enabled only for compute benchmarks
       {"eos-vm interp", true},
 #ifdef __x86_64__
       {"eos-vm JIT",    true},
@@ -653,16 +661,23 @@ int main() {
 
    // --- Compute benchmarks ---
 #ifdef BENCH_HAS_COMPUTE
+   // Enable native column for compute benchmarks
+   runtimes[RT_NATIVE].enabled = true;
+   num_active++;
+
+   using native_fn = int64_t (*)(int32_t);
+
    struct compute_def {
       const char* label;
       const char* wasm_path;
       const char* func;
+      native_fn   native;
       uint32_t    iters;
    };
    compute_def compute_tests[] = {
-      {"SHA-256 (64B, 100K)",  BENCH_SHA256_WASM, "bench_sha256",       100'000},
-      {"ECDSA verify (k1)",    BENCH_ECDSA_WASM,  "bench_ecdsa_verify", 100},
-      {"ECDSA sign (k1)",      BENCH_ECDSA_WASM,  "bench_ecdsa_sign",   100},
+      {"SHA-256 (64B, 100K)",  BENCH_SHA256_WASM, "bench_sha256",       bench_sha256,       100'000},
+      {"ECDSA verify (k1)",    BENCH_ECDSA_WASM,  "bench_ecdsa_verify", bench_ecdsa_verify, 100},
+      {"ECDSA sign (k1)",      BENCH_ECDSA_WASM,  "bench_ecdsa_sign",   bench_ecdsa_sign,   100},
    };
    const int num_compute = sizeof(compute_tests) / sizeof(compute_tests[0]);
    double compute_results[3][RT_COUNT] = {};
@@ -676,9 +691,18 @@ int main() {
    for (int t = 0; t < num_compute; t++) {
       compute_labels[t] = compute_tests[t].label;
       auto& wasm = (t == 0) ? sha_wasm : ecdsa_wasm;
-      if (wasm.empty()) continue;
       auto func = compute_tests[t].func;
       auto iters = compute_tests[t].iters;
+
+      // Native baseline
+      {
+         auto t1 = std::chrono::high_resolution_clock::now();
+         compute_tests[t].native(static_cast<int32_t>(iters));
+         auto t2 = std::chrono::high_resolution_clock::now();
+         compute_results[t][RT_NATIVE] = std::chrono::duration<double, std::milli>(t2 - t1).count();
+      }
+
+      if (wasm.empty()) continue;
 
       compute_results[t][RT_INTERP] = run_eosvm_compute<interpreter>(wasm, func, iters);
 #ifdef __x86_64__
@@ -699,8 +723,12 @@ int main() {
    }
 
    print_table("COMPUTE BENCHMARK (pure WASM, no host calls)",
-               "Measures raw computation speed for crypto workloads.",
+               "Measures raw computation speed for crypto workloads. Native = same C code compiled natively.",
                num_compute, compute_labels, compute_results);
+
+   // Disable native column again so it doesn't affect any further output
+   runtimes[RT_NATIVE].enabled = false;
+   num_active--;
 #endif
 
    printf("\n");

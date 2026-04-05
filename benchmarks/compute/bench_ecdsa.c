@@ -177,7 +177,13 @@ static void ensure_initialized(void) {
 // Benchmark entry points
 // ============================================================================
 
-__attribute__((export_name("bench_ecdsa_verify")))
+#ifdef __wasm__
+#define WASM_EXPORT(name) __attribute__((export_name(name)))
+#else
+#define WASM_EXPORT(name)
+#endif
+
+WASM_EXPORT("bench_ecdsa_verify")
 int64_t bench_ecdsa_verify(int32_t iterations) {
    ensure_initialized();
    uECC_Curve curve = uECC_secp256k1();
@@ -189,7 +195,7 @@ int64_t bench_ecdsa_verify(int32_t iterations) {
    return valid_count;
 }
 
-__attribute__((export_name("bench_ecdsa_sign")))
+WASM_EXPORT("bench_ecdsa_sign")
 int64_t bench_ecdsa_sign(int32_t iterations) {
    ensure_initialized();
    uECC_Curve curve = uECC_secp256k1();
