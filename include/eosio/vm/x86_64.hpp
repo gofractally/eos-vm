@@ -1339,6 +1339,13 @@ namespace eosio { namespace vm {
             emit_push(rax);
             return;
          }
+         if (auto local = try_pop_recent_op<get_local_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(SUB_A, local->expr, eax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_pop(rcx);
@@ -1347,6 +1354,13 @@ namespace eosio { namespace vm {
          emit_push(rax);
       }
       void emit_i32_mul() {
+         if (auto local = try_pop_recent_op<get_local_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(IMUL, local->expr, eax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(6);
          emit_pop(rax);
@@ -1397,6 +1411,13 @@ namespace eosio { namespace vm {
          emit_push(rdx);
       }
       void emit_i32_and() {
+         if (auto local = try_pop_recent_op<get_local_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(AND_A, local->expr, eax);
+            emit_push(rax);
+            return;
+         }
          if (auto c = try_pop_recent_op<i32_const_op>()) {
             COUNT_INSTR();
             emit_pop(rax);
@@ -1412,6 +1433,13 @@ namespace eosio { namespace vm {
          emit_push(rax);
       }
       void emit_i32_or() {
+         if (auto local = try_pop_recent_op<get_local_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(OR_A, local->expr, eax);
+            emit_push(rax);
+            return;
+         }
          if (auto c = try_pop_recent_op<i32_const_op>()) {
             COUNT_INSTR();
             emit_pop(rax);
