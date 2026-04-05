@@ -143,6 +143,7 @@ add_executable(unit_tests main.cpp
                           max_pages_tests.cpp
                           max_section_elements_tests.cpp
                           max_stack_bytes_tests.cpp
+                          call_return_stack_bytes_tests.cpp
                           max_table_elements_tests.cpp
                           null_tests.cpp
                           reentry_tests.cpp
@@ -152,7 +153,9 @@ add_executable(unit_tests main.cpp
                           implementation_limits_tests.cpp
                           instantiation_tests.cpp
                           backend_tests.cpp
-                          vector_tests.cpp)
+                          vector_tests.cpp
+                          globals_memory_tests.cpp
+                          call_indirect_tests.cpp)
 
 target_link_libraries(unit_tests eos-vm Catch2::Catch2)
 

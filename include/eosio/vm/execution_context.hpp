@@ -423,6 +423,17 @@ namespace eosio { namespace vm {
       std::uint32_t get_remaining_call_depth() const { return this->_remaining_call_depth; }
 
       inline native_value call_host_function(native_value* stack, uint32_t index) {
+         uint32_t mapped_index = _mod->import_functions[index];
+         native_value result{uint64_t{0}};
+
+         // Fast path: direct trampoline bypassing operand_stack and Type_Converter
+         if constexpr (!std::is_same_v<Host, std::nullptr_t>) {
+            if (Host::call_fast_rev(_host, mapped_index, stack, linear_memory(), result)) {
+               return result;
+            }
+         }
+
+         // Slow path: box args onto operand_stack, dispatch through std::function
          const auto& ft = _mod->get_function_type(index);
          uint32_t num_params = ft.param_types.size();
 #ifndef NDEBUG
@@ -437,8 +448,7 @@ namespace eosio { namespace vm {
              default: assert(!"Unexpected type in param_types.");
             }
          }
-         _rhf(_host, get_interface(), _mod->import_functions[index]);
-         native_value result{uint64_t{0}};
+         _rhf(_host, get_interface(), mapped_index);
          // guarantee that the junk bits are zero, to avoid problems.
          auto set_result = [&result](auto val) { std::memcpy(&result, &val, sizeof(val)); };
          if(ft.return_count) {
