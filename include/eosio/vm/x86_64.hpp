@@ -1468,6 +1468,13 @@ namespace eosio { namespace vm {
          emit_push(rax);
       }
       void emit_i32_shr_s() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(SAR_imm8, static_cast<imm8>(c->value & 0x1f), eax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_pop(rcx);
@@ -1491,6 +1498,13 @@ namespace eosio { namespace vm {
          emit_push(rax);
       }
       void emit_i32_rotl() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(ROL_imm8, static_cast<imm8>(c->value & 0x1f), eax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_pop(rcx);
@@ -1499,6 +1513,13 @@ namespace eosio { namespace vm {
          emit_push(rax);
       }
       void emit_i32_rotr() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(ROR_imm8, static_cast<imm8>(c->value & 0x1f), eax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(5);
          emit_pop(rcx);
@@ -1578,8 +1599,13 @@ namespace eosio { namespace vm {
          if (auto c = try_pop_recent_op<i64_const_op>()) {
             COUNT_INSTR();
             emit_pop(rax);
-            emit_mov(c->value, rcx);
-            emit_add(rcx, rax);
+            int64_t sv = static_cast<int64_t>(c->value);
+            if (sv >= INT32_MIN && sv <= INT32_MAX) {
+               emit_add(static_cast<int32_t>(sv), rax);
+            } else {
+               emit_mov(c->value, rcx);
+               emit_add(rcx, rax);
+            }
             emit_push(rax);
             return;
          }
@@ -1591,6 +1617,19 @@ namespace eosio { namespace vm {
          emit_push(rax);
       }
       void emit_i64_sub() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            int64_t sv = static_cast<int64_t>(c->value);
+            if (sv >= INT32_MIN && sv <= INT32_MAX) {
+               emit_sub(static_cast<int32_t>(sv), rax);
+            } else {
+               emit_mov(c->value, rcx);
+               emit_sub(rcx, rax);
+            }
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(6);
          emit_i64_binop(0x48, 0x29, 0xc8, 0x50);
@@ -1648,16 +1687,55 @@ namespace eosio { namespace vm {
          emit_i64_binop(0x48, 0x31, 0xd2, 0x48, 0xf7, 0xf1, 0x52);
       }
       void emit_i64_and() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            int64_t sv = static_cast<int64_t>(c->value);
+            if (sv >= INT32_MIN && sv <= INT32_MAX) {
+               emit_and(static_cast<int32_t>(sv), rax);
+            } else {
+               emit_mov(c->value, rcx);
+               emit(AND_A, rcx, rax);
+            }
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(6);
          emit_i64_binop(0x48, 0x21, 0xc8, 0x50);
       }
       void emit_i64_or() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            int64_t sv = static_cast<int64_t>(c->value);
+            if (sv >= INT32_MIN && sv <= INT32_MAX) {
+               emit_or(static_cast<int32_t>(sv), rax);
+            } else {
+               emit_mov(c->value, rcx);
+               emit(OR_A, rcx, rax);
+            }
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(6);
          emit_i64_binop(0x48, 0x09, 0xc8, 0x50);
       }
       void emit_i64_xor() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            int64_t sv = static_cast<int64_t>(c->value);
+            if (sv >= INT32_MIN && sv <= INT32_MAX) {
+               emit_xor(static_cast<int32_t>(sv), rax);
+            } else {
+               emit_mov(c->value, rcx);
+               emit(XOR_A, rcx, rax);
+            }
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(6);
          emit_i64_binop(0x48, 0x31, 0xc8, 0x50);
@@ -1708,11 +1786,25 @@ namespace eosio { namespace vm {
          emit_push(rax);
       }
       void emit_i64_rotl() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(ROL_imm8, static_cast<imm8>(c->value & 0x3f), rax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(6);
          emit_i64_binop(0x48, 0xd3, 0xc0, 0x50);
       }
       void emit_i64_rotr() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(ROR_imm8, static_cast<imm8>(c->value & 0x3f), rax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(6);
          emit_i64_binop(0x48, 0xd3, 0xc8, 0x50);
@@ -4665,7 +4757,8 @@ namespace eosio { namespace vm {
          emit(XOR_A, src, dest);
       }
 
-      void emit_xor(int32_t immediate, general_register32 dest) {
+      template<typename RM>
+      void emit_xor(int32_t immediate, RM dest) {
          if(immediate <= 0x7F && immediate >= -0x80) {
             emit(XOR_imm8, static_cast<imm8>(immediate), dest);
          } else {
@@ -4837,7 +4930,9 @@ namespace eosio { namespace vm {
       static constexpr auto OR_imm32 = IA32_WX_imm32(0x81)/1;
       static constexpr auto POPCNT = IA32_WX(0xf3, 0x0f, 0xb8);
       static constexpr auto ROL_cl = IA32_WX(0xd3)/0;
+      static constexpr auto ROL_imm8 = IA32_WX(0xc1)/0;
       static constexpr auto ROR_cl = IA32_WX(0xd3)/1;
+      static constexpr auto ROR_imm8 = IA32_WX(0xc1)/1;
       static constexpr auto SETZ = IA32(0x0f, 0x94);
       static constexpr auto SETNZ = IA32(0x0f, 0x95);
       static constexpr auto SAR_cl = IA32_WX(0xd3)/7;
