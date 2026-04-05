@@ -5,7 +5,11 @@
 
 include(FetchContent)
 
-set(BENCH_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/bench_compare.cpp)
+set(BENCH_SOURCES
+   ${CMAKE_CURRENT_SOURCE_DIR}/bench_compare.cpp
+   ${CMAKE_CURRENT_SOURCE_DIR}/bench_wasmtime.cpp
+   ${CMAKE_CURRENT_SOURCE_DIR}/bench_wasmer.cpp
+)
 set(BENCH_LIBS eos-vm)
 set(BENCH_DEFS "")
 
@@ -56,26 +60,14 @@ if(ENABLE_BENCH_WAMR)
       FetchContent_Populate(wamr)
    endif()
    if(EXISTS "${wamr_SOURCE_DIR}/build-scripts/runtime_lib.cmake")
-      set(WAMR_BUILD_PLATFORM "darwin" CACHE STRING "" FORCE)
-      set(WAMR_BUILD_INTERP 1)
-      set(WAMR_BUILD_FAST_INTERP 1)
-      set(WAMR_BUILD_AOT 0)
-      set(WAMR_BUILD_JIT 0)
-      set(WAMR_BUILD_LIBC_BUILTIN 0)
-      set(WAMR_BUILD_LIBC_WASI 0)
-      set(WAMR_BUILD_TAIL_CALL 0)
-      set(WAMR_BUILD_SIMD 0)
-      set(WAMR_BUILD_MINI_LOADER 0)
-      set(WAMR_BUILD_TARGET "${CMAKE_SYSTEM_PROCESSOR}")
-      set(WAMR_ROOT_DIR "${wamr_SOURCE_DIR}")
-      include(${wamr_SOURCE_DIR}/build-scripts/runtime_lib.cmake)
-      add_library(vmlib STATIC ${WAMR_RUNTIME_LIB_SOURCE})
-      target_include_directories(vmlib PUBLIC
-         "${wamr_SOURCE_DIR}/core/iwasm/include"
-         "${wamr_SOURCE_DIR}/core/shared/utils"
-         "${wamr_SOURCE_DIR}/core/shared/platform/include"
+      # Build WAMR in an isolated subdirectory to prevent its cmake scripts
+      # from polluting global compile options (-marm, -m32, etc.)
+      configure_file(
+         "${CMAKE_CURRENT_SOURCE_DIR}/wamr_wrapper.cmake"
+         "${CMAKE_CURRENT_BINARY_DIR}/wamr_build/CMakeLists.txt"
+         @ONLY
       )
-      target_compile_options(vmlib PRIVATE -w)
+      add_subdirectory("${CMAKE_CURRENT_BINARY_DIR}/wamr_build" "${CMAKE_CURRENT_BINARY_DIR}/wamr_build")
       list(APPEND BENCH_LIBS vmlib)
       list(APPEND BENCH_DEFS BENCH_HAS_WAMR)
       message(STATUS "WAMR benchmark: ENABLED")
@@ -189,8 +181,12 @@ if(ENABLE_BENCH_WASMER)
 
       if(ENABLE_BENCH_WASMER AND EXISTS "${WASMER_DIR}/lib")
          add_library(wasmer STATIC IMPORTED)
-         # Find the actual library file
-         find_library(WASMER_LIB NAMES wasmer libwasmer PATHS "${WASMER_DIR}/lib" NO_DEFAULT_PATH)
+         # Use static library directly to avoid dylib runtime dependency
+         if(EXISTS "${WASMER_DIR}/lib/libwasmer.a")
+            set(WASMER_LIB "${WASMER_DIR}/lib/libwasmer.a")
+         else()
+            find_library(WASMER_LIB NAMES wasmer libwasmer PATHS "${WASMER_DIR}/lib" NO_DEFAULT_PATH)
+         endif()
          if(WASMER_LIB)
             set_target_properties(wasmer PROPERTIES
                IMPORTED_LOCATION "${WASMER_LIB}"
@@ -204,6 +200,25 @@ if(ENABLE_BENCH_WASMER)
          endif()
       endif()
    endif()
+endif()
+
+# ##################################################################################################
+# Validate: wasmtime and wasmer both export wasm-c-api symbols and cannot be linked together
+# ##################################################################################################
+# WAMR, wasmtime, and wasmer all export wasm-c-api symbols (wasm_engine_new, etc.)
+# Only one of these three can be linked at a time.
+set(_wasm_c_api_count 0)
+if(ENABLE_BENCH_WAMR)
+   math(EXPR _wasm_c_api_count "${_wasm_c_api_count} + 1")
+endif()
+if(ENABLE_BENCH_WASMTIME)
+   math(EXPR _wasm_c_api_count "${_wasm_c_api_count} + 1")
+endif()
+if(ENABLE_BENCH_WASMER)
+   math(EXPR _wasm_c_api_count "${_wasm_c_api_count} + 1")
+endif()
+if(_wasm_c_api_count GREATER 1)
+   message(FATAL_ERROR "Cannot enable more than one of WAMR, wasmtime, or wasmer — they export conflicting wasm-c-api symbols. Enable only one at a time. wasm3 can be combined with any single one.")
 endif()
 
 # ##################################################################################################
