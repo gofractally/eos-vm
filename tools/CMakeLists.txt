@@ -10,6 +10,12 @@ target_link_libraries(bench-interp eos-vm)
 add_executable(bench-jit-vs-interp ${CMAKE_CURRENT_SOURCE_DIR}/bench_jit_vs_interp.cpp)
 target_link_libraries(bench-jit-vs-interp eos-vm)
 
+add_executable(bench-host-calls ${CMAKE_CURRENT_SOURCE_DIR}/bench_host_calls.cpp)
+target_link_libraries(bench-host-calls eos-vm)
+
+add_executable(bench-psibase-host ${CMAKE_CURRENT_SOURCE_DIR}/bench_psibase_host.cpp)
+target_link_libraries(bench-psibase-host eos-vm)
+
 add_executable(hello-driver ${CMAKE_CURRENT_SOURCE_DIR}/hello_driver.cpp)
 target_link_libraries(hello-driver eos-vm)
 

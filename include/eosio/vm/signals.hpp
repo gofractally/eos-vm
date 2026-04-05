@@ -40,6 +40,36 @@ namespace eosio { namespace vm {
       if (dest) {
          const void* addr = info->si_addr;
 
+#if defined(EOS_VM_JIT_SIGNAL_DIAGNOSTICS) && defined(__aarch64__) && defined(__APPLE__)
+         {
+            ucontext_t* uc = (ucontext_t*)uap;
+            uint64_t pc_val = uc->uc_mcontext->__ss.__pc;
+            uint32_t faulting_instr = 0;
+            memcpy(&faulting_instr, (void*)pc_val, 4);
+            bool in_code = !code_memory_range.empty() &&
+               pc_val >= (uint64_t)code_memory_range.data() &&
+               pc_val < (uint64_t)code_memory_range.data() + code_memory_range.size();
+            bool in_mem = !memory_range.empty() &&
+               (uint64_t)addr >= (uint64_t)memory_range.data() &&
+               (uint64_t)addr < (uint64_t)memory_range.data() + memory_range.size();
+            fprintf(stderr, "JIT FAULT sig=%d addr=%p pc=0x%llx instr=0x%08x in_code=%d in_mem=%d\n",
+                    sig, addr, pc_val, faulting_instr, in_code, in_mem);
+            auto* ss = &uc->uc_mcontext->__ss;
+            fprintf(stderr, "  X0=%016llx  X1=%016llx  X8=%016llx  X9=%016llx\n",
+                    ss->__x[0], ss->__x[1], ss->__x[8], ss->__x[9]);
+            fprintf(stderr, "  X19(ctx)=%016llx  X20(mem)=%016llx  X21(depth)=%016llx\n",
+                    ss->__x[19], ss->__x[20], ss->__x[21]);
+            fprintf(stderr, "  FP=%016llx  LR=%016llx  SP=%016llx\n",
+                    ss->__fp, ss->__lr, ss->__sp);
+            if (in_code && in_mem) {
+               uint64_t mem_base = ss->__x[20];
+               int64_t offset_from_base = (int64_t)((uint64_t)addr - mem_base);
+               fprintf(stderr, "  Fault offset from X20(mem_base): %lld (0x%llx)\n",
+                       offset_from_base, (uint64_t)offset_from_base);
+            }
+         }
+#endif
+
          //neither range set means legacy catch-all behavior; useful for some of the old tests
          if (code_memory_range.empty() && memory_range.empty())
             siglongjmp(*dest, sig);

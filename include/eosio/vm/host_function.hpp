@@ -355,6 +355,217 @@ namespace eosio { namespace vm {
    template<>
    constexpr auto to_wasm_type<v128_const_t>() { return types::v128; }
 
+   // Fast trampoline support: bypass Type_Converter/operand_stack for host functions
+   // whose parameters are simple scalars, span<T>, or argument_proxy<T*>.
+
+   namespace detail {
+      // Classify parameter types for fast trampoline eligibility
+
+      // Simple scalar: i32/i64/f32/f64 — consumes 1 native_value
+      template<typename T, typename = void>
+      inline constexpr bool is_simple_wasm_type_v = false;
+      template<typename T>
+      inline constexpr bool is_simple_wasm_type_v<T, std::enable_if_t<
+         !std::is_void_v<std::decay_t<T>> &&
+         !std::is_reference_v<T> &&
+         !std::is_pointer_v<T> &&
+         ((std::is_integral_v<std::decay_t<T>> && (sizeof(std::decay_t<T>) <= 8)) ||
+          std::is_same_v<std::decay_t<T>, float> ||
+          std::is_same_v<std::decay_t<T>, double>)
+      >> = true;
+
+      template<typename T>
+      inline constexpr bool is_simple_wasm_return_v =
+         std::is_void_v<T> || is_simple_wasm_type_v<T>;
+
+      // A type is fast-trampoline-eligible if it's a simple scalar, span, or argument_proxy
+      template<typename T>
+      inline constexpr bool is_fast_eligible_v =
+         is_simple_wasm_type_v<T> || is_span_type_v<T> || is_argument_proxy_type_v<T>;
+
+      // How many native_value slots a parameter consumes
+      template<typename T, typename = void>
+      inline constexpr std::size_t native_slot_count_v = 1;
+      // span<T> consumes 2 slots (ptr + len)
+      template<typename T>
+      inline constexpr std::size_t native_slot_count_v<T, std::enable_if_t<is_span_type_v<T>>> = 2;
+      // argument_proxy<span<T>> consumes 2 slots
+      template<typename T>
+      inline constexpr std::size_t native_slot_count_v<T, std::enable_if_t<
+         is_argument_proxy_type_v<T> && is_span_type_v<typename T::proxy_type>>> = 2;
+
+      // Total native_value slots for all args
+      template<typename Tuple, std::size_t... Is>
+      constexpr std::size_t total_native_slots_impl(std::index_sequence<Is...>) {
+         return (native_slot_count_v<std::tuple_element_t<Is, Tuple>> + ... + 0);
+      }
+      template<typename Tuple>
+      inline constexpr std::size_t total_native_slots_v =
+         total_native_slots_impl<Tuple>(std::make_index_sequence<std::tuple_size_v<Tuple>>{});
+
+      // Compute the starting native_value offset for parameter I
+      template<typename Tuple, std::size_t I>
+      constexpr std::size_t native_offset_of() {
+         if constexpr (I == 0) return 0;
+         else return native_offset_of<Tuple, I-1>() + native_slot_count_v<std::tuple_element_t<I-1, Tuple>>;
+      }
+
+      // Check all args are eligible
+      template<typename Tuple, std::size_t... Is>
+      constexpr bool all_fast_eligible_impl(std::index_sequence<Is...>) {
+         return (is_fast_eligible_v<std::tuple_element_t<Is, Tuple>> && ...);
+      }
+      template<typename Tuple>
+      constexpr bool all_fast_eligible_impl(std::index_sequence<>) { return true; }
+      template<typename Tuple>
+      inline constexpr bool all_fast_eligible_v =
+         all_fast_eligible_impl<Tuple>(std::make_index_sequence<std::tuple_size_v<Tuple>>{});
+
+      // Read a native_value as the appropriate C++ type (scalars only)
+      template<typename T>
+      inline std::decay_t<T> read_native_arg(const native_value& v) {
+         using D = std::decay_t<T>;
+         if constexpr (std::is_same_v<D, float>)
+            return v.f32;
+         else if constexpr (std::is_same_v<D, double>)
+            return v.f64;
+         else if constexpr (std::is_integral_v<D> && sizeof(D) <= 4)
+            return static_cast<D>(v.i32);
+         else
+            return static_cast<D>(v.i64);
+      }
+
+      // Read a parameter from native_value array at given offset, with memory base for span/proxy types.
+      // Reversed=true when reading from a reverse-order buffer (JIT stack order):
+      // multi-slot types (span, argument_proxy<span>) have their sub-fields reversed.
+      template<typename T, bool Reversed = false>
+      inline decltype(auto) read_fast_arg(native_value* args, std::size_t offset, char* memory) {
+         if constexpr (is_simple_wasm_type_v<T>) {
+            return read_native_arg<T>(args[offset]);
+         } else if constexpr (is_span_type_v<T>) {
+            using value_type = typename T::value_type;
+            // In forward order: [offset]=ptr, [offset+1]=len
+            // In reverse order: [offset]=len, [offset+1]=ptr (sub-fields are swapped on stack)
+            constexpr std::size_t ptr_idx = Reversed ? 1 : 0;
+            constexpr std::size_t len_idx = Reversed ? 0 : 1;
+            wasm_ptr_t ptr = args[offset + ptr_idx].i32;
+            wasm_size_t len = args[offset + len_idx].i32;
+            void* addr = memory + ptr;
+            if (len > 0) {
+               // Validate: touch last byte (same as execution_interface::validate_pointer)
+               EOS_VM_ASSERT(len <= std::numeric_limits<wasm_size_t>::max() / (wasm_size_t)sizeof(value_type),
+                             wasm_interpreter_exception, "length will overflow");
+               volatile auto check = *(reinterpret_cast<const char*>(addr) + (len * sizeof(value_type)) - 1);
+               ignore_unused_variable_warning(check);
+            }
+            return T{static_cast<typename T::pointer>(addr), len};
+         } else if constexpr (is_argument_proxy_type_v<T>) {
+            if constexpr (is_span_type_v<typename T::proxy_type>) {
+               // argument_proxy<span<U>> — consumes 2 slots: ptr, len
+               using pointee_type = typename T::pointee_type;
+               constexpr std::size_t ptr_idx = Reversed ? 1 : 0;
+               constexpr std::size_t len_idx = Reversed ? 0 : 1;
+               wasm_ptr_t ptr = args[offset + ptr_idx].i32;
+               wasm_size_t len = args[offset + len_idx].i32;
+               void* addr = memory + ptr;
+               if (len > 0) {
+                  EOS_VM_ASSERT(len <= std::numeric_limits<wasm_size_t>::max() / (wasm_size_t)sizeof(pointee_type),
+                                wasm_interpreter_exception, "length will overflow");
+                  volatile auto check = *(reinterpret_cast<const char*>(addr) + (len * sizeof(pointee_type)) - 1);
+                  ignore_unused_variable_warning(check);
+               }
+               return T{addr, len};
+            } else {
+               // argument_proxy<U*> — consumes 1 slot: ptr
+               using pointee_type = typename T::pointee_type;
+               wasm_ptr_t ptr = args[offset].i32;
+               void* addr = memory + ptr;
+               // Validate single element
+               volatile auto check = *(reinterpret_cast<const char*>(addr) + sizeof(pointee_type) - 1);
+               ignore_unused_variable_warning(check);
+               return T{addr};
+            }
+         }
+      }
+
+      // Write a return value into a native_value
+      template<typename T>
+      inline native_value write_native_result(T val) {
+         if constexpr (std::is_same_v<std::decay_t<T>, float>) {
+            native_value r{uint64_t{0}};
+            r.f32 = val;
+            return r;
+         } else if constexpr (std::is_same_v<std::decay_t<T>, double>) {
+            native_value r{uint64_t{0}};
+            r.f64 = val;
+            return r;
+         } else if constexpr (std::is_integral_v<std::decay_t<T>> && sizeof(std::decay_t<T>) <= 4) {
+            native_value r{uint64_t{0}};
+            r.i32 = static_cast<uint32_t>(val);
+            return r;
+         } else {
+            native_value r{uint64_t{0}};
+            r.i64 = static_cast<uint64_t>(val);
+            return r;
+         }
+      }
+   } // ns detail
+
+   // Extended fast trampoline type: includes memory pointer for span/proxy construction.
+   template<typename Cls>
+   using fast_host_trampoline_t = native_value(*)(Cls*, native_value*, char*);
+
+   // Forward-order trampoline: args[0..] in parameter order
+   template<auto F, typename Cls, typename R, typename Args, std::size_t... Is>
+   native_value fast_trampoline_fwd_impl(Cls* host, native_value* args, char* memory, std::index_sequence<Is...>) {
+      auto call = [&]() {
+         if constexpr (std::is_same_v<Cls, standalone_function_t>)
+            return std::invoke(F, detail::read_fast_arg<std::tuple_element_t<Is, Args>>(
+               args, detail::native_offset_of<Args, Is>(), memory)...);
+         else
+            return std::invoke(F, host, detail::read_fast_arg<std::tuple_element_t<Is, Args>>(
+               args, detail::native_offset_of<Args, Is>(), memory)...);
+      };
+      if constexpr (std::is_void_v<R>) {
+         call();
+         return native_value{uint64_t{0}};
+      } else {
+         return detail::write_native_result(call());
+      }
+   }
+
+   // Reverse-order trampoline: args[0] = last WASM stack slot
+   template<auto F, typename Cls, typename R, typename Args, std::size_t... Is>
+   native_value fast_trampoline_rev_impl(Cls* host, native_value* args, char* memory, std::index_sequence<Is...>) {
+      constexpr std::size_t total = detail::total_native_slots_v<Args>;
+      auto call = [&]() {
+         if constexpr (std::is_same_v<Cls, standalone_function_t>)
+            return std::invoke(F, detail::read_fast_arg<std::tuple_element_t<Is, Args>, true>(
+               args, total - detail::native_offset_of<Args, Is>() - detail::native_slot_count_v<std::tuple_element_t<Is, Args>>, memory)...);
+         else
+            return std::invoke(F, host, detail::read_fast_arg<std::tuple_element_t<Is, Args>, true>(
+               args, total - detail::native_offset_of<Args, Is>() - detail::native_slot_count_v<std::tuple_element_t<Is, Args>>, memory)...);
+      };
+      if constexpr (std::is_void_v<R>) {
+         call();
+         return native_value{uint64_t{0}};
+      } else {
+         return detail::write_native_result(call());
+      }
+   }
+
+   template<auto F, typename Cls, typename R, typename Args>
+   native_value fast_trampoline_fwd(Cls* host, native_value* args, char* memory) {
+      return fast_trampoline_fwd_impl<F, Cls, R, Args>(host, args, memory,
+         std::make_index_sequence<std::tuple_size_v<Args>>{});
+   }
+
+   template<auto F, typename Cls, typename R, typename Args>
+   native_value fast_trampoline_rev(Cls* host, native_value* args, char* memory) {
+      return fast_trampoline_rev_impl<F, Cls, R, Args>(host, args, memory,
+         std::make_index_sequence<std::tuple_size_v<Args>>{});
+   }
+
    template <typename TC, typename T>
    constexpr auto to_wasm_type_v = to_wasm_type<decltype(detail::resolve_result(std::declval<TC&>(), std::declval<T>()))>();
    template <typename TC>
@@ -427,6 +638,8 @@ namespace eosio { namespace vm {
          std::unordered_map<host_func_pair, uint32_t, host_func_pair_hash> named_mapping;
          std::vector<std::function<void(Cls*, Type_Converter&)>>           functions;
          std::vector<host_function>                                        host_functions;
+         std::vector<fast_host_trampoline_t<Cls>>                          fast_fwd;  // forward order (interpreter)
+         std::vector<fast_host_trampoline_t<Cls>>                          fast_rev;  // reverse order (JIT)
          size_t                                                            current_index = 0;
 
          template <auto F, typename R, typename Args, typename Preconditions>
@@ -438,6 +651,16 @@ namespace eosio { namespace vm {
             host_functions.push_back(
                   function_types_provider<Type_Converter, R, Args>(
                      std::make_index_sequence<std::tuple_size_v<Args>>()));
+            // Generate fast trampolines for functions with eligible args and no preconditions
+            if constexpr (detail::all_fast_eligible_v<Args> &&
+                          detail::is_simple_wasm_return_v<R> &&
+                          std::tuple_size_v<Preconditions> == 0) {
+               fast_fwd.push_back(&fast_trampoline_fwd<F, Cls, R, Args>);
+               fast_rev.push_back(&fast_trampoline_rev<F, Cls, R, Args>);
+            } else {
+               fast_fwd.push_back(nullptr);
+               fast_rev.push_back(nullptr);
+            }
          }
 
          static mappings& get() {
@@ -475,9 +698,58 @@ namespace eosio { namespace vm {
       }
 
       void operator()(Cls* host, Execution_Interface ei, uint32_t index) {
+         auto trampoline = mappings::get().fast_fwd[index];
+         if (trampoline) {
+            // Fast path: pop args into native_value array, call directly, push result.
+            const auto& hf = mappings::get().host_functions[index];
+            uint32_t num_params = hf.params.size();
+            native_value args[num_params > 0 ? num_params : 1];
+            // Pop from stack: top = last param. Store in forward order for fwd trampoline.
+            for (uint32_t i = num_params; i > 0; --i) {
+               auto el = ei.pop_operand();
+               switch(hf.params[i - 1]) {
+                case types::i32: args[i - 1] = native_value{(uint64_t)el.to_ui32()}; break;
+                case types::i64: args[i - 1] = native_value{el.to_ui64()}; break;
+                case types::f32: args[i - 1] = native_value{el.to_f32()}; break;
+                case types::f64: args[i - 1] = native_value{el.to_f64()}; break;
+                default: break;
+               }
+            }
+            native_value result = trampoline(host, args, static_cast<char*>(ei.get_memory()));
+            if (!hf.ret.empty()) {
+               switch(hf.ret[0]) {
+                case types::i32: ei.push_operand(i32_const_t{result.i32}); break;
+                case types::i64: ei.push_operand(i64_const_t{result.i64}); break;
+                case types::f32: ei.push_operand(f32_const_t{result.f32}); break;
+                case types::f64: ei.push_operand(f64_const_t{result.f64}); break;
+                default: break;
+               }
+            }
+            return;
+         }
          const auto& _func = mappings::get().functions[index];
          auto tc = Type_Converter{host, std::move(ei)};
          std::invoke(_func, host, tc);
+      }
+
+      // Fast path for JIT: args in reverse order (stack[0] = last param)
+      static bool call_fast_rev(Cls* host, uint32_t index, native_value* args, char* memory, native_value& result) {
+         auto trampoline = mappings::get().fast_rev[index];
+         if (trampoline) {
+            result = trampoline(host, args, memory);
+            return true;
+         }
+         return false;
+      }
+
+      // Fast path for interpreter: args in forward order (args[0] = first param)
+      static bool call_fast_fwd(Cls* host, uint32_t index, native_value* args, char* memory, native_value& result) {
+         auto trampoline = mappings::get().fast_fwd[index];
+         if (trampoline) {
+            result = trampoline(host, args, memory);
+            return true;
+         }
+         return false;
       }
    };
 }} // namespace eosio::vm

@@ -313,8 +313,8 @@ namespace eosio { namespace vm {
       // Prologue / Epilogue
       // ===================================================================
 
-      static constexpr std::size_t max_prologue_size = 64;
-      static constexpr std::size_t max_epilogue_size = 32;
+      static constexpr std::size_t max_prologue_size = 80;  // includes 3-instruction stack limit check
+      static constexpr std::size_t max_epilogue_size = 80;  // includes 3-instruction stack limit restore + debug check
 
       void emit_prologue(const func_type& /*ft*/, const std::vector<local_entry>& locals, uint32_t funcnum) {
          _ft = &_mod.types[_mod.functions[funcnum]];
@@ -367,16 +367,16 @@ namespace eosio { namespace vm {
             }
          }
          assert((char*)code <= (char*)_code_start + max_prologue_size + _local_count * 4 + 32);
+
       }
 
-      void emit_epilogue(const func_type& ft, const std::vector<local_entry>& /*locals*/, uint32_t /*funcnum*/) {
+      void emit_epilogue(const func_type& ft, const std::vector<local_entry>& /*locals*/, uint32_t funcnum) {
          emit_check_stack_limit_end();
          // Patch the restore ADD now that we know where it is
          // (set_stack_usage is called before emit_epilogue by the parser)
          if constexpr (StackLimitIsBytes) {
-            if (stack_limit_restore && stack_usage <= 4095) {
-               uint32_t instr = 0x11000000 | (stack_usage << 10) | (X21 << 5) | X21;
-               std::memcpy(stack_limit_restore, &instr, 4);
+            if (stack_limit_restore) {
+               patch_stack_limit_slots(stack_limit_restore, stack_usage, false);
             }
          }
          if(ft.return_count != 0) {
@@ -388,6 +388,28 @@ namespace eosio { namespace vm {
                emit_pop_x(X0);
             }
          }
+#if 0 // DEBUG: check stack balance at epilogue
+         {
+            // After popping return value, SP should be FP - _local_count * 16
+            // SUB X8, X29, #(_local_count * 16)
+            uint64_t expected_offset = _local_count * 16;
+            if (expected_offset <= 4095) {
+               emit32(0xD1000000 | (static_cast<uint32_t>(expected_offset) << 10) | (FP << 5) | X8);
+            } else {
+               emit_mov_imm64(X8, expected_offset);
+               // SUB X8, X29, X8
+               emit32(0xCB0803A8);
+            }
+            // MOV X9, SP
+            emit32(0x910003E9);
+            // CMP X9, X8
+            emit32(0xEB08013F);
+            // B.EQ +8 (skip BRK)
+            emit32(0x54000040);
+            // BRK #0xBAD  (stack imbalance detected!)
+            emit32(0xD42D75A0);
+         }
+#endif
          // MOV SP, X29
          emit32(0x91000000 | (FP << 5) | SP);
          // LDP X29, X30, [SP], #16
@@ -3424,15 +3446,46 @@ namespace eosio { namespace vm {
             }
             stack_usage = static_cast<uint32_t>(usage);
             if (stack_limit_entry) {
-               // Patch the SUBS immediate in the prologue
-               if (stack_usage <= 4095) {
-                  uint32_t instr = 0x71000000 | (stack_usage << 10) | (X21 << 5) | X21;
-                  std::memcpy(stack_limit_entry, &instr, 4);
-               }
+               // Patch the prologue stack limit check (3 instruction slots).
+               // Layout: [slot0][slot1][SUBS] where SUBS is either imm or reg form.
+               patch_stack_limit_slots(stack_limit_entry, stack_usage, true);
                // Note: stack_limit_restore is patched in emit_epilogue since it
                // hasn't been emitted yet when this is called
             }
          }
+      }
+
+      // Patch the 3-instruction sequence for stack limit check/restore.
+      // For is_sub=true:  SUBS W21, W21, #imm or SUBS W21, W21, W16
+      // For is_sub=false: ADD W21, W21, #imm  or ADD W21, W21, W16
+      void patch_stack_limit_slots(void* slots, uint32_t value, bool is_sub) {
+         uint32_t instrs[3];
+         if (value <= 4095) {
+            // Use immediate form: NOP; NOP; SUBS/ADD W21, W21, #value
+            instrs[0] = 0xD503201F; // NOP
+            instrs[1] = 0xD503201F; // NOP
+            if (is_sub) {
+               instrs[2] = 0x71000000 | (value << 10) | (X21 << 5) | X21; // SUBS W21, W21, #value
+            } else {
+               instrs[2] = 0x11000000 | (value << 10) | (X21 << 5) | X21; // ADD W21, W21, #value
+            }
+         } else {
+            // Use register form: MOVZ W16, #lo; MOVK W16, #hi, LSL #16; SUBS/ADD W21, W21, W16
+            uint16_t lo = value & 0xFFFF;
+            uint16_t hi = (value >> 16) & 0xFFFF;
+            instrs[0] = 0x52800000 | (static_cast<uint32_t>(lo) << 5) | X16; // MOVZ W16, #lo
+            if (hi != 0) {
+               instrs[1] = 0x72A00000 | (static_cast<uint32_t>(hi) << 5) | X16; // MOVK W16, #hi, LSL #16
+            } else {
+               instrs[1] = 0xD503201F; // NOP (hi is zero, MOVZ was sufficient)
+            }
+            if (is_sub) {
+               instrs[2] = 0x6B100000 | (X21 << 5) | X21; // SUBS W21, W21, W16
+            } else {
+               instrs[2] = 0x0B100000 | (X21 << 5) | X21; // ADD W21, W21, W16
+            }
+         }
+         std::memcpy(slots, instrs, 12);
       }
 
     private:
@@ -3576,9 +3629,10 @@ namespace eosio { namespace vm {
             // ADD Xd, Xn, #imm, LSL #12
             emit32(0x91400000 | ((imm >> 12) << 10) | (rn << 5) | rd);
          } else {
-            emit_mov_imm64(X8, imm);
-            // ADD Xd, Xn, X8
-            emit32(0x8B080000 | (rn << 5) | rd);
+            // Use X16 as scratch to avoid clobbering rd/rn when they are X8
+            emit_mov_imm64(X16, imm);
+            // ADD Xd, Xn, X16
+            emit32(0x8B100000 | (rn << 5) | rd);
          }
       }
 
@@ -3609,9 +3663,10 @@ namespace eosio { namespace vm {
             // CMP Wn, #value = SUBS WZR, Wn, #value
             emit32(0x7100001F | (value << 10) | (rn << 5));
          } else {
-            emit_mov_imm32(X8, value);
-            // CMP Wn, W8
-            emit32(0x6B08001F | (rn << 5));
+            // Use X16 as scratch to avoid clobbering rn when rn is X8
+            emit_mov_imm32(X16, value);
+            // CMP Wn, W16
+            emit32(0x6B10001F | (rn << 5));
          }
       }
 
@@ -3788,9 +3843,14 @@ namespace eosio { namespace vm {
 
       void emit_check_stack_limit() {
          if constexpr (StackLimitIsBytes) {
-            // SUBS W21, W21, #stack_usage (patched later)
+            // Reserve space for stack limit check (patched later by set_stack_usage/emit_epilogue).
+            // For stack_usage <= 4095: NOP; SUBS W21, W21, #imm
+            // For stack_usage > 4095: MOVZ W16, #lo; MOVK W16, #hi, LSL #16; SUBS W21, W21, W16
+            // We always reserve 2 slots for the immediate materialization + 1 for SUBS.
             stack_limit_entry = code;
-            emit32(0x71000000 | (X21 << 5) | X21); // placeholder, imm12=0
+            emit32(0xD503201F); // NOP (placeholder slot 0)
+            emit32(0xD503201F); // NOP (placeholder slot 1)
+            emit32(0x6B1002B5); // SUBS W21, W21, W16 (constant — patched to imm form for small values)
             // B.LO stack_overflow_handler
             emit_branch_to_handler(COND_LO, stack_overflow_handler);
          }
@@ -3798,9 +3858,11 @@ namespace eosio { namespace vm {
 
       void emit_check_stack_limit_end() {
          if constexpr (StackLimitIsBytes) {
-            // ADD W21, W21, #stack_usage (patched later)
+            // Reserve matching space for stack limit restore (patched in emit_epilogue).
             stack_limit_restore = code;
-            emit32(0x11000000 | (X21 << 5) | X21); // placeholder
+            emit32(0xD503201F); // NOP (placeholder slot 0)
+            emit32(0xD503201F); // NOP (placeholder slot 1)
+            emit32(0x0B1002B5); // ADD W21, W21, W16 (constant — patched to imm form for small values)
          }
       }
 
@@ -4179,6 +4241,9 @@ namespace eosio { namespace vm {
       }
 
       void emit_multipop(const func_type& ft) {
+         // Call boundary: invalidate peephole state so no optimization
+         // reaches across the BL instruction that precedes this.
+         invalidate_recent_ops();
          uint32_t total_size = 0;
          for(uint32_t i = 0; i < ft.param_types.size(); ++i) {
             if(ft.param_types[i] == types::v128) {
@@ -4201,6 +4266,12 @@ namespace eosio { namespace vm {
             if (ft.return_count != 0) {
                emit_push_x(X0);
             }
+         }
+         // Prevent peephole from undoing the push and leaving the SP
+         // adjustment orphaned. The ADD SP and push are a coupled pair
+         // that must not be partially unwound.
+         if (total_size != 0) {
+            invalidate_recent_ops();
          }
       }
 
@@ -4518,7 +4589,9 @@ namespace eosio { namespace vm {
          return 0;
       }
 
-      static void on_memory_error() { throw_<wasm_memory_exception>("wasm memory out-of-bounds"); }
+      static void on_memory_error() {
+         throw_<wasm_memory_exception>("wasm memory out-of-bounds");
+      }
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>( "unreachable" ); }
       static void on_fp_error() { vm::throw_<wasm_interpreter_exception>( "floating point error" ); }
       static void on_call_indirect_error() { vm::throw_<wasm_interpreter_exception>( "call_indirect out of range" ); }
