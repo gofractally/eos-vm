@@ -433,6 +433,13 @@ namespace eosio { namespace vm {
       }
 
       void* emit_if() {
+         // Try condition folding
+         if (auto cond = try_pop_recent_op<condition_op>()) {
+            // B.!cond target (branch if condition is false)
+            void* branch = code;
+            emit32(0x54000000 | invert_condition(cond->cond));
+            return branch;
+         }
          // Pop condition
          emit_pop_x(X0);
          // CBZ W0, target (patched later)
@@ -459,6 +466,25 @@ namespace eosio { namespace vm {
       }
 
       void* emit_br_if(uint32_t depth_change, uint8_t rt) {
+         // Try to fold: if last op was a comparison, use B.cond directly
+         if (auto cond = try_pop_recent_op<condition_op>()) {
+            if (is_simple_multipop(depth_change, rt)) {
+               // B.cond target (patched later)
+               void* branch = code;
+               emit32(0x54000000 | cond->cond);
+               return branch;
+            } else {
+               // B.!cond skip
+               void* skip = code;
+               emit32(0x54000000 | invert_condition(cond->cond));
+               emit_multipop(depth_change, rt);
+               void* branch = code;
+               emit32(0x14000000);
+               fix_branch(skip, code);
+               return branch;
+            }
+         }
+
          // Pop condition
          emit_pop_x(X0);
 
@@ -1103,9 +1129,10 @@ namespace eosio { namespace vm {
          emit_pop_x(X0);
          // CMP W0, #0
          emit32(0x7100001F | (X0 << 5));
-         // CSET X0, EQ
+         auto start = code; // capture AFTER CMP
          emit_cset(X0, COND_EQ);
          emit_push_x(X0);
+         push_recent_op(start, condition_op{COND_EQ});
       }
 
       void emit_i32_eq() {
@@ -1156,8 +1183,10 @@ namespace eosio { namespace vm {
          emit_pop_x(X0);
          // CMP X0, #0
          emit32(0xF100001F | (X0 << 5));
+         auto start = code; // capture AFTER CMP
          emit_cset(X0, COND_EQ);
          emit_push_x(X0);
+         push_recent_op(start, condition_op{COND_EQ});
       }
 
       void emit_i64_eq() { emit_i64_relop(COND_EQ); }
@@ -4093,8 +4122,10 @@ namespace eosio { namespace vm {
          emit_pop_x(X0); // lhs
          // CMP W0, W1
          emit32(0x6B01001F | (X0 << 5));
+         auto start = code; // capture AFTER CMP — only CSET+push will be rewound
          emit_cset(X0, cond);
          emit_push_x(X0);
+         push_recent_op(start, condition_op{cond});
       }
 
       void emit_i64_relop(uint32_t cond) {
@@ -4102,8 +4133,10 @@ namespace eosio { namespace vm {
          emit_pop_x(X0);
          // CMP X0, X1
          emit32(0xEB01001F | (X0 << 5));
+         auto start = code; // capture AFTER CMP
          emit_cset(X0, cond);
          emit_push_x(X0);
+         push_recent_op(start, condition_op{cond});
       }
 
       // ===================================================================
@@ -4528,11 +4561,12 @@ namespace eosio { namespace vm {
       struct i32_const_op { uint32_t value; };
       struct i64_const_op { uint64_t value; };
       struct register_push_op { uint32_t reg; };
+      struct condition_op { uint32_t cond; };
 
       struct recent_op_t {
          unsigned char* start = nullptr;
          unsigned char* end = nullptr;
-         std::variant<std::monostate, register_push_op, i32_const_op, i64_const_op> data;
+         std::variant<std::monostate, register_push_op, i32_const_op, i64_const_op, condition_op> data;
       };
 
       recent_op_t recent_ops[2] = {};
