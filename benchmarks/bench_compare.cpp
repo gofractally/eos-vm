@@ -14,6 +14,10 @@
 #include <cstring>
 #include <string>
 
+#ifdef BENCH_HAS_COMPUTE
+#include <eosio/vm/utils.hpp>
+#endif
+
 #ifdef BENCH_HAS_WASM3
 #include <wasm3.h>
 #include <m3_env.h>
@@ -406,6 +410,90 @@ static double run_wamr(const std::vector<uint8_t>& wasm, const char* func, uint3
 #endif
 
 // ============================================================================
+// Compute benchmark runners (zero-import WASM modules)
+// ============================================================================
+
+template<typename Impl>
+static double run_eosvm_compute(const std::vector<uint8_t>& wasm_bytes, const char* func, uint32_t n) {
+   using backend_t = eosio::vm::backend<std::nullptr_t, Impl>;
+   wasm_code code(wasm_bytes.begin(), wasm_bytes.end());
+   wasm_allocator wa;
+   backend_t bkend(code, &wa);
+   bkend.initialize(nullptr);
+
+   auto t1 = std::chrono::high_resolution_clock::now();
+   bkend.call_with_return("env", func, n);
+   auto t2 = std::chrono::high_resolution_clock::now();
+   return std::chrono::duration<double, std::milli>(t2 - t1).count();
+}
+
+#ifdef BENCH_HAS_WASM3
+static double run_wasm3_compute(const std::vector<uint8_t>& wasm, const char* func, uint32_t n) {
+   auto wasm_copy = wasm;
+   IM3Environment env = m3_NewEnvironment();
+   IM3Runtime runtime = m3_NewRuntime(env, 256 * 1024, nullptr);
+
+   IM3Module module = nullptr;
+   M3Result r = m3_ParseModule(env, &module, wasm_copy.data(), static_cast<uint32_t>(wasm_copy.size()));
+   if (r) { fprintf(stderr, "wasm3 parse error: %s\n", r); return -1; }
+   r = m3_LoadModule(runtime, module);
+   if (r) { fprintf(stderr, "wasm3 load error: %s\n", r); return -1; }
+
+   IM3Function f = nullptr;
+   r = m3_FindFunction(&f, runtime, func);
+   if (r) { fprintf(stderr, "wasm3 find %s: %s\n", func, r); m3_FreeRuntime(runtime); m3_FreeEnvironment(env); return -1; }
+
+   auto t1 = std::chrono::high_resolution_clock::now();
+   r = m3_CallV(f, (int32_t)n);
+   auto t2 = std::chrono::high_resolution_clock::now();
+   if (r) { fprintf(stderr, "wasm3 call error: %s\n", r); }
+
+   m3_FreeRuntime(runtime);
+   m3_FreeEnvironment(env);
+   return std::chrono::duration<double, std::milli>(t2 - t1).count();
+}
+#endif
+
+#ifdef BENCH_HAS_WAMR
+static double run_wamr_compute(const std::vector<uint8_t>& wasm, const char* func, uint32_t n) {
+   static bool inited = false;
+   if (!inited) {
+      wasm_runtime_init();
+      inited = true;
+   }
+
+   auto wasm_copy = wasm;
+   char error_buf[256];
+   wasm_module_t module = wasm_runtime_load(wasm_copy.data(),
+                                            static_cast<uint32_t>(wasm_copy.size()),
+                                            error_buf, sizeof(error_buf));
+   if (!module) { fprintf(stderr, "WAMR load error: %s\n", error_buf); return -1; }
+
+   wasm_module_inst_t inst = wasm_runtime_instantiate(module, 256*1024, 256*1024,
+                                                       error_buf, sizeof(error_buf));
+   if (!inst) { fprintf(stderr, "WAMR inst error: %s\n", error_buf); wasm_runtime_unload(module); return -1; }
+
+   wasm_exec_env_t exec_env = wasm_runtime_create_exec_env(inst, 256*1024);
+   if (!exec_env) { fprintf(stderr, "WAMR exec_env error\n"); wasm_runtime_deinstantiate(inst); wasm_runtime_unload(module); return -1; }
+
+   wasm_function_inst_t f = wasm_runtime_lookup_function(inst, func);
+   if (!f) { fprintf(stderr, "WAMR: function %s not found\n", func); wasm_runtime_destroy_exec_env(exec_env); wasm_runtime_deinstantiate(inst); wasm_runtime_unload(module); return -1; }
+
+   uint32_t argv[2] = {n, 0};
+
+   auto t1 = std::chrono::high_resolution_clock::now();
+   bool ok = wasm_runtime_call_wasm(exec_env, f, 1, argv);
+   auto t2 = std::chrono::high_resolution_clock::now();
+   if (!ok) { fprintf(stderr, "WAMR call error: %s\n", wasm_runtime_get_exception(inst)); }
+
+   wasm_runtime_destroy_exec_env(exec_env);
+   wasm_runtime_deinstantiate(inst);
+   wasm_runtime_unload(module);
+   return std::chrono::duration<double, std::milli>(t2 - t1).count();
+}
+#endif
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -433,60 +521,188 @@ int main() {
       {"mixed (5 calls/iter)",  "bench_mixed",       5},
    };
 
-   printf("Host-call benchmark — %u iterations per test\n", N);
-   printf("Each test loops N times; \"mixed\" makes 5 host calls per iteration.\n\n");
+   // =========================================================================
+   // Collect results into a table, then print with relative-to-fastest
+   // =========================================================================
 
-   printf("%-24s %10s", "Test", "Interp");
+   struct runtime_info {
+      const char* name;
+      bool        enabled;
+   };
+   enum RT { RT_INTERP, RT_JIT, RT_WASM3, RT_WAMR, RT_WASMTIME, RT_WASMER, RT_COUNT };
+
+   runtime_info runtimes[RT_COUNT] = {
+      {"eos-vm interp", true},
 #if defined(__x86_64__) || defined(__aarch64__)
-   printf(" %10s %8s", "JIT", "Speedup");
+      {"eos-vm JIT",    true},
+#else
+      {"eos-vm JIT",    false},
 #endif
 #ifdef BENCH_HAS_WASM3
-   printf(" %10s", "wasm3");
+      {"wasm3",         true},
+#else
+      {"wasm3",         false},
 #endif
 #ifdef BENCH_HAS_WAMR
-   printf(" %10s", "WAMR");
+      {"WAMR",          true},
+#else
+      {"WAMR",          false},
 #endif
 #ifdef BENCH_HAS_WASMTIME
-   printf(" %10s", "wasmtime");
+      {"wasmtime",      true},
+#else
+      {"wasmtime",      false},
 #endif
 #ifdef BENCH_HAS_WASMER
-   printf(" %10s", "wasmer");
+      {"wasmer",        true},
+#else
+      {"wasmer",        false},
 #endif
-   printf("   (all times in ms)\n");
-   printf("%s\n", std::string(120, '-').c_str());
+   };
 
-   for (auto& b : benches) {
-      double interp_ms = run_eosvm<interpreter>(code, wa, b.func, N);
-      printf("%-24s %10.1f", b.label, interp_ms);
+   // Count active runtimes and compute column width
+   int num_active = 0;
+   for (int r = 0; r < RT_COUNT; r++)
+      if (runtimes[r].enabled) num_active++;
 
+   // Print a results table: ms values first, then relative-to-fastest
+   auto print_table = [&](const char* title, const char* subtitle,
+                          int num_tests, const char* labels[],
+                          double results[][RT_COUNT]) {
+      // Find the fastest for each test
+      double fastest[16];
+      for (int t = 0; t < num_tests; t++) {
+         fastest[t] = 1e18;
+         for (int r = 0; r < RT_COUNT; r++)
+            if (runtimes[r].enabled && results[t][r] > 0 && results[t][r] < fastest[t])
+               fastest[t] = results[t][r];
+      }
+
+      printf("\n%s\n", title);
+      if (subtitle) printf("%s\n", subtitle);
+
+      // --- Raw ms table ---
+      printf("\n  %-26s", "");
+      for (int r = 0; r < RT_COUNT; r++)
+         if (runtimes[r].enabled)
+            printf(" %14s", runtimes[r].name);
+      printf("\n  %-26s", "");
+      for (int r = 0; r < RT_COUNT; r++)
+         if (runtimes[r].enabled)
+            printf(" %14s", "(ms)");
+      printf("\n  %s\n", std::string(26 + num_active * 15, '-').c_str());
+      for (int t = 0; t < num_tests; t++) {
+         printf("  %-26s", labels[t]);
+         for (int r = 0; r < RT_COUNT; r++)
+            if (runtimes[r].enabled)
+               printf(" %14.1f", results[t][r]);
+         printf("\n");
+      }
+
+      // --- Relative performance table ---
+      printf("\n  %-26s", "relative to fastest");
+      for (int r = 0; r < RT_COUNT; r++)
+         if (runtimes[r].enabled)
+            printf(" %14s", runtimes[r].name);
+      printf("\n  %s\n", std::string(26 + num_active * 15, '-').c_str());
+      for (int t = 0; t < num_tests; t++) {
+         printf("  %-26s", labels[t]);
+         for (int r = 0; r < RT_COUNT; r++) {
+            if (!runtimes[r].enabled) continue;
+            double ratio = results[t][r] / fastest[t];
+            if (ratio < 1.05)
+               printf("      \xe2\x96\xb6 %4.1fx ", ratio);  // arrow for winner
+            else
+               printf("        %4.1fx ", ratio);
+         }
+         printf("\n");
+      }
+   };
+
+   // --- Host-call benchmarks ---
+   const int num_host_tests = sizeof(benches) / sizeof(benches[0]);
+   double host_results[6][RT_COUNT] = {};
+   const char* host_labels[6];
+
+   for (int t = 0; t < num_host_tests; t++) {
+      host_labels[t] = benches[t].label;
+      host_results[t][RT_INTERP] = run_eosvm<interpreter>(code, wa, benches[t].func, N);
 #if defined(__x86_64__) || defined(__aarch64__)
-      double jit_ms = run_eosvm<jit>(code, wa, b.func, N);
-      printf(" %10.1f %7.1fx", jit_ms, interp_ms / jit_ms);
+      host_results[t][RT_JIT] = run_eosvm<jit>(code, wa, benches[t].func, N);
 #endif
-
 #ifdef BENCH_HAS_WASM3
-      printf(" %10.1f", run_wasm3(wasm_bytes, b.func, N));
+      host_results[t][RT_WASM3] = run_wasm3(wasm_bytes, benches[t].func, N);
 #endif
-
 #ifdef BENCH_HAS_WAMR
-      printf(" %10.1f", run_wamr(wasm_bytes, b.func, N));
+      host_results[t][RT_WAMR] = run_wamr(wasm_bytes, benches[t].func, N);
 #endif
-
 #ifdef BENCH_HAS_WASMTIME
-      printf(" %10.1f", run_wasmtime(wasm_bytes, b.func, N));
+      host_results[t][RT_WASMTIME] = run_wasmtime(wasm_bytes, benches[t].func, N);
 #endif
-
 #ifdef BENCH_HAS_WASMER
-      printf(" %10.1f", run_wasmer(wasm_bytes, b.func, N));
+      host_results[t][RT_WASMER] = run_wasmer(wasm_bytes, benches[t].func, N);
 #endif
-
-      printf("\n");
    }
 
-   printf("\n");
-   uint64_t total_calls = 0;
-   for (auto& b : benches) total_calls += static_cast<uint64_t>(N) * b.calls_per_iter;
-   printf("Total host calls across all tests: %llu\n", (unsigned long long)total_calls);
+   char host_title[128];
+   snprintf(host_title, sizeof(host_title),
+            "HOST-CALL BENCHMARK (%u iterations per test)", N);
+   print_table(host_title,
+               "Measures wasm-to-native call transition overhead.",
+               num_host_tests, host_labels, host_results);
 
+   // --- Compute benchmarks ---
+#ifdef BENCH_HAS_COMPUTE
+   struct compute_def {
+      const char* label;
+      const char* wasm_path;
+      const char* func;
+      uint32_t    iters;
+   };
+   compute_def compute_tests[] = {
+      {"SHA-256 (64B, 100K)",  BENCH_SHA256_WASM, "bench_sha256",       100'000},
+      {"ECDSA verify (k1)",    BENCH_ECDSA_WASM,  "bench_ecdsa_verify", 100},
+      {"ECDSA sign (k1)",      BENCH_ECDSA_WASM,  "bench_ecdsa_sign",   100},
+   };
+   const int num_compute = sizeof(compute_tests) / sizeof(compute_tests[0]);
+   double compute_results[3][RT_COUNT] = {};
+   const char* compute_labels[3];
+
+   // Pre-load WASM files
+   std::vector<uint8_t> sha_wasm, ecdsa_wasm;
+   try { sha_wasm = eosio::vm::read_wasm(BENCH_SHA256_WASM); } catch (...) {}
+   try { ecdsa_wasm = eosio::vm::read_wasm(BENCH_ECDSA_WASM); } catch (...) {}
+
+   for (int t = 0; t < num_compute; t++) {
+      compute_labels[t] = compute_tests[t].label;
+      auto& wasm = (t == 0) ? sha_wasm : ecdsa_wasm;
+      if (wasm.empty()) continue;
+      auto func = compute_tests[t].func;
+      auto iters = compute_tests[t].iters;
+
+      compute_results[t][RT_INTERP] = run_eosvm_compute<interpreter>(wasm, func, iters);
+#if defined(__x86_64__) || defined(__aarch64__)
+      compute_results[t][RT_JIT] = run_eosvm_compute<jit>(wasm, func, iters);
+#endif
+#ifdef BENCH_HAS_WASM3
+      compute_results[t][RT_WASM3] = run_wasm3_compute(wasm, func, iters);
+#endif
+#ifdef BENCH_HAS_WAMR
+      compute_results[t][RT_WAMR] = run_wamr_compute(wasm, func, iters);
+#endif
+#ifdef BENCH_HAS_WASMTIME
+      compute_results[t][RT_WASMTIME] = run_wasmtime_compute(wasm, func, iters);
+#endif
+#ifdef BENCH_HAS_WASMER
+      compute_results[t][RT_WASMER] = run_wasmer_compute(wasm, func, iters);
+#endif
+   }
+
+   print_table("COMPUTE BENCHMARK (pure WASM, no host calls)",
+               "Measures raw computation speed for crypto workloads.",
+               num_compute, compute_labels, compute_results);
+#endif
+
+   printf("\n");
    return 0;
 }

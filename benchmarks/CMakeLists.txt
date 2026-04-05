@@ -222,8 +222,99 @@ if(_wasm_c_api_count GREATER 1)
 endif()
 
 # ##################################################################################################
+# Compute benchmarks — standalone WASM modules (SHA-256, ECDSA) compiled from C
+# ##################################################################################################
+option(ENABLE_BENCH_COMPUTE "Build compute-heavy WASM benchmarks (SHA-256, ECDSA)" ON)
+if(ENABLE_BENCH_COMPUTE)
+   # Find wasi-sdk
+   if(NOT WASI_SDK_PREFIX)
+      # Check common locations
+      foreach(_candidate
+         "$ENV{WASI_SDK_PREFIX}"
+         "${CMAKE_CURRENT_BINARY_DIR}/../../build/wasi-sdk-prefix/src/wasi-sdk"
+         "/opt/wasi-sdk"
+      )
+         if(EXISTS "${_candidate}/bin/clang")
+            set(WASI_SDK_PREFIX "${_candidate}")
+            break()
+         endif()
+      endforeach()
+   endif()
+
+   if(NOT WASI_SDK_PREFIX OR NOT EXISTS "${WASI_SDK_PREFIX}/bin/clang")
+      message(WARNING "wasi-sdk not found. Set WASI_SDK_PREFIX to enable compute benchmarks.\n"
+                      "  cmake .. -DWASI_SDK_PREFIX=/path/to/wasi-sdk")
+      set(ENABLE_BENCH_COMPUTE OFF)
+   else()
+      message(STATUS "wasi-sdk found: ${WASI_SDK_PREFIX}")
+   endif()
+endif()
+
+if(ENABLE_BENCH_COMPUTE)
+   set(WASM_CC "${WASI_SDK_PREFIX}/bin/clang")
+   set(WASM_CFLAGS --target=wasm32-unknown-unknown -O3 -nostdlib
+                   -Wl,--no-entry -Wl,--export-dynamic -Wl,--allow-undefined
+                   -mbulk-memory -msign-ext)
+
+   # --- SHA-256 WASM module ---
+   set(SHA256_WASM "${CMAKE_CURRENT_BINARY_DIR}/bench_sha256.wasm")
+   add_custom_command(
+      OUTPUT "${SHA256_WASM}"
+      COMMAND "${WASM_CC}" ${WASM_CFLAGS}
+              -o "${SHA256_WASM}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_sha256.c"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_sha256.c"
+      COMMENT "Compiling bench_sha256.c -> WASM"
+   )
+
+   # --- micro-ecc (ECDSA library) ---
+   FetchContent_Declare(
+      micro_ecc
+      GIT_REPOSITORY https://github.com/kmackay/micro-ecc.git
+      GIT_TAG        master
+      GIT_SHALLOW    TRUE
+   )
+   FetchContent_GetProperties(micro_ecc)
+   if(NOT micro_ecc_POPULATED)
+      FetchContent_Populate(micro_ecc)
+   endif()
+
+   # --- ECDSA WASM module ---
+   set(ECDSA_WASM "${CMAKE_CURRENT_BINARY_DIR}/bench_ecdsa.wasm")
+   add_custom_command(
+      OUTPUT "${ECDSA_WASM}"
+      COMMAND "${WASM_CC}" ${WASM_CFLAGS}
+              -DuECC_OPTIMIZATION_LEVEL=3
+              -DuECC_SUPPORTS_secp160r1=0
+              -DuECC_SUPPORTS_secp192r1=0
+              -DuECC_SUPPORTS_secp224r1=0
+              -DuECC_SUPPORTS_secp256r1=0
+              -DuECC_SUPPORTS_secp256k1=1
+              -DuECC_SUPPORT_COMPRESSED_POINT=0
+              -I"${micro_ecc_SOURCE_DIR}"
+              -o "${ECDSA_WASM}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_ecdsa.c"
+              "${micro_ecc_SOURCE_DIR}/uECC.c"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_ecdsa.c"
+              "${micro_ecc_SOURCE_DIR}/uECC.c"
+      COMMENT "Compiling bench_ecdsa.c + micro-ecc -> WASM"
+   )
+
+   add_custom_target(compute-wasm ALL DEPENDS "${SHA256_WASM}" "${ECDSA_WASM}")
+   list(APPEND BENCH_DEFS BENCH_HAS_COMPUTE)
+   message(STATUS "Compute benchmarks: ENABLED (SHA-256, ECDSA secp256k1)")
+endif()
+
+# ##################################################################################################
 # Build the benchmark executable
 # ##################################################################################################
 add_executable(bench-compare ${BENCH_SOURCES})
 target_link_libraries(bench-compare ${BENCH_LIBS})
 target_compile_definitions(bench-compare PRIVATE ${BENCH_DEFS})
+if(ENABLE_BENCH_COMPUTE)
+   add_dependencies(bench-compare compute-wasm)
+   target_compile_definitions(bench-compare PRIVATE
+      BENCH_SHA256_WASM="${SHA256_WASM}"
+      BENCH_ECDSA_WASM="${ECDSA_WASM}"
+   )
+endif()
