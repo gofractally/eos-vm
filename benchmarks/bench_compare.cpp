@@ -437,7 +437,7 @@ int main() {
    printf("Each test loops N times; \"mixed\" makes 5 host calls per iteration.\n\n");
 
    printf("%-24s %10s", "Test", "Interp");
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(__aarch64__)
    printf(" %10s %8s", "JIT", "Speedup");
 #endif
 #ifdef BENCH_HAS_WASM3
@@ -459,7 +459,7 @@ int main() {
       double interp_ms = run_eosvm<interpreter>(code, wa, b.func, N);
       printf("%-24s %10.1f", b.label, interp_ms);
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(__aarch64__)
       double jit_ms = run_eosvm<jit>(code, wa, b.func, N);
       printf(" %10.1f %7.1fx", jit_ms, interp_ms / jit_ms);
 #endif
