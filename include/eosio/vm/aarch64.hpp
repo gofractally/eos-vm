@@ -697,6 +697,7 @@ namespace eosio { namespace vm {
          if(type != types::v128) {
             emit_pop_x(X0);
             emit_str_fp_offset(X0, offset);
+            invalidate_recent_ops(); // local changed, invalidate any cached refs
          } else {
             emit_pop_x(X0); // low 64 bits
             emit_pop_x(X1); // high 64 bits
@@ -1378,6 +1379,22 @@ namespace eosio { namespace vm {
       // ===================================================================
 
       void emit_i32_add() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            emit_pop_x(X0);
+            if (c->value <= 4095) {
+               // ADD W0, W0, #imm
+               emit32(0x11000000 | (c->value << 10) | (X0 << 5) | X0);
+            } else if (c->value > 0xFFFFF000u) {
+               // Small negative: SUB W0, W0, #(-imm)
+               uint32_t neg = -c->value;
+               emit32(0x51000000 | (neg << 10) | (X0 << 5) | X0);
+            } else {
+               emit_mov_imm32(X1, c->value);
+               emit32(0x0B010000); // ADD W0, W0, W1
+            }
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          // ADD W0, W0, W1
@@ -1386,6 +1403,18 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_sub() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            emit_pop_x(X0);
+            if (c->value <= 4095) {
+               // SUB W0, W0, #imm
+               emit32(0x51000000 | (c->value << 10) | (X0 << 5) | X0);
+            } else {
+               emit_mov_imm32(X1, c->value);
+               emit32(0x4B010000); // SUB W0, W0, W1
+            }
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          // SUB W0, W0, W1
@@ -1573,6 +1602,18 @@ namespace eosio { namespace vm {
       // ===================================================================
 
       void emit_i64_add() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            emit_pop_x(X0);
+            if (c->value <= 4095) {
+               // ADD X0, X0, #imm
+               emit32(0x91000000 | ((uint32_t)c->value << 10) | (X0 << 5) | X0);
+            } else {
+               emit_mov_imm64(X1, c->value);
+               emit32(0x8B010000); // ADD X0, X0, X1
+            }
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          // ADD X0, X0, X1
@@ -1581,6 +1622,18 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_sub() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            emit_pop_x(X0);
+            if (c->value <= 4095) {
+               // SUB X0, X0, #imm
+               emit32(0xD1000000 | ((uint32_t)c->value << 10) | (X0 << 5) | X0);
+            } else {
+               emit_mov_imm64(X1, c->value);
+               emit32(0xCB010000); // SUB X0, X0, X1
+            }
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          // SUB X0, X0, X1
