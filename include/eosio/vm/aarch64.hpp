@@ -417,6 +417,7 @@ namespace eosio { namespace vm {
       }
 
       void* emit_end() {
+         invalidate_recent_ops();
          return code;
       }
 
@@ -427,6 +428,7 @@ namespace eosio { namespace vm {
       void emit_block() {}
 
       void* emit_loop() {
+         invalidate_recent_ops();
          return code;
       }
 
@@ -1065,13 +1067,17 @@ namespace eosio { namespace vm {
       // ===================================================================
 
       void emit_i32_const(uint32_t value) {
+         auto start = code;
          emit_mov_imm32(X0, value);
          emit_push_x(X0);
+         push_recent_op(start, i32_const_op{value});
       }
 
       void emit_i64_const(uint64_t value) {
+         auto start = code;
          emit_mov_imm64(X0, value);
          emit_push_x(X0);
+         push_recent_op(start, i64_const_op{value});
       }
 
       void emit_f32_const(float value) {
@@ -3364,11 +3370,29 @@ namespace eosio { namespace vm {
       }
 
       void emit_push_x(uint32_t reg) {
+         auto start = code;
          // STR Xreg, [SP, #-16]!  (16-byte aligned slot)
          emit32(0xF81F0FE0 | reg);
+         push_recent_op(start, register_push_op{reg});
       }
 
       void emit_pop_x(uint32_t reg) {
+         // Try to eliminate the push/pop pair
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            emit_mov_imm32(reg, c->value);
+            return;
+         }
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            emit_mov_imm64(reg, c->value);
+            return;
+         }
+         if (auto push = try_undo_push()) {
+            if (push->reg != reg) {
+               // MOV Xreg, Xpush_reg  (ORR Xd, XZR, Xm)
+               emit32(0xAA000000 | (push->reg << 16) | (XZR << 5) | reg);
+            }
+            return;
+         }
          // LDR Xreg, [SP], #16  (16-byte aligned slot)
          emit32(0xF84107E0 | reg);
       }
@@ -4441,6 +4465,72 @@ namespace eosio { namespace vm {
       std::uint32_t stack_usage = 0;
       void* stack_limit_entry = nullptr;
       void* stack_limit_restore = nullptr;
+
+      // ===================================================================
+      // Peephole optimization: recent_ops tracking
+      // ===================================================================
+      // Track the last 2 emitted operations so we can eliminate redundant
+      // push/pop pairs and fold constants into arithmetic instructions.
+
+      struct i32_const_op { uint32_t value; };
+      struct i64_const_op { uint64_t value; };
+      struct register_push_op { uint32_t reg; };
+
+      struct recent_op_t {
+         unsigned char* start = nullptr;
+         unsigned char* end = nullptr;
+         std::variant<std::monostate, register_push_op, i32_const_op, i64_const_op> data;
+      };
+
+      recent_op_t recent_ops[2] = {};
+
+      void push_recent_op(unsigned char* start, auto op) {
+         if (recent_ops[1].end != code) {
+            recent_ops[0] = recent_ops[1];
+         }
+         recent_ops[1] = {start, code, op};
+      }
+
+      template<typename T>
+      std::optional<T> try_pop_recent_op() {
+         if (recent_ops[1].end == code) {
+            if (auto p = std::get_if<T>(&recent_ops[1].data)) {
+               std::optional<T> result = *p;
+               code = recent_ops[1].start;
+               recent_ops[1] = recent_ops[0];
+               recent_ops[0] = {};
+               return result;
+            }
+         }
+         return {};
+      }
+
+      // Try to undo the most recent push, returning which register holds the value.
+      // This works for direct register pushes and for const/local ops that
+      // leave their result in a register before pushing.
+      std::optional<register_push_op> try_undo_push() {
+         if (recent_ops[1].end == code) {
+            if (auto res = try_pop_recent_op<register_push_op>()) {
+               return res;
+            }
+            // For const ops, the code emitted MOV + STR.  Rewind to just before
+            // the STR (the MOV left the value in the destination register).
+            if (std::holds_alternative<i32_const_op>(recent_ops[1].data) ||
+                std::holds_alternative<i64_const_op>(recent_ops[1].data)) {
+               // Rewind past the STR instruction (last 4 bytes)
+               code = recent_ops[1].end - 4;
+               recent_ops[1] = recent_ops[0];
+               recent_ops[0] = {};
+               return register_push_op{X0};
+            }
+         }
+         return {};
+      }
+
+      void invalidate_recent_ops() {
+         recent_ops[0] = {};
+         recent_ops[1] = {};
+      }
    };
 
 }}
