@@ -104,4 +104,50 @@ double run_wasmtime(const std::vector<uint8_t>& wasm, const char* func, uint32_t
    wasm_engine_delete(engine);
    return std::chrono::duration<double, std::milli>(t2 - t1).count();
 }
+
+double run_wasmtime_compute(const std::vector<uint8_t>& wasm, const char* func, uint32_t n) {
+   wasm_engine_t* engine = wasm_engine_new();
+   wasmtime_store_t* store = wasmtime_store_new(engine, nullptr, nullptr);
+   wasmtime_context_t* ctx = wasmtime_store_context(store);
+
+   wasmtime_module_t* module = nullptr;
+   wasmtime_error_t* err = wasmtime_module_new(engine, wasm.data(), wasm.size(), &module);
+   if (err) { fprintf(stderr, "wasmtime compute module error\n"); wasmtime_error_delete(err); wasmtime_store_delete(store); wasm_engine_delete(engine); return -1; }
+
+   wasmtime_instance_t instance;
+   wasm_trap_t* trap = nullptr;
+   err = wasmtime_instance_new(ctx, module, nullptr, 0, &instance, &trap);
+   if (err || trap) {
+      fprintf(stderr, "wasmtime compute instantiate error\n");
+      if (err) wasmtime_error_delete(err);
+      if (trap) wasm_trap_delete(trap);
+      wasmtime_module_delete(module);
+      wasmtime_store_delete(store);
+      wasm_engine_delete(engine);
+      return -1;
+   }
+
+   wasmtime_extern_t exp;
+   bool found = wasmtime_instance_export_get(ctx, &instance, func, strlen(func), &exp);
+   if (!found || exp.kind != WASMTIME_EXTERN_FUNC) {
+      fprintf(stderr, "wasmtime compute: export %s not found\n", func);
+      wasmtime_module_delete(module);
+      wasmtime_store_delete(store);
+      wasm_engine_delete(engine);
+      return -1;
+   }
+
+   wasmtime_val_t arg = {.kind = WASMTIME_I32, .of = {.i32 = static_cast<int32_t>(n)}};
+   wasmtime_val_t result;
+
+   auto t1 = std::chrono::high_resolution_clock::now();
+   err = wasmtime_func_call(ctx, &exp.of.func, &arg, 1, &result, 1, &trap);
+   auto t2 = std::chrono::high_resolution_clock::now();
+   if (err || trap) { fprintf(stderr, "wasmtime compute call error\n"); if (err) wasmtime_error_delete(err); if (trap) wasm_trap_delete(trap); }
+
+   wasmtime_module_delete(module);
+   wasmtime_store_delete(store);
+   wasm_engine_delete(engine);
+   return std::chrono::duration<double, std::milli>(t2 - t1).count();
+}
 #endif

@@ -15,11 +15,20 @@ std::vector<uint8_t> build_bench_wasm();
 // Runner function type: (wasm_bytes, func_name, iteration_count) -> milliseconds
 using bench_runner_t = double (*)(const std::vector<uint8_t>&, const char*, uint32_t);
 
-// Optional runners provided by separate TUs
+// Optional runners provided by separate TUs (host-call benchmarks)
 #ifdef BENCH_HAS_WASMTIME
 double run_wasmtime(const std::vector<uint8_t>& wasm, const char* func, uint32_t n);
 #endif
 
 #ifdef BENCH_HAS_WASMER
 double run_wasmer(const std::vector<uint8_t>& wasm, const char* func, uint32_t n);
+#endif
+
+// Compute benchmark runners (zero-import WASM modules)
+#ifdef BENCH_HAS_WASMTIME
+double run_wasmtime_compute(const std::vector<uint8_t>& wasm, const char* func, uint32_t n);
+#endif
+
+#ifdef BENCH_HAS_WASMER
+double run_wasmer_compute(const std::vector<uint8_t>& wasm, const char* func, uint32_t n);
 #endif
