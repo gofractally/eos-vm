@@ -444,6 +444,13 @@ namespace eosio { namespace vm {
          }
 
          // ── Control flow (branches) ──
+         case ir_op::br_table:
+            // Index is on x86 stack. Keep it there for case comparisons.
+            _br_table_case = 0;
+            _br_table_size = inst.dest;
+            _in_br_table = true;
+            break;
+
          case ir_op::br:
             if (_in_br_table) {
                bool is_default = (_br_table_case >= _br_table_size);
@@ -473,17 +480,6 @@ namespace eosio { namespace vm {
             emit_cond_branch_to_block(func, inst.br.target, inst.dest, inst.type);
             break;
 
-         case ir_op::br_table:
-            // Pop index and store on stack as a "hidden" slot below rbp.
-            // We can't use caller-saved registers (clobbered by calls between
-            // br_table and its cases). Use the stack frame instead.
-            // Push index value — it stays on the stack during case checks.
-            // The br cases will read it without popping.
-            // (index is already on x86 stack from the preceding push)
-            _br_table_case = 0;
-            _br_table_size = inst.dest;
-            _in_br_table = true;
-            break;
 
          // ── Calls ──
          case ir_op::call: {
