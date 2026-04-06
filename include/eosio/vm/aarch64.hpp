@@ -192,6 +192,8 @@ namespace eosio { namespace vm {
          emit32(0xA9BF5BF5);
          // STP X23, X24, [SP, #-16]!  (X23 used to save SP before arg push)
          emit32(0xA9BF63F7);
+         // STP X25, X26, [SP, #-16]!  (X25 used to save FPCR)
+         emit32(0xA9BF6BF9);
 
          // Save X6 (vector_result) to X22 so we have it after the call
          // MOV X22, X6
@@ -258,13 +260,17 @@ namespace eosio { namespace vm {
          }
 
          if constexpr (use_native_fp) {
-            // Set FPCR.DN=1 (bit 25) for deterministic NaN canonicalization.
-            // All FP operations that would produce a NaN instead produce the
-            // default NaN (0x7FC00000 for f32, 0x7FF8000000000000 for f64),
-            // which matches WASM's canonical NaN.
+            // Save original FPCR and set WASM-compatible FP mode:
+            // - DN=1 (bit 25): default NaN canonicalization
+            // - Clear exception enable bits [12:8] (IOE,DZE,OFE,UFE,IXE)
+            //   to prevent traps on divide-by-zero, overflow, etc.
             emit32(0xD53B4408); // MRS X8, FPCR
-            emit32(0xD2804009); // MOVZ X9, #0x200, LSL #16 (= 0x2000000, DN bit)
-            emit32(0xAA090108); // ORR X8, X8, X9
+            emit32(0xAA0803F9); // MOV X25, X8  (save original FPCR)
+            // Set DN=1 (bit 25), clear exception enables [12:8]
+            emit32(0xD2804009); // MOVZ X9, #0x200, LSL #16 (= 0x02000000, DN bit)
+            emit32(0xAA090108); // ORR X8, X8, X9   (set DN)
+            emit32(0xD283E009); // MOVZ X9, #0x1F00  (exception enable mask bits [12:8])
+            emit32(0x8A290108); // BIC X8, X8, X9   (clear exception enables)
             emit32(0xD51B4408); // MSR FPCR, X8
          }
 
@@ -272,11 +278,8 @@ namespace eosio { namespace vm {
          emit32(0xD63F0060);
 
          if constexpr (use_native_fp) {
-            // Restore FPCR: clear DN bit
-            emit32(0xD53B4408); // MRS X8, FPCR
-            emit32(0xD2804009); // MOVZ X9, #0x200, LSL #16 (= 0x2000000, DN bit)
-            emit32(0x8A290108); // BIC X8, X8, X9
-            emit32(0xD51B4408); // MSR FPCR, X8
+            // Restore original FPCR from X25
+            emit32(0xD51B4419); // MSR FPCR, X25
          }
 
          // Restore SP to pre-arg-push position (may be on alternate stack)
@@ -293,11 +296,13 @@ namespace eosio { namespace vm {
 
          // Switch back to the original thread stack using FP.
          // FP was set to original_SP - 16 before any stack switch.
-         // Callee-saved regs were saved at FP-48, FP-32, FP-16, FP.
-         // SUB SP, X29, #48  (SP = FP - 48)
-         emit32(0xD100C3A0 | SP); // SUB SP, X29, #48
+         // Callee-saved regs were saved at FP-64..FP (4 pairs × 16 bytes).
+         // SUB SP, X29, #64  (SP = FP - 64)
+         emit32(0xD10103A0 | SP); // SUB SP, X29, #64
 
          // Restore callee-saved registers (reverse order of saves)
+         // LDP X25, X26, [SP], #16
+         emit32(0xA8C16BF9);
          // LDP X23, X24, [SP], #16
          emit32(0xA8C163F7);
          // LDP X21, X22, [SP], #16
@@ -3075,7 +3080,7 @@ namespace eosio { namespace vm {
          // AND with power-of-2 mask {1,2,4,8,16,32,64,128} replicated to both halves
          emit_mov_imm64(X8, 0x8040201008040201ULL);
          emit32(0x4E080D01); // DUP V1.2D, X8
-         emit32(0x4E210000); // AND V0.16B, V0.16B, V1.16B
+         emit32(0x4E211C00); // AND V0.16B, V0.16B, V1.16B
          // Pairwise add 3 times: 16 bytes → 8 → 4 → 2 (low 8 sum, high 8 sum)
          emit32(0x4E20BC00); // ADDP V0.16B, V0.16B, V0.16B
          emit32(0x4E20BC00); // ADDP V0.16B, V0.16B, V0.16B
@@ -3377,14 +3382,15 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64x2_bitmask() {
-         emit_pop_v128_to(0);
-         // Extract sign bits of each 64-bit lane
-         emit32(0x9E660000); // FMOV X0, D0
-         emit32(0xD37FFC00); // LSR X0, X0, #63
-         emit32(0x4E183C08); // UMOV X8, V0.D[1]
-         emit32(0xD37FFC08); // LSR X8, X8, #63
-         // ORR X0, X0, X8, LSL #1
-         emit32(0xAA080400);
+         // Use direct stack pops - avoid X0 for loading since it
+         // conflicts with the epilogue's peephole optimization
+         emit_pop_x(X8);  // low 64 bits (lane 0)
+         emit_pop_x(X9);  // high 64 bits (lane 1)
+         // Extract sign bits
+         emit32(0xD37FFD08); // LSR X8, X8, #63
+         emit32(0xD37FFD29); // LSR X9, X9, #63
+         // ORR X0, X8, X9, LSL #1
+         emit32(0xAA090500);
          emit_push_x(X0);
       }
 
@@ -3454,9 +3460,9 @@ namespace eosio { namespace vm {
       }
 
       // f32x4 arithmetic — NEON with FPCR.DN=1
-      void emit_f32x4_ceil()    { emit_neon_fp_unop(0x4EA19800); }  // FRINTP V0.4S, V0.4S
+      void emit_f32x4_ceil()    { emit_neon_fp_unop(0x4EA18800); }  // FRINTP V0.4S, V0.4S
       void emit_f32x4_floor()   { emit_neon_fp_unop(0x4E219800); }  // FRINTM V0.4S, V0.4S
-      void emit_f32x4_trunc()   { emit_neon_fp_unop(0x4EA19880); }  // FRINTZ V0.4S, V0.4S
+      void emit_f32x4_trunc()   { emit_neon_fp_unop(0x4EA19800); }  // FRINTZ V0.4S, V0.4S
       void emit_f32x4_nearest() { emit_neon_fp_unop(0x4E218800); }  // FRINTN V0.4S, V0.4S
       void emit_f32x4_abs()     { emit_neon_fp_unop(0x4EA0F800); }  // FABS V0.4S, V0.4S
       void emit_f32x4_neg()     { emit_neon_fp_unop(0x6EA0F800); }  // FNEG V0.4S, V0.4S
@@ -3471,9 +3477,9 @@ namespace eosio { namespace vm {
       void emit_f32x4_pmax() { emit_neon_fp_pminmax(0x6EA0E422); } // FCMGT V2.4S, V1.4S, V0.4S
 
       // f64x2 arithmetic — NEON with FPCR.DN=1
-      void emit_f64x2_ceil()    { emit_neon_fp_unop(0x4EE19800); }  // FRINTP V0.2D, V0.2D
+      void emit_f64x2_ceil()    { emit_neon_fp_unop(0x4EE18800); }  // FRINTP V0.2D, V0.2D
       void emit_f64x2_floor()   { emit_neon_fp_unop(0x4E619800); }  // FRINTM V0.2D, V0.2D
-      void emit_f64x2_trunc()   { emit_neon_fp_unop(0x4EE19880); }  // FRINTZ V0.2D, V0.2D
+      void emit_f64x2_trunc()   { emit_neon_fp_unop(0x4EE19800); }  // FRINTZ V0.2D, V0.2D
       void emit_f64x2_nearest() { emit_neon_fp_unop(0x4E618800); }  // FRINTN V0.2D, V0.2D
       void emit_f64x2_abs()     { emit_neon_fp_unop(0x4EE0F800); }  // FABS V0.2D, V0.2D
       void emit_f64x2_neg()     { emit_neon_fp_unop(0x6EE0F800); }  // FNEG V0.2D, V0.2D
@@ -3496,14 +3502,14 @@ namespace eosio { namespace vm {
          if constexpr (!use_native_fp) { unimplemented(); }
          emit_pop_v128_to(0);
          emit32(0x4EE1B800); // FCVTZS V0.2D, V0.2D
-         emit32(0x0E614000); // SQXTN V0.2S, V0.2D (saturating narrow to 32-bit)
+         emit32(0x0EA14800); // SQXTN V0.2S, V0.2D (saturating narrow to 32-bit)
          emit_push_v128();
       }
       void emit_i32x4_trunc_sat_f64x2_u_zero() {
          if constexpr (!use_native_fp) { unimplemented(); }
          emit_pop_v128_to(0);
          emit32(0x6EE1B800); // FCVTZU V0.2D, V0.2D
-         emit32(0x2E612800); // SQXTUN V0.2S, V0.2D (unsigned saturating narrow)
+         emit32(0x2EA14800); // UQXTN V0.2S, V0.2D (unsigned saturating narrow)
          emit_push_v128();
       }
       void emit_f64x2_convert_low_i32x4_s() {
@@ -4600,7 +4606,7 @@ namespace eosio { namespace vm {
          emit_pop_v128_to(1); // rhs (b)
          emit_pop_v128_to(0); // lhs (a)
          emit32(cmp_opcode);         // FCMGT V2, ... (mask where we should pick b)
-         emit32(0x6EE21C20);         // BIT V0.16B, V1.16B, V2.16B (V0 = V1 where mask set)
+         emit32(0x6EA21C20);         // BIT V0.16B, V1.16B, V2.16B (V0 = V1 where mask set)
          emit_push_v128();
       }
 
