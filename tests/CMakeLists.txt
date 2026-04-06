@@ -161,7 +161,9 @@ add_executable(jit2_tests main.cpp
                           jit2_basic_tests.cpp
                           backend_tests.cpp
                           instantiation_tests.cpp
-                          eosio_max_nested_structures_tests.cpp)
+                          eosio_max_nested_structures_tests.cpp
+                          host_functions_tests.cpp
+                          implementation_limits_tests.cpp)
 target_link_libraries(jit2_tests eos-vm Catch2::Catch2)
 target_include_directories(jit2_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(jit2_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
