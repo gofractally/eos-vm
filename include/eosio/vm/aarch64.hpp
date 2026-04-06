@@ -2709,89 +2709,78 @@ namespace eosio { namespace vm {
       }
 
       void emit_v128_load8_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t laneidx) {
-         emit_pop_v128();
+         emit_pop_v128(0);
          emit_pop_address(X9, offset);
-         // LDRB W8, [X9]
-         emit32(0x39400128);
-         // Replace lane via stack: store Q0, modify byte, reload
-         // STR Q0, [SP, #-16]!
-         emit32(0x3C9F0FE0);
-         // STRB W8, [SP, #laneidx]
-         emit32(0x39000000 | (laneidx << 10) | (SP << 5) | X8);
-         // LDR Q0, [SP]
-         emit32(0x3DC003E0);
-         // ADD SP, SP, #16
-         emit_add_imm_sp(16);
-         emit_push_v128();
+         emit32(0x39400128); // LDRB W8, [X9]
+         // INS V0.B[laneidx], W8
+         uint32_t imm5 = (laneidx << 1) | 1;
+         emit32(0x4E001C00 | (imm5 << 16) | (X8 << 5) | 0);
+         emit_push_v128(0);
       }
 
       void emit_v128_load16_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t laneidx) {
-         emit_pop_v128();
+         emit_pop_v128(0);
          emit_pop_address(X9, offset);
          emit32(0x79400128); // LDRH W8, [X9]
-         emit32(0x3C9F0FE0); // STR Q0, [SP, #-16]!
-         emit32(0x79000000 | ((laneidx * 2 / 2) << 10) | (SP << 5) | X8); // STRH W8, [SP, #laneidx*2]
-         emit32(0x3DC003E0); // LDR Q0, [SP]
-         emit_add_imm_sp(16);
-         emit_push_v128();
+         // INS V0.H[laneidx], W8
+         uint32_t imm5 = (laneidx << 2) | 2;
+         emit32(0x4E001C00 | (imm5 << 16) | (X8 << 5) | 0);
+         emit_push_v128(0);
       }
 
       void emit_v128_load32_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t laneidx) {
-         emit_pop_v128();
+         emit_pop_v128(0);
          emit_pop_address(X9, offset);
          emit32(0xB9400128); // LDR W8, [X9]
-         emit32(0x3C9F0FE0); // STR Q0, [SP, #-16]!
-         emit32(0xB9000000 | ((laneidx * 4 / 4) << 10) | (SP << 5) | X8); // STR W8, [SP, #laneidx*4]
-         emit32(0x3DC003E0);
-         emit_add_imm_sp(16);
-         emit_push_v128();
+         // INS V0.S[laneidx], W8
+         uint32_t imm5 = (laneidx << 3) | 4;
+         emit32(0x4E001C00 | (imm5 << 16) | (X8 << 5) | 0);
+         emit_push_v128(0);
       }
 
       void emit_v128_load64_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t laneidx) {
-         emit_pop_v128();
+         emit_pop_v128(0);
          emit_pop_address(X9, offset);
          emit32(0xF9400128); // LDR X8, [X9]
-         emit32(0x3C9F0FE0); // STR Q0, [SP, #-16]!
-         emit32(0xF9000000 | ((laneidx * 8 / 8) << 10) | (SP << 5) | X8);
-         emit32(0x3DC003E0);
-         emit_add_imm_sp(16);
-         emit_push_v128();
+         // INS V0.D[laneidx], X8
+         uint32_t imm5 = (laneidx << 4) | 8;
+         emit32(0x4E001C00 | (imm5 << 16) | (X8 << 5) | 0);
+         emit_push_v128(0);
       }
 
       void emit_v128_store8_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t laneidx) {
-         emit_pop_v128();
+         emit_pop_v128(0);
          emit_pop_address(X9, offset);
-         // Extract byte via stack: store Q0, load byte, clean up
-         emit32(0x3C9F0FE0); // STR Q0, [SP, #-16]!
-         emit32(0x39400008 | (laneidx << 10) | (SP << 5)); // LDRB W8, [SP, #laneidx]
-         emit_add_imm_sp(16);
+         // UMOV W8, V0.B[laneidx]
+         uint32_t imm5 = (laneidx << 1) | 1;
+         emit32(0x0E003C00 | (imm5 << 16) | (0 << 5) | X8);
          emit32(0x39000128); // STRB W8, [X9]
       }
 
       void emit_v128_store16_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t laneidx) {
-         emit_pop_v128();
+         emit_pop_v128(0);
          emit_pop_address(X9, offset);
-         emit32(0x3C9F0FE0);
-         emit32(0x79400008 | ((laneidx * 2 / 2) << 10) | (SP << 5));
-         emit_add_imm_sp(16);
+         // UMOV W8, V0.H[laneidx]
+         uint32_t imm5 = (laneidx << 2) | 2;
+         emit32(0x0E003C00 | (imm5 << 16) | (0 << 5) | X8);
          emit32(0x79000128); // STRH W8, [X9]
       }
 
       void emit_v128_store32_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t laneidx) {
-         emit_pop_v128();
+         emit_pop_v128(0);
          emit_pop_address(X9, offset);
-         emit32(0x3C9F0FE0);
-         emit32(0xB9400008 | ((laneidx * 4 / 4) << 10) | (SP << 5));
-         emit_add_imm_sp(16);
+         // UMOV W8, V0.S[laneidx]
+         uint32_t imm5 = (laneidx << 3) | 4;
+         emit32(0x0E003C00 | (imm5 << 16) | (0 << 5) | X8);
          emit32(0xB9000128); // STR W8, [X9]
       }
 
       void emit_v128_store64_lane(uint32_t /*alignment*/, uint32_t offset, uint8_t laneidx) {
-         emit_pop_v128();
+         emit_pop_v128(0);
          emit_pop_address(X9, offset);
-         emit32(0x3C9F0FE0);
-         emit32(0xF9400008 | ((laneidx * 8 / 8) << 10) | (SP << 5));
-         emit_add_imm_sp(16);
+         // UMOV X8, V0.D[laneidx]
+         uint32_t imm5 = (laneidx << 4) | 8;
+         emit32(0x4E003C00 | (imm5 << 16) | (0 << 5) | X8);
          emit32(0xF9000128); // STR X8, [X9]
       }
 
@@ -2836,18 +2825,18 @@ namespace eosio { namespace vm {
       }
 
       void emit_i8x16_extract_lane_s(uint8_t laneidx) {
-         emit_pop_v128();
-         emit32(0x3C9F0FE0); // STR Q0, [SP, #-16]!
-         emit32(0x39C00000 | (laneidx << 10) | (SP << 5) | X0); // LDRSB W0, [SP, #laneidx]
-         emit_add_imm_sp(16);
+         emit_pop_v128(0);
+         // SMOV W0, V0.B[laneidx]  (sign-extending)
+         uint32_t imm5 = (laneidx << 1) | 1;
+         emit32(0x0E002C00 | (imm5 << 16) | (0 << 5) | X0);
          emit_push_x(X0);
       }
 
       void emit_i8x16_extract_lane_u(uint8_t laneidx) {
-         emit_pop_v128();
-         emit32(0x3C9F0FE0);
-         emit32(0x39400000 | (laneidx << 10) | (SP << 5) | X0); // LDRB W0, [SP, #laneidx]
-         emit_add_imm_sp(16);
+         emit_pop_v128(0);
+         // UMOV W0, V0.B[laneidx]
+         uint32_t imm5 = (laneidx << 1) | 1;
+         emit32(0x0E003C00 | (imm5 << 16) | (0 << 5) | X0);
          emit_push_x(X0);
       }
 
@@ -2861,18 +2850,18 @@ namespace eosio { namespace vm {
       }
 
       void emit_i16x8_extract_lane_s(uint8_t laneidx) {
-         emit_pop_v128();
-         emit32(0x3C9F0FE0);
-         emit32(0x79C00000 | ((laneidx * 2 / 2) << 10) | (SP << 5) | X0); // LDRSH W0
-         emit_add_imm_sp(16);
+         emit_pop_v128(0);
+         // SMOV W0, V0.H[laneidx]  (sign-extending)
+         uint32_t imm5 = (laneidx << 2) | 2;
+         emit32(0x0E002C00 | (imm5 << 16) | (0 << 5) | X0);
          emit_push_x(X0);
       }
 
       void emit_i16x8_extract_lane_u(uint8_t laneidx) {
-         emit_pop_v128();
-         emit32(0x3C9F0FE0);
-         emit32(0x79400000 | ((laneidx * 2 / 2) << 10) | (SP << 5) | X0); // LDRH W0
-         emit_add_imm_sp(16);
+         emit_pop_v128(0);
+         // UMOV W0, V0.H[laneidx]
+         uint32_t imm5 = (laneidx << 2) | 2;
+         emit32(0x0E003C00 | (imm5 << 16) | (0 << 5) | X0);
          emit_push_x(X0);
       }
 
@@ -2886,10 +2875,10 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32x4_extract_lane(uint8_t laneidx) {
-         emit_pop_v128();
-         emit32(0x3C9F0FE0);
-         emit32(0xB9400000 | ((laneidx * 4 / 4) << 10) | (SP << 5) | X0); // LDR W0
-         emit_add_imm_sp(16);
+         emit_pop_v128(0);
+         // UMOV W0, V0.S[laneidx]
+         uint32_t imm5 = (laneidx << 3) | 4;
+         emit32(0x0E003C00 | (imm5 << 16) | (0 << 5) | X0);
          emit_push_x(X0);
       }
 
@@ -2903,10 +2892,10 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64x2_extract_lane(uint8_t laneidx) {
-         emit_pop_v128();
-         emit32(0x3C9F0FE0);
-         emit32(0xF9400000 | ((laneidx * 8 / 8) << 10) | (SP << 5) | X0); // LDR X0
-         emit_add_imm_sp(16);
+         emit_pop_v128(0);
+         // UMOV X0, V0.D[laneidx]
+         uint32_t imm5 = (laneidx << 4) | 8;
+         emit32(0x4E003C00 | (imm5 << 16) | (0 << 5) | X0);
          emit_push_x(X0);
       }
 
