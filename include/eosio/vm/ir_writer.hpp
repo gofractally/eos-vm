@@ -173,6 +173,12 @@ namespace eosio { namespace vm {
       }
 
       branch_t emit_if() {
+         ir_control_entry entry{};
+         entry.block_idx = _func->new_block();
+         entry.stack_depth = _func->vstack_depth();
+         entry.result_type = types::pseudo;
+         entry.is_loop = 0;
+         entry.is_function = 0;
          if (!_unreachable) {
             uint32_t cond = _func->vpop();
             ir_inst inst{};
@@ -180,24 +186,27 @@ namespace eosio { namespace vm {
             inst.type = types::pseudo;
             inst.flags = IR_SIDE_EFFECT;
             inst.dest = ir_vreg_none;
-            inst.rr.src1 = cond;
-            inst.rr.src2 = ir_vreg_none;
+            inst.br.src1 = cond;
+            inst.br.target = entry.block_idx;  // block to branch to if false
             _func->emit(inst);
          }
-         ir_control_entry entry{};
-         entry.block_idx = _func->new_block();
-         entry.stack_depth = _func->vstack_depth();
-         entry.result_type = types::pseudo;
-         entry.is_loop = 0;
-         entry.is_function = 0;
          _func->ctrl_push(entry);
          return 0;
       }
 
       branch_t emit_else(branch_t /*if_loc*/) {
-         // Reset vstack to block entry depth
          if (_func->ctrl_stack_top > 0) {
             auto& entry = _func->ctrl_back();
+            // Emit else_ instruction: then-block jumps to block end,
+            // else-block starts here
+            ir_inst inst{};
+            inst.opcode = ir_op::else_;
+            inst.type = types::pseudo;
+            inst.flags = IR_SIDE_EFFECT;
+            inst.dest = ir_vreg_none;
+            inst.br.target = entry.block_idx;  // jump target for then-block (skip else)
+            inst.br.src1 = ir_vreg_none;
+            _func->emit(inst);
             if (!_unreachable) {
                if (entry.result_type != types::pseudo && _func->vstack_depth() > entry.stack_depth) {
                   _func->vpop();

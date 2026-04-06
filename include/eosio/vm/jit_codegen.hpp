@@ -38,7 +38,7 @@ namespace eosio { namespace vm {
       using base::eax; using base::ecx; using base::edx; using base::ebx;
       using base::esp; using base::ebp; using base::esi; using base::edi;
       using base::r8d; using base::r9d;
-      using base::al; using base::cl;
+      using base::al; using base::cl; using base::dl;
       using base::ax;
       using base::xmm0; using base::xmm1;
       using typename base::general_register64;
@@ -143,6 +143,7 @@ namespace eosio { namespace vm {
          _block_addrs = nullptr;
          _block_fixups = nullptr;
          _num_blocks = 0;
+         _if_fixup_top = 0;
       }
 
       void finalize_code() {
@@ -419,11 +420,37 @@ namespace eosio { namespace vm {
          // We handle this by checking block boundaries before each instruction
          // in the main loop.
          case ir_op::block:
-         case ir_op::loop:
-         case ir_op::end:
-         case ir_op::if_:
-         case ir_op::else_:
+            push_if_fixup(nullptr);  // placeholder — block doesn't have an if_ branch
             break;
+         case ir_op::loop:
+            push_if_fixup(nullptr);
+            break;
+
+         case ir_op::if_: {
+            // Pop condition, test, emit forward conditional branch.
+            // Target will be patched to else_ or end.
+            this->emit_pop_raw(rax);
+            this->emit(base::TEST, eax, eax);
+            void* branch = this->emit_branchcc32(base::JZ);
+            // Store on the if_fixup stack
+            push_if_fixup(branch);
+            break;
+         }
+
+         case ir_op::else_: {
+            uint32_t target_block = inst.br.target;
+            // Then-block: emit jump to end (forward fixup to block end)
+            if (target_block < _num_blocks) {
+               void* jmp = emit_jmp32();
+               auto* fixup = _allocator.alloc<block_fixup>(1);
+               fixup->branch = jmp;
+               fixup->next = _block_fixups[target_block];
+               _block_fixups[target_block] = fixup;
+            }
+            // Patch the if_ branch to point here (start of else-block)
+            pop_if_fixup(code);
+            break;
+         }
 
          // ── Control flow (branches) ──
          case ir_op::br:
@@ -796,6 +823,8 @@ namespace eosio { namespace vm {
             base::fix_branch(f->branch, code);
          }
          _block_fixups[block_idx] = nullptr;
+         // If there's a pending if_ branch (no else), patch it here
+         pop_if_fixup(code);
       }
 
       // Emit an unconditional 32-bit relative jump, return address to patch
@@ -861,6 +890,21 @@ namespace eosio { namespace vm {
             this->emit_push_raw(rax);
          } else {
             this->emit_add(static_cast<uint32_t>(depth_change * 8), rsp);
+         }
+      }
+
+      // ──────── If/else fixup stack ────────
+      void push_if_fixup(void* branch) {
+         if (_if_fixup_top < MAX_IF_DEPTH) {
+            _if_fixups[_if_fixup_top++] = branch;
+         }
+      }
+      void pop_if_fixup(void* target) {
+         if (_if_fixup_top > 0) {
+            void* branch = _if_fixups[--_if_fixup_top];
+            if (branch != nullptr && target != nullptr) {
+               base::fix_branch(branch, target);
+            }
          }
       }
 
@@ -997,18 +1041,20 @@ namespace eosio { namespace vm {
       void emit_i32_relop(Jcc cc) {
          this->emit_pop_raw(rcx);  // rhs
          this->emit_pop_raw(rax);  // lhs
+         this->emit_xor(edx, edx); // zero BEFORE cmp (xor clobbers flags)
          this->emit_cmp(ecx, eax);
-         this->emit_xor(eax, eax);
-         this->emit_setcc(cc, al);
+         this->emit_setcc(cc, dl);
+         this->emit_mov(edx, eax);
          this->emit_push_raw(rax);
       }
 
       void emit_i64_relop(Jcc cc) {
          this->emit_pop_raw(rcx);
          this->emit_pop_raw(rax);
+         this->emit_xor(edx, edx);
          this->emit_cmp(rcx, rax);
-         this->emit_xor(eax, eax);
-         this->emit_setcc(cc, al);
+         this->emit_setcc(cc, dl);
+         this->emit_mov(edx, eax);
          this->emit_push_raw(rax);
       }
 
@@ -1098,6 +1144,10 @@ namespace eosio { namespace vm {
       void** _block_addrs = nullptr;
       block_fixup** _block_fixups = nullptr;
       uint32_t _num_blocks = 0;
+      // If/else fixup stack — tracks pending if_ conditional branches
+      static constexpr uint32_t MAX_IF_DEPTH = 256;
+      void* _if_fixups[MAX_IF_DEPTH];
+      uint32_t _if_fixup_top = 0;
    };
 
 }} // namespace eosio::vm
