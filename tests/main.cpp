@@ -16,4 +16,5 @@ template void eosio::vm::execution_context<eosio::vm::standalone_function_t>::ex
 template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::interpreter>;
 #ifdef __x86_64__
 template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::jit>;
+template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::jit2>;
 #endif

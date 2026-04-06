@@ -180,11 +180,12 @@ extern template void eosio::vm::execution_context<eosio::vm::standalone_function
 extern template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::interpreter>;
 #ifdef __x86_64__
 extern template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::jit>;
+extern template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::jit2>;
 #endif
 
 #ifdef __x86_64__
 #define BACKEND_TEST_CASE(name, tags) \
-  TEMPLATE_TEST_CASE(name, tags, eosio::vm::interpreter, eosio::vm::jit)
+  TEMPLATE_TEST_CASE(name, tags, eosio::vm::interpreter, eosio::vm::jit, eosio::vm::jit2)
 #elif 1
 #define BACKEND_TEST_CASE(name, tags) \
   TEMPLATE_TEST_CASE(name, tags, eosio::vm::interpreter)
