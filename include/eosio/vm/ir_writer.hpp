@@ -45,8 +45,9 @@ namespace eosio { namespace vm {
       ~ir_writer() {
          // Pass 2: Compile all functions from IR to native x86_64.
          codegen_t codegen(_allocator, _mod);
-         // Pass 1.5: Register allocation (compute but don't use yet)
-         // TODO: Enable register-based codegen once emission is ready
+         // Pass 1.5: Register allocation
+         // TODO: Allocate intervals outside code region to avoid exhausting capacity.
+         // Currently disabled until register-based code emission is implemented.
          // for (uint32_t i = 0; i < _num_functions; ++i) {
          //    jit_regalloc::compute_live_intervals(_functions[i], _allocator);
          //    jit_regalloc::allocate_registers(_functions[i]);
