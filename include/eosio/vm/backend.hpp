@@ -12,6 +12,7 @@
 
 #ifdef __x86_64__
 #include <eosio/vm/x86_64.hpp>
+#include <eosio/vm/ir_writer.hpp>
 #endif
 
 #include <atomic>
@@ -38,6 +39,14 @@ namespace eosio { namespace vm {
       using context = jit_execution_context<Host, true>;
       template<typename Host, typename Options, typename DebugInfo>
       using parser = binary_parser<machine_code_writer<context<Host>, detail::has_max_stack_bytes<Options>>, Options, DebugInfo>;
+      static constexpr bool is_jit = true;
+   };
+
+   struct jit2 {
+      template<typename Host>
+      using context = jit_execution_context<Host>;
+      template<typename Host, typename Options, typename DebugInfo>
+      using parser = binary_parser<ir_writer<jit_execution_context<Host>, detail::has_max_stack_bytes<Options>>, Options, DebugInfo>;
       static constexpr bool is_jit = true;
    };
 #endif
