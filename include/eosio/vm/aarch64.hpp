@@ -765,10 +765,27 @@ namespace eosio { namespace vm {
       void emit_tee_local(uint32_t local_idx, uint8_t type) {
          int32_t offset = get_frame_offset(local_idx);
          if(type != types::v128) {
-            // Peek at top of stack without popping
+            // If the top of stack was just pushed, the value is still in a register
+            if (recent_ops[1].end == code) {
+               if (auto p = std::get_if<register_push_op>(&recent_ops[1].data)) {
+                  emit_str_fp_offset(p->reg, offset);
+                  invalidate_recent_ops();
+                  return;
+               }
+               if (std::holds_alternative<i32_const_op>(recent_ops[1].data) ||
+                   std::holds_alternative<i64_const_op>(recent_ops[1].data) ||
+                   std::holds_alternative<get_local_op>(recent_ops[1].data)) {
+                  // Value is in X0 (set up before the STR push)
+                  emit_str_fp_offset(X0, offset);
+                  invalidate_recent_ops();
+                  return;
+               }
+            }
+            // Fallback: peek at top of stack
             // LDR X0, [SP]
             emit32(0xF94003E0);
             emit_str_fp_offset(X0, offset);
+            invalidate_recent_ops();
          } else {
             // Peek at two slots without popping
             emit32(0xF94003E0); // LDR X0, [SP]       (low 64 bits)
