@@ -992,76 +992,63 @@ namespace eosio { namespace vm {
       void emit_i64_eqz() {
          COUNT_INSTR();
          auto icount = fixed_size_instr(11);
-         // pop %rax
-         emit_bytes(0x58);
-         // xor %rcx, %rcx
-         emit_bytes(0x48, 0x31, 0xc9);
-         // test %rax, %rax
-         emit_bytes(0x48, 0x85, 0xc0);
-         // setz %cl
-         emit_bytes(0x0f, 0x94, 0xc1);
-         // push %rcx
-         emit_bytes(0x51);
+         emit_pop(rax);
+         emit(XOR_A, rcx, rcx);
+         emit(TEST, rax, rax);
+         auto start = code;
+         emit_bytes(0x0f, 0x94, 0xc1); // setz %cl
+         emit_push(rcx);
+         push_recent_op(start, condition_op{JZ});
       }
       // i64 relops
       void emit_i64_eq() {
-         auto icount = fixed_size_instr(12);
-         // sete %dl
-         emit_i64_relop(0x94);
+         COUNT_INSTR();
+         emit_i64_relop(JE);
       }
 
       void emit_i64_ne() {
-         auto icount = fixed_size_instr(12);
-         // sete %dl
-         emit_i64_relop(0x95);
+         COUNT_INSTR();
+         emit_i64_relop(JNE);
       }
 
       void emit_i64_lt_s() {
-         auto icount = fixed_size_instr(12);
-         // setl %dl
-         emit_i64_relop(0x9c);
+         COUNT_INSTR();
+         emit_i64_relop(JL);
       }
 
       void emit_i64_lt_u() {
-         auto icount = fixed_size_instr(12);
-         // setl %dl
-         emit_i64_relop(0x92);
+         COUNT_INSTR();
+         emit_i64_relop(JB);
       }
 
       void emit_i64_gt_s() {
-         auto icount = fixed_size_instr(12);
-         // setg %dl
-         emit_i64_relop(0x9f);
+         COUNT_INSTR();
+         emit_i64_relop(JG);
       }
 
       void emit_i64_gt_u() {
-         auto icount = fixed_size_instr(12);
-         // seta %dl
-         emit_i64_relop(0x97);
+         COUNT_INSTR();
+         emit_i64_relop(JA);
       }
 
       void emit_i64_le_s() {
-         auto icount = fixed_size_instr(12);
-         // setle %dl
-         emit_i64_relop(0x9e);
+         COUNT_INSTR();
+         emit_i64_relop(JLE);
       }
 
       void emit_i64_le_u() {
-         auto icount = fixed_size_instr(12);
-         // setbe %dl
-         emit_i64_relop(0x96);
+         COUNT_INSTR();
+         emit_i64_relop(JBE);
       }
 
       void emit_i64_ge_s() {
-         auto icount = fixed_size_instr(12);
-         // setge %dl
-         emit_i64_relop(0x9d);
+         COUNT_INSTR();
+         emit_i64_relop(JGE);
       }
 
       void emit_i64_ge_u() {
-         auto icount = fixed_size_instr(12);
-         // setae %dl
-         emit_i64_relop(0x93);
+         COUNT_INSTR();
+         emit_i64_relop(JAE);
       }
 
 #ifdef EOS_VM_SOFTFLOAT
@@ -1624,6 +1611,13 @@ namespace eosio { namespace vm {
       // --------------- i64 binops ----------------------
 
       void emit_i64_add() {
+         if (auto local = try_pop_recent_op<get_local_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(ADD_A, local->expr, rax);
+            emit_push(rax);
+            return;
+         }
          if (auto c = try_pop_recent_op<i64_const_op>()) {
             COUNT_INSTR();
             emit_pop(rax);
@@ -1658,11 +1652,25 @@ namespace eosio { namespace vm {
             emit_push(rax);
             return;
          }
+         if (auto local = try_pop_recent_op<get_local_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(SUB_A, local->expr, rax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(6);
          emit_i64_binop(0x48, 0x29, 0xc8, 0x50);
       }
       void emit_i64_mul() {
+         if (auto local = try_pop_recent_op<get_local_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(IMUL, local->expr, rax);
+            emit_push(rax);
+            return;
+         }
          COUNT_INSTR();
          auto icount = fixed_size_instr(7);
          emit_pop(rax);
@@ -1715,6 +1723,13 @@ namespace eosio { namespace vm {
          emit_i64_binop(0x48, 0x31, 0xd2, 0x48, 0xf7, 0xf1, 0x52);
       }
       void emit_i64_and() {
+         if (auto local = try_pop_recent_op<get_local_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(AND_A, local->expr, rax);
+            emit_push(rax);
+            return;
+         }
          if (auto c = try_pop_recent_op<i64_const_op>()) {
             COUNT_INSTR();
             emit_pop(rax);
@@ -1733,6 +1748,13 @@ namespace eosio { namespace vm {
          emit_i64_binop(0x48, 0x21, 0xc8, 0x50);
       }
       void emit_i64_or() {
+         if (auto local = try_pop_recent_op<get_local_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(OR_A, local->expr, rax);
+            emit_push(rax);
+            return;
+         }
          if (auto c = try_pop_recent_op<i64_const_op>()) {
             COUNT_INSTR();
             emit_pop(rax);
@@ -1751,6 +1773,13 @@ namespace eosio { namespace vm {
          emit_i64_binop(0x48, 0x09, 0xc8, 0x50);
       }
       void emit_i64_xor() {
+         if (auto local = try_pop_recent_op<get_local_op>()) {
+            COUNT_INSTR();
+            emit_pop(rax);
+            emit(XOR_A, local->expr, rax);
+            emit_push(rax);
+            return;
+         }
          if (auto c = try_pop_recent_op<i64_const_op>()) {
             COUNT_INSTR();
             emit_pop(rax);
@@ -5780,6 +5809,26 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_relop(Jcc opcode) {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            emit_pop(rax);
+            emit(XOR_A, edx, edx);
+            emit_cmp(static_cast<int32_t>(c->value), eax);
+            auto start = code;
+            emit_setcc(opcode, dl);
+            emit_push(rdx);
+            push_recent_op(start, condition_op{opcode});
+            return;
+         }
+         if (auto local = try_pop_recent_op<get_local_op>()) {
+            emit_pop(rax);
+            emit(XOR_A, edx, edx);
+            emit(CMP, local->expr, eax);
+            auto start = code;
+            emit_setcc(opcode, dl);
+            emit_push(rdx);
+            push_recent_op(start, condition_op{opcode});
+            return;
+         }
          emit_pop(rax);
          emit_pop(rcx);
          emit(XOR_A, edx, edx);
@@ -5790,21 +5839,38 @@ namespace eosio { namespace vm {
          push_recent_op(start, condition_op{opcode});
       }
 
-      template<class... T>
-      void emit_i64_relop(uint8_t opcode) {
-         COUNT_INSTR();
-         // popq %rax
-         emit_bytes(0x58);
-         // popq %rcx
-         emit_bytes(0x59);
-         // xorq %rdx, %rdx
-         emit_bytes(0x48, 0x31, 0xd2);
-         // cmpq %rax, %rcx
-         emit_bytes(0x48, 0x39, 0xc1);
-         // SETcc %dl
-         emit_bytes(0x0f, opcode, 0xc2);
-         // pushq %rdx
-         emit_bytes(0x52);
+      void emit_i64_relop(Jcc opcode) {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            int64_t sv = static_cast<int64_t>(c->value);
+            if (sv >= INT32_MIN && sv <= INT32_MAX) {
+               emit_pop(rax);
+               emit(XOR_A, rdx, rdx);
+               emit_cmp(static_cast<int32_t>(sv), rax);
+               auto start = code;
+               emit_setcc(opcode, dl);
+               emit_push(rdx);
+               push_recent_op(start, condition_op{opcode});
+               return;
+            }
+         }
+         if (auto local = try_pop_recent_op<get_local_op>()) {
+            emit_pop(rax);
+            emit(XOR_A, rdx, rdx);
+            emit(CMP, local->expr, rax);
+            auto start = code;
+            emit_setcc(opcode, dl);
+            emit_push(rdx);
+            push_recent_op(start, condition_op{opcode});
+            return;
+         }
+         emit_pop(rax);
+         emit_pop(rcx);
+         emit(XOR_A, rdx, rdx);
+         emit(CMP, rax, rcx);
+         auto start = code;
+         emit_setcc(opcode, dl);
+         emit_push(rdx);
+         push_recent_op(start, condition_op{opcode});
       }
 
       template<typename Op>
