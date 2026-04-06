@@ -128,8 +128,12 @@ namespace eosio { namespace vm {
             }
          }
 
-         // Record code offset
-         _allocator.reclaim(code, buf + est_size - code);
+         // Emit function epilogue (return)
+         emit_function_epilogue(func);
+
+         // Record code offset. Don't reclaim unused code buffer space —
+         // block fixup nodes may be allocated after the code buffer.
+         // All memory is reclaimed in bulk by end_code<true>().
          body.jit_code_offset = code_start - static_cast<unsigned char*>(_code_segment_base);
 
          // Clear per-function state
@@ -437,9 +441,8 @@ namespace eosio { namespace vm {
 
          // ── Calls ──
          case ir_op::call: {
-            uint32_t funcnum = inst.call.index;
-            const func_type& ft = _mod.types[_mod.functions[funcnum]];
-            uint32_t total_funcnum = funcnum + _mod.get_imported_functions_size();
+            uint32_t funcnum = inst.call.index;  // absolute index (includes imports)
+            const func_type& ft = _mod.get_function_type(funcnum);
             // Decrement call depth
             if constexpr (!StackLimitIsBytes) {
                this->emit(base::DECD, ebx);
@@ -447,7 +450,7 @@ namespace eosio { namespace vm {
             }
             // Emit call (may need relocation)
             void* branch = this->emit_call32();
-            register_call(branch, total_funcnum);
+            register_call(branch, funcnum);
             // Pop params, push result
             emit_call_multipop(ft);
             // Increment call depth
@@ -754,6 +757,22 @@ namespace eosio { namespace vm {
          }
       }
 
+      void emit_function_epilogue(ir_function& func) {
+         // Pop return value if function has one
+         if (func.type->return_count != 0) {
+            this->emit_pop_raw(rax);
+         }
+         // Restore frame
+         if (func.num_locals > func.num_params) {
+            this->emit_mov(rbp, rsp);
+         }
+         this->emit_pop_raw(rbp);
+         if constexpr (!StackLimitIsBytes) {
+            this->emit(base::INCD, ebx);
+         }
+         this->emit(base::RET);
+      }
+
       // ──────── Block address tracking for control flow ────────
       struct block_fixup {
          void* branch;        // Code address to patch
@@ -862,13 +881,14 @@ namespace eosio { namespace vm {
       int32_t get_frame_offset(const ir_function& func, uint32_t local_idx) {
          const func_type* ft = func.type;
          if (local_idx < ft->param_types.size()) {
-            // Parameter: pushed by caller, stored above rbp
-            // Params are pushed right-to-left, so param[0] is at highest address
+            // Parameter: above rbp. Caller pushes in WASM order (param0 first),
+            // so param[N-1] is at rbp+16, param[N-2] at rbp+16+size(N-1), etc.
             int32_t offset = 16; // skip saved rbp + return address
-            for (uint32_t i = ft->param_types.size(); i > local_idx; --i) {
-               offset += (ft->param_types[i-1] == types::v128) ? 16 : 8;
+            for (uint32_t i = ft->param_types.size(); i-- > 0; ) {
+               if (i == local_idx) return offset;
+               offset += (ft->param_types[i] == types::v128) ? 16 : 8;
             }
-            return offset;
+            return offset; // shouldn't reach
          } else {
             // Local: below rbp (negative offset)
             uint32_t li = local_idx - ft->param_types.size();
