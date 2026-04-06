@@ -289,10 +289,9 @@ namespace eosio { namespace vm {
          this->emit_push_raw(rbp);
          this->emit_mov(rsp, rbp);
 
-         // Call depth is checked at call sites, not in the prologue.
-
-         // Allocate space for body locals only (params are already on stack from caller)
+         // Allocate space for body locals + spill slots
          uint32_t body_locals = func.num_locals - func.num_params;
+         _body_locals = body_locals;
          if (body_locals > 0) {
             this->emit_xor(eax, eax);
             for (uint32_t i = 0; i < body_locals; ++i) {
@@ -353,13 +352,13 @@ namespace eosio { namespace vm {
          case ir_op::i64_or:  emit_binop_ra(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, false); break;
          case ir_op::i64_xor: emit_binop_ra(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, false); break;
 
-         // ── Shifts ──
-         case ir_op::i32_shl:   emit_i32_shift(base::SHL_cl); break;
-         case ir_op::i32_shr_s: emit_i32_shift(base::SAR_cl); break;
-         case ir_op::i32_shr_u: emit_i32_shift(base::SHR_cl); break;
-         case ir_op::i64_shl:   emit_i64_shift(base::SHL_cl); break;
-         case ir_op::i64_shr_s: emit_i64_shift(base::SAR_cl); break;
-         case ir_op::i64_shr_u: emit_i64_shift(base::SHR_cl); break;
+         // ── Shifts (with constant folding) ──
+         case ir_op::i32_shl:   emit_shift_opt(func, inst, 4, true); break;  // /4 = SHL
+         case ir_op::i32_shr_s: emit_shift_opt(func, inst, 7, true); break;  // /7 = SAR
+         case ir_op::i32_shr_u: emit_shift_opt(func, inst, 5, true); break;  // /5 = SHR
+         case ir_op::i64_shl:   emit_shift_opt(func, inst, 4, false); break;
+         case ir_op::i64_shr_s: emit_shift_opt(func, inst, 7, false); break;
+         case ir_op::i64_shr_u: emit_shift_opt(func, inst, 5, false); break;
 
          // ── Comparisons ──
          case ir_op::i32_eqz:
@@ -730,11 +729,11 @@ namespace eosio { namespace vm {
             this->emit_push_raw(rdx);
             break;
 
-         // ── Rotates ──
-         case ir_op::i32_rotl: emit_i32_shift(base::ROL_cl); break;
-         case ir_op::i32_rotr: emit_i32_shift(base::ROR_cl); break;
-         case ir_op::i64_rotl: emit_i64_shift(base::ROL_cl); break;
-         case ir_op::i64_rotr: emit_i64_shift(base::ROR_cl); break;
+         // ── Rotates (with constant folding) ──
+         case ir_op::i32_rotl: emit_shift_opt(func, inst, 0, true); break;  // /0 = ROL
+         case ir_op::i32_rotr: emit_shift_opt(func, inst, 1, true); break;  // /1 = ROR
+         case ir_op::i64_rotl: emit_shift_opt(func, inst, 0, false); break;
+         case ir_op::i64_rotr: emit_shift_opt(func, inst, 1, false); break;
 
          // ── Unary integer ops ──
          case ir_op::i32_clz:
@@ -1160,13 +1159,58 @@ namespace eosio { namespace vm {
          }
       }
 
+      // ──────── Register cache (eliminates adjacent push/pop pairs) ────────
+      // A 2-element cache of values that have been "pushed" but are still
+      // in registers. When a pop is requested, check the cache first.
+      static constexpr int REG_CACHE_SIZE = 2;
+      struct cached_value {
+         bool valid = false;
+         general_register64 reg;
+      };
+      cached_value _reg_cache[REG_CACHE_SIZE];
+      int _cache_top = 0;
+
+      // Push a value: if cache has space, keep it in register
+      void cached_push(general_register64 reg) {
+         if (_cache_top < REG_CACHE_SIZE) {
+            _reg_cache[_cache_top++] = {true, reg};
+         } else {
+            // Cache full — flush oldest and add new
+            flush_cache();
+            _reg_cache[_cache_top++] = {true, reg};
+         }
+      }
+
+      // Pop a value into a register: check cache first
+      void cached_pop(general_register64 dest) {
+         if (_cache_top > 0 && _reg_cache[_cache_top - 1].valid) {
+            auto& top = _reg_cache[--_cache_top];
+            if (top.reg != dest) {
+               this->emit_mov(top.reg, dest);
+            }
+            top.valid = false;
+         } else {
+            this->emit_pop_raw(dest);
+         }
+      }
+
+      // Flush all cached values to the stack
+      void flush_cache() {
+         for (int i = 0; i < _cache_top; ++i) {
+            if (_reg_cache[i].valid) {
+               this->emit_push_raw(_reg_cache[i].reg);
+               _reg_cache[i].valid = false;
+            }
+         }
+         _cache_top = 0;
+      }
+
       // ──────── Register allocation helpers ────────
-      // Map phys_reg index to x86 64-bit register
+      // Map phys_reg index to x86 register
+      // Must match phys_reg enum: rdx=0, r8=1, r9=2, r10=3, r11=4
+      // rax and rcx are reserved as temporaries for spill loads
       static constexpr general_register64 phys_to_reg64(int8_t pr) {
-         // Must match phys_reg enum in jit_regalloc.hpp
          constexpr general_register64 map[] = {
-            general_register64(0),  // rax
-            general_register64(1),  // rcx
             general_register64(2),  // rdx
             general_register64(8),  // r8
             general_register64(9),  // r9
@@ -1177,8 +1221,6 @@ namespace eosio { namespace vm {
       }
       static constexpr general_register32 phys_to_reg32(int8_t pr) {
          constexpr general_register32 map[] = {
-            general_register32(0),  // eax
-            general_register32(1),  // ecx
             general_register32(2),  // edx
             general_register32(8),  // r8d
             general_register32(9),  // r9d
@@ -1195,6 +1237,47 @@ namespace eosio { namespace vm {
       int8_t get_phys(uint32_t vreg) const {
          if (!_vreg_map || vreg >= _num_vregs) return -1;
          return _vreg_map[vreg];
+      }
+
+      // Load a vreg's value to rax (temp register)
+      // If vreg is in a phys reg, emit mov. If spilled, load from frame.
+      void load_vreg_to_rax(uint32_t vreg) {
+         int8_t pr = get_phys(vreg);
+         if (pr >= 0) {
+            this->emit_mov(phys_to_reg64(pr), rax);
+         } else {
+            // Spill slot — load from frame
+            // TODO: compute spill offset from _spill_frame_offset
+            this->emit_mov(*(rbp + spill_offset(vreg)), rax);
+         }
+      }
+
+      // Load a vreg to rcx (second temp)
+      void load_vreg_to_rcx(uint32_t vreg) {
+         int8_t pr = get_phys(vreg);
+         if (pr >= 0) {
+            this->emit_mov(phys_to_reg64(pr), rcx);
+         } else {
+            this->emit_mov(*(rbp + spill_offset(vreg)), rcx);
+         }
+      }
+
+      // Store rax to a vreg's home
+      void store_rax_to_vreg(uint32_t vreg) {
+         int8_t pr = get_phys(vreg);
+         if (pr >= 0) {
+            this->emit_mov(rax, phys_to_reg64(pr));
+         } else {
+            this->emit_mov(rax, *(rbp + spill_offset(vreg)));
+         }
+      }
+
+      // Get rbp-relative offset for a spill slot
+      int32_t spill_offset(uint32_t vreg) {
+         // Spill slots are stored in intervals. Find this vreg's spill slot.
+         // For simplicity, use vreg index * -8 after locals
+         // TODO: use actual spill_slot from interval data
+         return -static_cast<int32_t>((_body_locals + vreg + 1) * 8);
       }
 
       // ──────── SSE float helpers ────────
@@ -1379,9 +1462,7 @@ namespace eosio { namespace vm {
          int8_t pr_src1 = get_phys(inst.rr.src1);
          int8_t pr_src2 = get_phys(inst.rr.src2);
 
-         // TODO: Register-based emission when all ops support it
-         // For now, always use stack-based fallback
-         {
+            {
             // Fallback to stack-based
             this->emit_pop_raw(rcx);
             this->emit_pop_raw(rax);
@@ -1409,8 +1490,8 @@ namespace eosio { namespace vm {
 
       template<typename ShiftOp>
       void emit_i32_shift(ShiftOp op) {
-         this->emit_pop_raw(rcx);  // shift amount
-         this->emit_pop_raw(rax);  // value
+         this->emit_pop_raw(rcx);
+         this->emit_pop_raw(rax);
          this->emit(op, eax);
          this->emit_push_raw(rax);
       }
@@ -1421,6 +1502,53 @@ namespace eosio { namespace vm {
          this->emit_pop_raw(rax);
          this->emit(op, rax);
          this->emit_push_raw(rax);
+      }
+
+      // Optimized shift: if the shift count (src2) is a constant, use immediate form
+      void emit_shift_opt(ir_function& func, const ir_inst& inst, uint8_t reg_field, bool is32) {
+         // Check if src2 is a const_i32/const_i64
+         uint32_t src2_vreg = inst.rr.src2;
+         bool found_const = false;
+         uint8_t shift_amount = 0;
+
+         if (src2_vreg != ir_vreg_none) {
+            // Search backward for the const instruction that defines src2
+            for (uint32_t j = func.inst_count; j > 0; --j) {
+               auto& prev = func.insts[j - 1];
+               if (prev.dest == src2_vreg) {
+                  if (prev.opcode == ir_op::const_i32 || prev.opcode == ir_op::const_i64) {
+                     shift_amount = static_cast<uint8_t>(prev.imm64 & (is32 ? 0x1f : 0x3f));
+                     found_const = true;
+                     prev.flags |= IR_DEAD; // Mark const as dead
+                  }
+                  break;
+               }
+            }
+         }
+
+         if (found_const) {
+            // Const was already pushed to stack — discard it, keep the value
+            this->emit_pop_raw(rcx); // discard the constant
+            this->emit_pop_raw(rax); // the value to shift
+            // Emit immediate shift: C1 /reg_field imm8 (32-bit) or 48 C1 /reg_field imm8 (64-bit)
+            if (is32) {
+               this->emit_bytes(0xc1, static_cast<uint8_t>(0xc0 | (reg_field << 3)), shift_amount);
+            } else {
+               this->emit_bytes(0x48, 0xc1, static_cast<uint8_t>(0xc0 | (reg_field << 3)), shift_amount);
+            }
+            this->emit_push_raw(rax);
+         } else {
+            // Variable shift — use cl register
+            this->emit_pop_raw(rcx);
+            this->emit_pop_raw(rax);
+            // D3 /reg_field (32-bit) or 48 D3 /reg_field (64-bit)
+            if (is32) {
+               this->emit_bytes(0xd3, static_cast<uint8_t>(0xc0 | (reg_field << 3)));
+            } else {
+               this->emit_bytes(0x48, 0xd3, static_cast<uint8_t>(0xc0 | (reg_field << 3)));
+            }
+            this->emit_push_raw(rax);
+         }
       }
 
       void emit_i32_relop(Jcc cc) {
@@ -1541,6 +1669,7 @@ namespace eosio { namespace vm {
       int8_t* _vreg_map = nullptr;
       uint32_t _num_vregs = 0;
       uint32_t _num_spill_slots = 0;
+      uint32_t _body_locals = 0;
    };
 
 }} // namespace eosio::vm

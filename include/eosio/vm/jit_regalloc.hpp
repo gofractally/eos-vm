@@ -19,13 +19,9 @@ namespace eosio { namespace vm {
    // Physical register assignment
    enum class phys_reg : int8_t {
       none = -1,
-      rax = 0, rcx = 1, rdx = 2,
-      r8 = 3, r9 = 4, r10 = 5, r11 = 6,
-      // Callee-saved (use if needed, must save/restore)
-      r12 = 7, r13 = 8, r14 = 9, r15 = 10, rbx = 11,
-      count = 12,
-      // Caller-saved count (free to use without save/restore)
-      caller_saved_count = 7,
+      // rax(0) and rcx(1) reserved as temporaries for spill loads
+      rdx = 0, r8 = 1, r9 = 2, r10 = 3, r11 = 4,
+      count = 5,
    };
 
    class jit_regalloc {
@@ -93,7 +89,7 @@ namespace eosio { namespace vm {
 
          // Active intervals (currently assigned to a register)
          // Using a simple fixed-size array since we have at most 12 registers
-         static constexpr int NUM_REGS = static_cast<int>(phys_reg::caller_saved_count);
+         static constexpr int NUM_REGS = static_cast<int>(phys_reg::count);
          uint32_t active[NUM_REGS]; // index into intervals array
          bool reg_used[NUM_REGS] = {};
          int num_active = 0;
