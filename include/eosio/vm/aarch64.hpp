@@ -3079,26 +3079,21 @@ namespace eosio { namespace vm {
 
       void emit_i8x16_bitmask() {
          emit_pop_v128_to(0);
-         // Use CMLT + shift reduction to extract sign bits
-         // CMLT V1.16B, V0.16B, #0
-         emit32(0x4E20A800); // CMLT V0.16B, V0.16B, #0 (comparison with zero, sets all-ones for negative)
-         // Now reduce: we need to extract the MSB of each byte
-         // This is complex on NEON. Use a series of shifts and ORs, or use softfloat helper.
-         // For simplicity, use stack-based extraction:
-         emit32(0x3C9F0FE0); // STR Q0, [SP, #-16]!
-         emit32(0xD2800000); // MOV X0, #0
-         for(int i = 0; i < 16; ++i) {
-            emit32(0x39400008 | (i << 10) | (SP << 5)); // LDRB W8, [SP, #i]
-            // AND W8, W8, #1
-            emit32(0x12000108);
-            // ORR X0, X0, X8, LSL #i
-            if(i == 0) {
-               emit32(0xAA080000); // ORR X0, X0, X8
-            } else {
-               emit32(0xAA080000 | (i << 10)); // ORR X0, X0, X8, LSL #i
-            }
-         }
-         emit_add_imm_sp(16);
+         // Extract MSB of each byte into a 16-bit integer using NEON.
+         // CMLT to get 0xFF for negative bytes, 0 for positive
+         emit32(0x4E20A800); // CMLT V0.16B, V0.16B, #0
+         // AND with power-of-2 mask {1,2,4,8,16,32,64,128} replicated to both halves
+         emit_mov_imm64(X8, 0x8040201008040201ULL);
+         emit32(0x4E080D01); // DUP V1.2D, X8
+         emit32(0x4E210000); // AND V0.16B, V0.16B, V1.16B
+         // Pairwise add 3 times: 16 bytes → 8 → 4 → 2 (low 8 sum, high 8 sum)
+         emit32(0x4E20BC00); // ADDP V0.16B, V0.16B, V0.16B
+         emit32(0x4E20BC00); // ADDP V0.16B, V0.16B, V0.16B
+         emit32(0x4E20BC00); // ADDP V0.16B, V0.16B, V0.16B
+         // Extract two result bytes into W0
+         emit32(0x0E013C00); // UMOV W0, V0.B[0]
+         emit32(0x0E033C08); // UMOV W8, V0.B[1]
+         emit32(0x2A082000); // ORR W0, W0, W8, LSL #8
          emit_push_x(X0);
       }
 
