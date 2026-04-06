@@ -536,15 +536,17 @@ int main() {
       const char* name;
       bool        enabled;
    };
-   enum RT { RT_NATIVE, RT_INTERP, RT_JIT, RT_WASM3, RT_WAMR, RT_WASMTIME, RT_WASMER, RT_COUNT };
+   enum RT { RT_NATIVE, RT_INTERP, RT_JIT, RT_JIT2, RT_WASM3, RT_WAMR, RT_WASMTIME, RT_WASMER, RT_COUNT };
 
    runtime_info runtimes[RT_COUNT] = {
       {"native",        false},  // enabled only for compute benchmarks
       {"eos-vm interp", true},
 #ifdef __x86_64__
       {"eos-vm JIT",    true},
+      {"eos-vm JIT2",   true},
 #else
       {"eos-vm JIT",    false},
+      {"eos-vm JIT2",   false},
 #endif
 #ifdef BENCH_HAS_WASM3
       {"wasm3",         true},
@@ -637,6 +639,7 @@ int main() {
       host_results[t][RT_INTERP] = run_eosvm<interpreter>(code, wa, benches[t].func, N);
 #ifdef __x86_64__
       host_results[t][RT_JIT] = run_eosvm<jit>(code, wa, benches[t].func, N);
+      host_results[t][RT_JIT2] = run_eosvm<jit2>(code, wa, benches[t].func, N);
 #endif
 #ifdef BENCH_HAS_WASM3
       host_results[t][RT_WASM3] = run_wasm3(wasm_bytes, benches[t].func, N);
@@ -707,6 +710,7 @@ int main() {
       compute_results[t][RT_INTERP] = run_eosvm_compute<interpreter>(wasm, func, iters);
 #ifdef __x86_64__
       compute_results[t][RT_JIT] = run_eosvm_compute<jit>(wasm, func, iters);
+      compute_results[t][RT_JIT2] = run_eosvm_compute<jit2>(wasm, func, iters);
 #endif
 #ifdef BENCH_HAS_WASM3
       compute_results[t][RT_WASM3] = run_wasm3_compute(wasm, func, iters);
