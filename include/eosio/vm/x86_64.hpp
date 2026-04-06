@@ -5852,6 +5852,8 @@ namespace eosio { namespace vm {
                push_recent_op(start, condition_op{opcode});
                return;
             }
+            // Value didn't fit in imm32 — re-emit the constant and fall through
+            emit_i64_const(c->value);
          }
          if (auto local = try_pop_recent_op<get_local_op>()) {
             emit_pop(rax);
