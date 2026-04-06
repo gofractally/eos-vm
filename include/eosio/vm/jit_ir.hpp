@@ -223,12 +223,14 @@ namespace eosio { namespace vm {
 
          // Each control flow instruction creates at most 2 blocks.
          // source_bytes is an upper bound on instruction count.
-         block_cap = static_cast<uint32_t>(source_bytes + 4);
+         // Multiply by 2 since if/else creates 2 blocks, plus minimum for tiny functions.
+         block_cap = static_cast<uint32_t>(source_bytes * 2 + 16);
          blocks = alloc.alloc<ir_basic_block>(block_cap);
          block_count = 0;
 
          // Virtual stack is bounded by source_bytes (each push needs at least 1 byte of WASM).
-         vstack_cap = static_cast<uint32_t>(source_bytes + 4);
+         // v128 values use 2 slots each, so multiply by 2 for safety.
+         vstack_cap = static_cast<uint32_t>(source_bytes * 2 + 16);
          vstack = alloc.alloc<uint32_t>(vstack_cap);
          vstack_top = 0;
 

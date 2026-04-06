@@ -4497,6 +4497,7 @@ namespace eosio { namespace vm {
       }
 
       const void* get_base_addr() const { return _code_segment_base; }
+      const void* get_code_start() const { return _code_start; }
 
       void set_stack_usage(std::uint64_t usage)
       {
