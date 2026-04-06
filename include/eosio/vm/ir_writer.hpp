@@ -292,14 +292,14 @@ namespace eosio { namespace vm {
             return emit_case(dc, rt);
          }
       };
-      br_table_parser emit_br_table(uint32_t /*table_size*/) {
+      br_table_parser emit_br_table(uint32_t table_size) {
          if (!_unreachable) {
             uint32_t idx = _func->vpop();
             ir_inst inst{};
             inst.opcode = ir_op::br_table;
             inst.type = types::pseudo;
             inst.flags = IR_SIDE_EFFECT;
-            inst.dest = ir_vreg_none;
+            inst.dest = table_size;  // store case count for jit_codegen
             inst.rr.src1 = idx;
             inst.rr.src2 = ir_vreg_none;
             _func->emit(inst);

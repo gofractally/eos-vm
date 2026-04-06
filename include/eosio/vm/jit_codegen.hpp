@@ -272,11 +272,7 @@ namespace eosio { namespace vm {
          this->emit_push_raw(rbp);
          this->emit_mov(rsp, rbp);
 
-         // Check stack depth
-         if constexpr (!StackLimitIsBytes) {
-            this->emit(base::DECD, ebx);
-            base::fix_branch(this->emit_branchcc32(base::JZ), stack_overflow_handler);
-         }
+         // Call depth is checked at call sites, not in the prologue.
 
          // Allocate space for body locals only (params are already on stack from caller)
          uint32_t body_locals = func.num_locals - func.num_params;
@@ -390,15 +386,10 @@ namespace eosio { namespace vm {
          // ── Return ──
          case ir_op::return_:
             if (inst.rr.src1 != ir_vreg_none) {
-               // Return value is already on stack (top of stack)
                this->emit_pop_raw(rax);
             }
-            // Restore frame
             this->emit_mov(rbp, rsp);
             this->emit_pop_raw(rbp);
-            if constexpr (!StackLimitIsBytes) {
-               this->emit(base::INCD, ebx);
-            }
             this->emit(base::RET);
             break;
 
@@ -454,7 +445,30 @@ namespace eosio { namespace vm {
 
          // ── Control flow (branches) ──
          case ir_op::br:
-            emit_branch_to_block(func, inst.br.target, inst.dest, inst.type);
+            if (_in_br_table) {
+               bool is_default = (_br_table_case >= _br_table_size);
+               if (is_default) {
+                  // Default case: unconditional branch
+                  emit_branch_to_block(func, inst.br.target, inst.dest, inst.type);
+                  _in_br_table = false;
+               } else {
+                  // Numbered case: compare and conditionally branch
+                  this->emit_cmp(static_cast<int32_t>(_br_table_case), r8d);
+                  if (inst.br.target < _num_blocks && _block_addrs[inst.br.target] != nullptr) {
+                     void* branch = this->emit_branchcc32(base::JE);
+                     base::fix_branch(branch, _block_addrs[inst.br.target]);
+                  } else if (inst.br.target < _num_blocks) {
+                     void* branch = this->emit_branchcc32(base::JE);
+                     auto* fixup = _allocator.alloc<block_fixup>(1);
+                     fixup->branch = branch;
+                     fixup->next = _block_fixups[inst.br.target];
+                     _block_fixups[inst.br.target] = fixup;
+                  }
+                  _br_table_case++;
+               }
+            } else {
+               emit_branch_to_block(func, inst.br.target, inst.dest, inst.type);
+            }
             break;
 
          case ir_op::br_if:
@@ -462,9 +476,12 @@ namespace eosio { namespace vm {
             break;
 
          case ir_op::br_table:
-            // br_table is followed by individual br instructions for each case
-            // The index was already popped; cases will use it
-            // TODO: implement proper br_table with jump table
+            // Pop index to r8d. Subsequent br instructions are cases 0..N then default.
+            this->emit_pop_raw(rax);
+            this->emit_mov(eax, r8d);
+            _br_table_case = 0;
+            _br_table_size = inst.dest; // number of non-default cases
+            _in_br_table = true;
             break;
 
          // ── Calls ──
@@ -1034,9 +1051,7 @@ namespace eosio { namespace vm {
             this->emit_mov(rbp, rsp);
          }
          this->emit_pop_raw(rbp);
-         if constexpr (!StackLimitIsBytes) {
-            this->emit(base::INCD, ebx);
-         }
+         // Call depth counter is managed at call sites, not in epilogue
          this->emit(base::RET);
       }
 
@@ -1448,6 +1463,10 @@ namespace eosio { namespace vm {
       static constexpr uint32_t MAX_IF_DEPTH = 256;
       void* _if_fixups[MAX_IF_DEPTH];
       uint32_t _if_fixup_top = 0;
+      // br_table state
+      bool _in_br_table = false;
+      uint32_t _br_table_case = 0;
+      uint32_t _br_table_size = 0;
    };
 
 }} // namespace eosio::vm
