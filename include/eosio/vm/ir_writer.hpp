@@ -274,18 +274,17 @@ namespace eosio { namespace vm {
          ir_writer* _writer;
          br_table_parser(ir_writer* w) : _writer(w) {}
          branch_t emit_case(uint32_t dc, uint8_t rt) {
-            uint32_t inst_idx = UINT32_MAX;
-            if (!_writer->_unreachable) {
-               ir_inst inst{};
-               inst.opcode = ir_op::br;
-               inst.type = rt;
-               inst.flags = IR_SIDE_EFFECT;
-               inst.dest = dc;
-               inst.br.target = UINT32_MAX; // patched by fix_branch
-               inst.br.src1 = ir_vreg_none;
-               inst_idx = _writer->_func->current_inst_index();
-               _writer->_func->emit(inst);
-            }
+            // Always emit case instructions — br_table sets unreachable but
+            // the cases must still be emitted for the dispatch table.
+            ir_inst inst{};
+            inst.opcode = ir_op::br;
+            inst.type = rt;
+            inst.flags = IR_SIDE_EFFECT;
+            inst.dest = dc;
+            inst.br.target = UINT32_MAX; // patched by fix_branch
+            inst.br.src1 = ir_vreg_none;
+            uint32_t inst_idx = _writer->_func->current_inst_index();
+            _writer->_func->emit(inst);
             return inst_idx;
          }
          branch_t emit_default(uint32_t dc, uint8_t rt) {

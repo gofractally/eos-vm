@@ -445,7 +445,6 @@ namespace eosio { namespace vm {
 
          // ── Control flow (branches) ──
          case ir_op::br_table:
-            // Index is on x86 stack. Keep it there for case comparisons.
             _br_table_case = 0;
             _br_table_size = inst.dest;
             _in_br_table = true;
