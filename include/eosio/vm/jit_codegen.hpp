@@ -24,8 +24,6 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
-#include <variant>
-#include <vector>
 
 namespace eosio { namespace vm {
 
@@ -52,9 +50,10 @@ namespace eosio { namespace vm {
       using typename base::imm32;
 
     public:
-      jit_codegen(growable_allocator& alloc, module& mod)
+      jit_codegen(growable_allocator& alloc, module& mod, void* code_segment_base = nullptr)
          : _allocator(alloc), _mod(mod) {
-         _code_segment_base = _allocator.start_code();
+         _code_segment_base = code_segment_base ? code_segment_base : _allocator.start_code();
+         init_relocations();
       }
 
       // Emit the SysV ABI entry point (same as machine_code_writer)
@@ -97,7 +96,7 @@ namespace eosio { namespace vm {
          auto* code_start = buf;
          code = buf;
 
-         start_function(code, func.func_index);
+         start_function(code, func.func_index + _mod.get_imported_functions_size());
 
          // Emit function prologue
          emit_function_prologue(func);
@@ -117,19 +116,16 @@ namespace eosio { namespace vm {
 
          // Patch element table entries (same as machine_code_writer destructor)
          auto num_functions = _mod.get_functions_total();
-         if (num_functions <= _function_relocations.size()) {
-            for (auto& elem : _mod.elements) {
-               for (auto& entry : elem.elems) {
-                  void* addr = call_indirect_handler;
-                  if (entry.index < num_functions) {
-                     assert(entry.index < _function_relocations.size());
-                     if (auto reloc = std::get_if<void*>(&_function_relocations[entry.index])) {
-                        addr = *reloc;
-                     }
+         for (auto& elem : _mod.elements) {
+            for (auto& entry : elem.elems) {
+               void* addr = call_indirect_handler;
+               if (entry.index < num_functions && entry.index < _num_relocs) {
+                  if (_relocs[entry.index].address) {
+                     addr = _relocs[entry.index].address;
                   }
-                  std::size_t offset = static_cast<char*>(addr) - static_cast<char*>(_code_segment_base);
-                  entry.code_ptr = _mod.allocator._code_base + offset;
                }
+               std::size_t offset = static_cast<char*>(addr) - static_cast<char*>(_code_segment_base);
+               entry.code_ptr = _mod.allocator._code_base + offset;
             }
          }
       }
@@ -488,23 +484,53 @@ namespace eosio { namespace vm {
       }
 
       // ──────── Function relocation ────────
-      void register_call(void* ptr, uint32_t funcnum) {
-         auto& vec = _function_relocations;
-         if (funcnum >= vec.size()) vec.resize(funcnum + 1);
-         if (void** addr = std::get_if<void*>(&vec[funcnum])) {
-            base::fix_branch(ptr, *addr);
+      // Linked list node for pending forward-reference fixups.
+      // Allocated from growable_allocator — no malloc, reclaimed by end_code.
+      struct call_fixup {
+         void* branch;       // Code address of the branch to patch
+         call_fixup* next;   // Next pending fixup for the same target, or nullptr
+      };
+
+      // Each function has either a resolved address (non-null) or a linked list
+      // of pending fixups (address is null, pending_fixups points to the list).
+      struct func_reloc {
+         void* address = nullptr;         // Resolved code address, or nullptr if unresolved
+         call_fixup* pending = nullptr;   // Linked list of pending fixups
+      };
+
+      void init_relocations() {
+         uint32_t total = _mod.get_functions_total();
+         _relocs = _allocator.alloc<func_reloc>(total);
+         _num_relocs = total;
+         for (uint32_t i = 0; i < total; ++i) {
+            _relocs[i] = func_reloc{};
+         }
+      }
+
+      void register_call(void* branch_addr, uint32_t funcnum) {
+         if (funcnum >= _num_relocs) return;
+         auto& r = _relocs[funcnum];
+         if (r.address) {
+            // Already compiled — patch immediately
+            base::fix_branch(branch_addr, r.address);
          } else {
-            std::get<std::vector<void*>>(vec[funcnum]).push_back(ptr);
+            // Forward reference — add to linked list
+            auto* fixup = _allocator.alloc<call_fixup>(1);
+            fixup->branch = branch_addr;
+            fixup->next = r.pending;
+            r.pending = fixup;
          }
       }
 
       void start_function(void* func_start, uint32_t funcnum) {
-         auto& vec = _function_relocations;
-         if (funcnum >= vec.size()) vec.resize(funcnum + 1);
-         for (void* branch : std::get<std::vector<void*>>(vec[funcnum])) {
-            base::fix_branch(branch, func_start);
+         if (funcnum >= _num_relocs) return;
+         auto& r = _relocs[funcnum];
+         // Patch all pending forward references
+         for (auto* f = r.pending; f; f = f->next) {
+            base::fix_branch(f->branch, func_start);
          }
-         vec[funcnum] = func_start;
+         r.address = func_start;
+         r.pending = nullptr;
       }
 
       // ──────── Static callbacks (same as machine_code_writer) ────────
@@ -537,7 +563,8 @@ namespace eosio { namespace vm {
       void* type_error_handler = nullptr;
       void* stack_overflow_handler = nullptr;
       void* memory_handler = nullptr;
-      std::vector<std::variant<std::vector<void*>, void*>> _function_relocations;
+      func_reloc* _relocs = nullptr;
+      uint32_t _num_relocs = 0;
    };
 
 }} // namespace eosio::vm
