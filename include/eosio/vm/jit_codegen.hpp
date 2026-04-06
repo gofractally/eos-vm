@@ -39,6 +39,7 @@ namespace eosio { namespace vm {
       using base::esp; using base::ebp; using base::esi; using base::edi;
       using base::r8d; using base::r9d;
       using base::al; using base::cl;
+      using base::ax;
       using base::xmm0; using base::xmm1;
       using typename base::general_register64;
       using typename base::general_register32;
@@ -374,61 +375,437 @@ namespace eosio { namespace vm {
             emit_error_handler(&on_unreachable);
             break;
 
-         // ── Nop / arg / block / loop / end / if / else ──
+         // ── Nop / control flow markers ──
          case ir_op::nop:
-         case ir_op::arg:  // args are handled by call emission
+         case ir_op::arg:
          case ir_op::block:
          case ir_op::loop:
          case ir_op::end:
          case ir_op::if_:
          case ir_op::else_:
+            // Control flow is handled by machine_code_writer during Phase 3 parsing.
+            // jit_codegen Phase 4 will implement these via block address tracking.
             break;
 
          // ── Control flow (branches) ──
          case ir_op::br:
          case ir_op::br_if:
          case ir_op::br_table:
-            // TODO: Proper branch emission requires block address mapping
-            // For now, emit nothing (will be filled in during Phase 4)
+            // TODO Phase 4: Branch emission requires block address mapping
             break;
 
          // ── Calls ──
-         case ir_op::call:
+         case ir_op::call: {
+            uint32_t funcnum = inst.call.index;
+            const func_type& ft = _mod.types[_mod.functions[funcnum]];
+            uint32_t total_funcnum = funcnum + _mod.get_imported_functions_size();
+            // Decrement call depth
+            if constexpr (!StackLimitIsBytes) {
+               this->emit(base::DECD, ebx);
+               base::fix_branch(this->emit_branchcc32(base::JZ), stack_overflow_handler);
+            }
+            // Emit call (may need relocation)
+            void* branch = this->emit_call32();
+            register_call(branch, total_funcnum);
+            // Pop params, push result
+            emit_call_multipop(ft);
+            // Increment call depth
+            if constexpr (!StackLimitIsBytes) {
+               this->emit(base::INCD, ebx);
+            }
+            break;
+         }
          case ir_op::call_indirect:
-            // TODO: Full call emission
+            // TODO: Full call_indirect with table lookup
+            emit_error_handler(&on_call_indirect_error);
             break;
 
          // ── Local/global access ──
-         case ir_op::local_get:
-         case ir_op::local_set:
-         case ir_op::local_tee:
-         case ir_op::global_get:
-         case ir_op::global_set:
-            // TODO: Frame-relative access
+         case ir_op::local_get: {
+            int32_t offset = get_frame_offset(func, inst.local.index);
+            this->emit_mov(*(rbp + offset), rax);
+            this->emit_push_raw(rax);
+            break;
+         }
+         case ir_op::local_set: {
+            int32_t offset = get_frame_offset(func, inst.local.index);
+            this->emit_pop_raw(rax);
+            this->emit_mov(rax, *(rbp + offset));
+            break;
+         }
+         case ir_op::local_tee: {
+            int32_t offset = get_frame_offset(func, inst.local.index);
+            this->emit_pop_raw(rax);
+            this->emit_mov(rax, *(rbp + offset));
+            this->emit_push_raw(rax);
+            break;
+         }
+         case ir_op::global_get: {
+            uint32_t gi = inst.local.index;
+            auto loc = emit_global_loc(gi);
+            this->emit_mov(loc, rax);
+            this->emit_push_raw(rax);
+            break;
+         }
+         case ir_op::global_set: {
+            uint32_t gi = inst.local.index;
+            this->emit_pop_raw(rax);
+            auto loc = emit_global_loc(gi);
+            this->emit_mov(rax, loc);
+            break;
+         }
+
+         // ── Memory loads ──
+         case ir_op::i32_load:     emit_load(inst.ri.imm, base::MOV_A, eax); break;
+         case ir_op::i64_load:     emit_load(inst.ri.imm, base::MOV_A, rax); break;
+         case ir_op::f32_load:     emit_load(inst.ri.imm, base::MOV_A, eax); break;
+         case ir_op::f64_load:     emit_load(inst.ri.imm, base::MOV_A, rax); break;
+         case ir_op::i32_load8_s:  emit_load(inst.ri.imm, base::MOVSXB, eax); break;
+         case ir_op::i32_load16_s: emit_load(inst.ri.imm, base::MOVSXW, eax); break;
+         case ir_op::i32_load8_u:  emit_load(inst.ri.imm, base::MOVZXB, eax); break;
+         case ir_op::i32_load16_u: emit_load(inst.ri.imm, base::MOVZXW, eax); break;
+         case ir_op::i64_load8_s:  emit_load(inst.ri.imm, base::MOVSXB, rax); break;
+         case ir_op::i64_load16_s: emit_load(inst.ri.imm, base::MOVSXW, rax); break;
+         case ir_op::i64_load32_s: emit_load(inst.ri.imm, base::MOVSXD, rax); break;
+         case ir_op::i64_load8_u:  emit_load(inst.ri.imm, base::MOVZXB, eax); break;
+         case ir_op::i64_load16_u: emit_load(inst.ri.imm, base::MOVZXW, eax); break;
+         case ir_op::i64_load32_u: emit_load(inst.ri.imm, base::MOV_A, eax); break;
+
+         // ── Memory stores ──
+         case ir_op::i32_store:   emit_store(inst.ri.imm, base::MOV_B, eax); break;
+         case ir_op::i64_store:   emit_store(inst.ri.imm, base::MOV_B, rax); break;
+         case ir_op::f32_store:   emit_store(inst.ri.imm, base::MOV_B, eax); break;
+         case ir_op::f64_store:   emit_store(inst.ri.imm, base::MOV_B, rax); break;
+         case ir_op::i32_store8:  emit_store(inst.ri.imm, base::MOVB_B, al); break;
+         case ir_op::i32_store16: emit_store(inst.ri.imm, base::MOVW_B, this->ax); break;
+         case ir_op::i64_store8:  emit_store(inst.ri.imm, base::MOVB_B, al); break;
+         case ir_op::i64_store16: emit_store(inst.ri.imm, base::MOVW_B, this->ax); break;
+         case ir_op::i64_store32: emit_store(inst.ri.imm, base::MOV_B, eax); break;
+
+         // ── Memory management ──
+         case ir_op::memory_size:
+            this->emit_push_raw(rdi);
+            this->emit_push_raw(rsi);
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&current_memory);
+            this->emit(base::CALL, rax);
+            this->emit_pop_raw(rsi);
+            this->emit_pop_raw(rdi);
+            this->emit_push_raw(rax);
             break;
 
-         // ── Memory operations ──
-         case ir_op::i32_load:
-         case ir_op::i64_load:
-         case ir_op::f32_load:
-         case ir_op::f64_load:
-         case ir_op::i32_store:
-         case ir_op::i64_store:
-         case ir_op::f32_store:
-         case ir_op::f64_store:
-         case ir_op::memory_size:
          case ir_op::memory_grow:
-            // TODO: Memory access emission
+            this->emit_pop_raw(rax);  // pages
+            this->emit_push_raw(rdi);
+            this->emit_push_raw(rsi);
+            this->emit_mov(eax, esi); // pages arg in esi
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&grow_memory);
+            this->emit(base::CALL, rax);
+            this->emit_pop_raw(rsi);
+            this->emit_pop_raw(rdi);
+            this->emit_push_raw(rax);
             break;
 
          // ── Select/drop ──
-         case ir_op::select:
          case ir_op::drop:
+            this->emit_pop_raw(rax);
+            break;
+
+         case ir_op::select:
+            this->emit_pop_raw(rax);  // condition
+            this->emit_pop_raw(rcx);  // val2
+            this->emit_pop_raw(rdx);  // val1
+            this->emit(base::TEST, eax, eax);
+            this->emit_bytes(0x0f, 0x44, 0xd1); // cmovz %ecx, %edx
+            this->emit_push_raw(rdx);
+            break;
+
+         // ── Division/remainder ──
+         case ir_op::i32_div_s:
+            this->emit_pop_raw(rcx);
+            this->emit_pop_raw(rax);
+            this->emit_bytes(0x99);        // cdq (sign-extend eax to edx:eax)
+            this->emit_bytes(0xf7, 0xf9);  // idiv ecx
+            this->emit_push_raw(rax);
+            break;
+         case ir_op::i32_div_u:
+            this->emit_pop_raw(rcx);
+            this->emit_pop_raw(rax);
+            this->emit_xor(edx, edx);
+            this->emit_bytes(0xf7, 0xf1);  // div ecx
+            this->emit_push_raw(rax);
+            break;
+         case ir_op::i32_rem_s:
+            this->emit_pop_raw(rcx);
+            this->emit_pop_raw(rax);
+            this->emit_cmp(-1, ecx);
+            {
+               void* skip = this->emit_branch8(base::JE);
+               this->emit_bytes(0x99);        // cdq
+               this->emit_bytes(0xf7, 0xf9);  // idiv ecx
+               void* done = this->emit_branch8(base::JMP_8);
+               base::fix_branch8(skip, code);
+               this->emit_xor(edx, edx);      // result = 0 for -1 divisor
+               base::fix_branch8(done, code);
+            }
+            this->emit_push_raw(rdx);
+            break;
+         case ir_op::i32_rem_u:
+            this->emit_pop_raw(rcx);
+            this->emit_pop_raw(rax);
+            this->emit_xor(edx, edx);
+            this->emit_bytes(0xf7, 0xf1);  // div ecx
+            this->emit_push_raw(rdx);
+            break;
+         case ir_op::i64_div_s:
+            this->emit_pop_raw(rcx);
+            this->emit_pop_raw(rax);
+            this->emit_bytes(0x48, 0x99);        // cqo
+            this->emit_bytes(0x48, 0xf7, 0xf9);  // idiv rcx
+            this->emit_push_raw(rax);
+            break;
+         case ir_op::i64_div_u:
+            this->emit_pop_raw(rcx);
+            this->emit_pop_raw(rax);
+            this->emit_xor(edx, edx);
+            this->emit_bytes(0x48, 0xf7, 0xf1);  // div rcx
+            this->emit_push_raw(rax);
+            break;
+         case ir_op::i64_rem_s:
+            this->emit_pop_raw(rcx);
+            this->emit_pop_raw(rax);
+            this->emit_bytes(0x48, 0x83, 0xf9, 0xff); // cmp $-1, rcx
+            {
+               void* skip = this->emit_branch8(base::JE);
+               this->emit_bytes(0x48, 0x99);        // cqo
+               this->emit_bytes(0x48, 0xf7, 0xf9);  // idiv rcx
+               void* done = this->emit_branch8(base::JMP_8);
+               base::fix_branch8(skip, code);
+               this->emit_xor(edx, edx);
+               base::fix_branch8(done, code);
+            }
+            this->emit_push_raw(rdx);
+            break;
+         case ir_op::i64_rem_u:
+            this->emit_pop_raw(rcx);
+            this->emit_pop_raw(rax);
+            this->emit_xor(edx, edx);
+            this->emit_bytes(0x48, 0xf7, 0xf1);  // div rcx
+            this->emit_push_raw(rdx);
+            break;
+
+         // ── Rotates ──
+         case ir_op::i32_rotl: emit_i32_shift(base::ROL_cl); break;
+         case ir_op::i32_rotr: emit_i32_shift(base::ROR_cl); break;
+         case ir_op::i64_rotl: emit_i64_shift(base::ROL_cl); break;
+         case ir_op::i64_rotr: emit_i64_shift(base::ROR_cl); break;
+
+         // ── Unary integer ops ──
+         case ir_op::i32_clz:
+            this->emit_pop_raw(rax);
+            this->emit_bytes(0xf3, 0x0f, 0xbd, 0xc0); // lzcnt eax, eax
+            this->emit_push_raw(rax);
+            break;
+         case ir_op::i32_ctz:
+            this->emit_pop_raw(rax);
+            this->emit_bytes(0xf3, 0x0f, 0xbc, 0xc0); // tzcnt eax, eax
+            this->emit_push_raw(rax);
+            break;
+         case ir_op::i32_popcnt:
+            this->emit_pop_raw(rax);
+            this->emit_bytes(0xf3, 0x0f, 0xb8, 0xc0); // popcnt eax, eax
+            this->emit_push_raw(rax);
+            break;
+         case ir_op::i64_clz:
+            this->emit_pop_raw(rax);
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0xbd, 0xc0); // lzcnt rax, rax
+            this->emit_push_raw(rax);
+            break;
+         case ir_op::i64_ctz:
+            this->emit_pop_raw(rax);
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0xbc, 0xc0); // tzcnt rax, rax
+            this->emit_push_raw(rax);
+            break;
+         case ir_op::i64_popcnt:
+            this->emit_pop_raw(rax);
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0xb8, 0xc0); // popcnt rax, rax
+            this->emit_push_raw(rax);
+            break;
+
+         // ── Conversions ──
+         case ir_op::i32_wrap_i64:
+            this->emit_pop_raw(rax);
+            this->emit_bytes(0x89, 0xc0); // mov eax, eax (zero-extend)
+            this->emit_push_raw(rax);
+            break;
+         case ir_op::i64_extend_s_i32:
+            this->emit_bytes(0x48, 0x63, 0x04, 0x24); // movsxd (%rsp), %rax
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i64_extend_u_i32:
+            this->emit_bytes(0x8b, 0x04, 0x24); // mov (%rsp), %eax (zero-extends)
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i32_extend8_s:
+            this->emit_bytes(0x0f, 0xbe, 0x04, 0x24); // movsbl (%rsp), %eax
+            this->emit_bytes(0x89, 0x04, 0x24);        // mov %eax, (%rsp)
+            break;
+         case ir_op::i32_extend16_s:
+            this->emit_bytes(0x0f, 0xbf, 0x04, 0x24); // movswl (%rsp), %eax
+            this->emit_bytes(0x89, 0x04, 0x24);
+            break;
+         case ir_op::i64_extend8_s:
+            this->emit_bytes(0x48, 0x0f, 0xbe, 0x04, 0x24); // movsbq (%rsp), %rax
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i64_extend16_s:
+            this->emit_bytes(0x48, 0x0f, 0xbf, 0x04, 0x24); // movswq (%rsp), %rax
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i64_extend32_s:
+            this->emit_bytes(0x48, 0x63, 0x04, 0x24); // movsxd (%rsp), %rax
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i32_reinterpret_f32:
+         case ir_op::i64_reinterpret_f64:
+         case ir_op::f32_reinterpret_i32:
+         case ir_op::f64_reinterpret_i64:
+            // Bit patterns are identical — no-op on stack machine
+            break;
+
+         // ── Float ops and remaining conversions ──
+         // These require softfloat support; for now emit TODO stubs
+         // that will be filled in when we integrate softfloat calling
+         case ir_op::f32_abs: case ir_op::f32_neg: case ir_op::f32_ceil:
+         case ir_op::f32_floor: case ir_op::f32_trunc: case ir_op::f32_nearest:
+         case ir_op::f32_sqrt: case ir_op::f32_add: case ir_op::f32_sub:
+         case ir_op::f32_mul: case ir_op::f32_div: case ir_op::f32_min:
+         case ir_op::f32_max: case ir_op::f32_copysign:
+         case ir_op::f64_abs: case ir_op::f64_neg: case ir_op::f64_ceil:
+         case ir_op::f64_floor: case ir_op::f64_trunc: case ir_op::f64_nearest:
+         case ir_op::f64_sqrt: case ir_op::f64_add: case ir_op::f64_sub:
+         case ir_op::f64_mul: case ir_op::f64_div: case ir_op::f64_min:
+         case ir_op::f64_max: case ir_op::f64_copysign:
+         case ir_op::f32_eq: case ir_op::f32_ne: case ir_op::f32_lt:
+         case ir_op::f32_gt: case ir_op::f32_le: case ir_op::f32_ge:
+         case ir_op::f64_eq: case ir_op::f64_ne: case ir_op::f64_lt:
+         case ir_op::f64_gt: case ir_op::f64_le: case ir_op::f64_ge:
+         case ir_op::i32_trunc_s_f32: case ir_op::i32_trunc_u_f32:
+         case ir_op::i32_trunc_s_f64: case ir_op::i32_trunc_u_f64:
+         case ir_op::i64_trunc_s_f32: case ir_op::i64_trunc_u_f32:
+         case ir_op::i64_trunc_s_f64: case ir_op::i64_trunc_u_f64:
+         case ir_op::f32_convert_s_i32: case ir_op::f32_convert_u_i32:
+         case ir_op::f32_convert_s_i64: case ir_op::f32_convert_u_i64:
+         case ir_op::f64_convert_s_i32: case ir_op::f64_convert_u_i32:
+         case ir_op::f64_convert_s_i64: case ir_op::f64_convert_u_i64:
+         case ir_op::f32_demote_f64: case ir_op::f64_promote_f32:
+         case ir_op::i32_trunc_sat_f32_s: case ir_op::i32_trunc_sat_f32_u:
+         case ir_op::i32_trunc_sat_f64_s: case ir_op::i32_trunc_sat_f64_u:
+         case ir_op::i64_trunc_sat_f32_s: case ir_op::i64_trunc_sat_f32_u:
+         case ir_op::i64_trunc_sat_f64_s: case ir_op::i64_trunc_sat_f64_u:
+            // TODO: Softfloat/SSE dispatch
+            emit_error_handler(&on_unreachable);
             break;
 
          default:
-            // All other opcodes handled as TODO stubs for Phase 3
             break;
+         }
+      }
+
+      // ──────── Global access helper ────────
+      auto emit_global_loc(uint32_t globalidx) {
+         auto offset = _mod.get_global_offset(globalidx);
+         this->emit_mov(*(rsi + (wasm_allocator::globals_end() - 8)), rcx);
+         if (offset > 0x7fffffff) {
+            this->emit_mov(static_cast<std::uint64_t>(offset), rdx);
+            this->emit_add(rdx, rcx);
+            offset = 0;
+         }
+         return *(rcx + static_cast<std::int32_t>(offset));
+      }
+
+      // ──────── Frame offset calculation ────────
+      // Compute the rbp-relative offset for a local variable.
+      // Parameters are above rbp (positive offsets), locals below (negative).
+      int32_t get_frame_offset(const ir_function& func, uint32_t local_idx) {
+         const func_type* ft = func.type;
+         if (local_idx < ft->param_types.size()) {
+            // Parameter: pushed by caller, stored above rbp
+            // Params are pushed right-to-left, so param[0] is at highest address
+            int32_t offset = 16; // skip saved rbp + return address
+            for (uint32_t i = ft->param_types.size(); i > local_idx; --i) {
+               offset += (ft->param_types[i-1] == types::v128) ? 16 : 8;
+            }
+            return offset;
+         } else {
+            // Local: below rbp (negative offset)
+            uint32_t li = local_idx - ft->param_types.size();
+            const auto& locals = _mod.code[func.func_index].locals;
+            int32_t offset = 0;
+            uint32_t count = 0;
+            for (uint32_t g = 0; g < locals.size(); ++g) {
+               uint8_t size = (locals[g].type == types::v128) ? 16 : 8;
+               if (li < count + locals[g].count) {
+                  offset -= static_cast<int32_t>((li - count + 1) * size);
+                  return offset;
+               }
+               count += locals[g].count;
+               offset -= static_cast<int32_t>(locals[g].count * size);
+            }
+            return offset; // shouldn't reach here
+         }
+      }
+
+      // ──────── Memory access helpers ────────
+      template<class I, class R>
+      void emit_load(int32_t offset, I instr, R reg) {
+         uint32_t uoffset = static_cast<uint32_t>(offset);
+         this->emit_pop_raw(rax);  // WASM address
+         if (uoffset & 0x80000000u) {
+            this->emit_mov(uoffset, ecx);
+            this->emit_add(rcx, rax);
+            this->emit(instr, *(rax + rsi + 0), reg);
+         } else {
+            this->emit(instr, *(rax + rsi + uoffset), reg);
+         }
+         this->emit_push_raw(rax);
+      }
+
+      template<class I, class R>
+      void emit_store(int32_t offset, I instr, R reg) {
+         uint32_t uoffset = static_cast<uint32_t>(offset);
+         this->emit_pop_raw(rax);  // value
+         this->emit_pop_raw(rcx);  // WASM address
+         if (uoffset & 0x80000000u) {
+            this->emit_mov(uoffset, edx);
+            this->emit_add(rdx, rcx);
+            this->emit(instr, *(rcx + rsi + 0), reg);
+         } else {
+            this->emit(instr, *(rcx + rsi + uoffset), reg);
+         }
+      }
+
+      // ──────── Call helpers ────────
+      // Emit a 32-bit relative call instruction, returns the address to patch
+      void* emit_call32() {
+         this->emit_bytes(0xe8);
+         void* result = code;
+         this->emit_operand32(0); // placeholder
+         return result;
+      }
+
+      // Pop params and push result after a call
+      void emit_call_multipop(const func_type& ft) {
+         uint32_t total_size = 0;
+         for (uint32_t i = 0; i < ft.param_types.size(); ++i) {
+            total_size += (ft.param_types[i] == types::v128) ? 16 : 8;
+         }
+         if (total_size != 0) {
+            this->emit_add(total_size, rsp);
+         }
+         if (ft.return_count != 0) {
+            this->emit_push_raw(rax);
          }
       }
 
