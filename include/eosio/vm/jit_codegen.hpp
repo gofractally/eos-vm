@@ -746,38 +746,244 @@ namespace eosio { namespace vm {
             // Bit patterns are identical — no-op on stack machine
             break;
 
-         // ── Float ops and remaining conversions ──
-         // These require softfloat support; for now emit TODO stubs
-         // that will be filled in when we integrate softfloat calling
-         case ir_op::f32_abs: case ir_op::f32_neg: case ir_op::f32_ceil:
-         case ir_op::f32_floor: case ir_op::f32_trunc: case ir_op::f32_nearest:
-         case ir_op::f32_sqrt: case ir_op::f32_add: case ir_op::f32_sub:
-         case ir_op::f32_mul: case ir_op::f32_div: case ir_op::f32_min:
-         case ir_op::f32_max: case ir_op::f32_copysign:
-         case ir_op::f64_abs: case ir_op::f64_neg: case ir_op::f64_ceil:
-         case ir_op::f64_floor: case ir_op::f64_trunc: case ir_op::f64_nearest:
-         case ir_op::f64_sqrt: case ir_op::f64_add: case ir_op::f64_sub:
-         case ir_op::f64_mul: case ir_op::f64_div: case ir_op::f64_min:
-         case ir_op::f64_max: case ir_op::f64_copysign:
-         case ir_op::f32_eq: case ir_op::f32_ne: case ir_op::f32_lt:
-         case ir_op::f32_gt: case ir_op::f32_le: case ir_op::f32_ge:
-         case ir_op::f64_eq: case ir_op::f64_ne: case ir_op::f64_lt:
-         case ir_op::f64_gt: case ir_op::f64_le: case ir_op::f64_ge:
-         case ir_op::i32_trunc_s_f32: case ir_op::i32_trunc_u_f32:
-         case ir_op::i32_trunc_s_f64: case ir_op::i32_trunc_u_f64:
-         case ir_op::i64_trunc_s_f32: case ir_op::i64_trunc_u_f32:
-         case ir_op::i64_trunc_s_f64: case ir_op::i64_trunc_u_f64:
-         case ir_op::f32_convert_s_i32: case ir_op::f32_convert_u_i32:
-         case ir_op::f32_convert_s_i64: case ir_op::f32_convert_u_i64:
-         case ir_op::f64_convert_s_i32: case ir_op::f64_convert_u_i32:
-         case ir_op::f64_convert_s_i64: case ir_op::f64_convert_u_i64:
-         case ir_op::f32_demote_f64: case ir_op::f64_promote_f32:
-         case ir_op::i32_trunc_sat_f32_s: case ir_op::i32_trunc_sat_f32_u:
-         case ir_op::i32_trunc_sat_f64_s: case ir_op::i32_trunc_sat_f64_u:
-         case ir_op::i64_trunc_sat_f32_s: case ir_op::i64_trunc_sat_f32_u:
-         case ir_op::i64_trunc_sat_f64_s: case ir_op::i64_trunc_sat_f64_u:
-            // TODO: Softfloat/SSE dispatch
-            emit_error_handler(&on_unreachable);
+         // ── Native SSE float ops ──
+
+         // f32 unary
+         case ir_op::f32_abs:
+            // andl $0x7fffffff, (%rsp) — clear sign bit
+            this->emit_bytes(0x81, 0x24, 0x24, 0xff, 0xff, 0xff, 0x7f);
+            break;
+         case ir_op::f32_neg:
+            // xorl $0x80000000, (%rsp) — flip sign bit
+            this->emit_bytes(0x81, 0x34, 0x24, 0x00, 0x00, 0x00, 0x80);
+            break;
+         case ir_op::f32_ceil:
+            // roundss $0x0a, (%rsp), %xmm0; movss %xmm0, (%rsp)
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0x04, 0x24, 0x0a);
+            this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f32_floor:
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0x04, 0x24, 0x09);
+            this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f32_trunc:
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0x04, 0x24, 0x0b);
+            this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f32_nearest:
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0x04, 0x24, 0x08);
+            this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f32_sqrt:
+            // sqrtss (%rsp), %xmm0; movss %xmm0, (%rsp)
+            this->emit_bytes(0xf3, 0x0f, 0x51, 0x04, 0x24);
+            this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
+            break;
+
+         // f32 binary: movss 8(%rsp), %xmm0; OPss (%rsp), %xmm0; lea 8(%rsp),%rsp; movss %xmm0, (%rsp)
+         case ir_op::f32_add: emit_f32_binop_sse(0x58); break;
+         case ir_op::f32_sub: emit_f32_binop_sse(0x5c); break;
+         case ir_op::f32_mul: emit_f32_binop_sse(0x59); break;
+         case ir_op::f32_div: emit_f32_binop_sse(0x5e); break;
+         case ir_op::f32_min: emit_f32_binop_sse(0x5d); break; // minss
+         case ir_op::f32_max: emit_f32_binop_sse(0x5f); break; // maxss
+         case ir_op::f32_copysign:
+            // Copy sign from rhs to lhs: lhs = (lhs & 0x7fffffff) | (rhs & 0x80000000)
+            this->emit_pop_raw(rcx); // rhs
+            this->emit_pop_raw(rax); // lhs
+            this->emit_bytes(0x81, 0xe1, 0x00, 0x00, 0x00, 0x80); // and $0x80000000, %ecx
+            this->emit_bytes(0x25, 0xff, 0xff, 0xff, 0x7f);       // and $0x7fffffff, %eax
+            this->emit(base::OR_A, ecx, eax);
+            this->emit_push_raw(rax);
+            break;
+
+         // f64 unary
+         case ir_op::f64_abs:
+            // btr $63, (%rsp) — clear sign bit
+            this->emit_bytes(0x48, 0x0f, 0xba, 0x34, 0x24, 0x3f);
+            break;
+         case ir_op::f64_neg:
+            // btc $63, (%rsp) — flip sign bit
+            this->emit_bytes(0x48, 0x0f, 0xba, 0x3c, 0x24, 0x3f);
+            break;
+         case ir_op::f64_ceil:
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0x04, 0x24, 0x0a);
+            this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f64_floor:
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0x04, 0x24, 0x09);
+            this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f64_trunc:
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0x04, 0x24, 0x0b);
+            this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f64_nearest:
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0x04, 0x24, 0x08);
+            this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f64_sqrt:
+            this->emit_bytes(0xf2, 0x0f, 0x51, 0x04, 0x24);
+            this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
+            break;
+
+         // f64 binary
+         case ir_op::f64_add: emit_f64_binop_sse(0x58); break;
+         case ir_op::f64_sub: emit_f64_binop_sse(0x5c); break;
+         case ir_op::f64_mul: emit_f64_binop_sse(0x59); break;
+         case ir_op::f64_div: emit_f64_binop_sse(0x5e); break;
+         case ir_op::f64_min: emit_f64_binop_sse(0x5d); break;
+         case ir_op::f64_max: emit_f64_binop_sse(0x5f); break;
+         case ir_op::f64_copysign:
+            this->emit_pop_raw(rcx); // rhs
+            this->emit_pop_raw(rax); // lhs
+            // movabs $0x8000000000000000, %rdx
+            this->emit_bytes(0x48, 0xba); this->emit_operand64(0x8000000000000000ull);
+            this->emit(base::AND_A, rdx, rcx); // rcx = sign of rhs
+            this->emit_bytes(0x48, 0xba); this->emit_operand64(0x7fffffffffffffffull);
+            this->emit(base::AND_A, rdx, rax); // rax = magnitude of lhs
+            this->emit(base::OR_A, rcx, rax);
+            this->emit_push_raw(rax);
+            break;
+
+         // ── Float comparisons (SSE cmpss/cmpsd) ──
+         // cmpCCss: 0=eq, 1=lt, 2=le, 4=ne (unordered=false)
+         case ir_op::f32_eq: emit_f32_relop_sse(0x00, false, false); break;
+         case ir_op::f32_ne: emit_f32_relop_sse(0x00, false, true); break;  // eq + flip
+         case ir_op::f32_lt: emit_f32_relop_sse(0x01, false, false); break;
+         case ir_op::f32_gt: emit_f32_relop_sse(0x01, true, false); break;  // lt with swapped args
+         case ir_op::f32_le: emit_f32_relop_sse(0x02, false, false); break;
+         case ir_op::f32_ge: emit_f32_relop_sse(0x02, true, false); break;  // le with swapped args
+
+         case ir_op::f64_eq: emit_f64_relop_sse(0x00, false, false); break;
+         case ir_op::f64_ne: emit_f64_relop_sse(0x00, false, true); break;
+         case ir_op::f64_lt: emit_f64_relop_sse(0x01, false, false); break;
+         case ir_op::f64_gt: emit_f64_relop_sse(0x01, true, false); break;
+         case ir_op::f64_le: emit_f64_relop_sse(0x02, false, false); break;
+         case ir_op::f64_ge: emit_f64_relop_sse(0x02, true, false); break;
+
+         // ── Float-to-int conversions ──
+         case ir_op::i32_trunc_s_f32:
+            // cvttss2si (%rsp), %eax; mov %rax, (%rsp)
+            this->emit_bytes(0xf3, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i32_trunc_u_f32:
+            // cvttss2si (%rsp), %rax (64-bit to catch unsigned range)
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i32_trunc_s_f64:
+            this->emit_bytes(0xf2, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i32_trunc_u_f64:
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i64_trunc_s_f32:
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i64_trunc_u_f32:
+            // TODO: handle unsigned i64 range (>= 2^63)
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i64_trunc_s_f64:
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i64_trunc_u_f64:
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+
+         // Saturating truncations (same as above for now — TODO: clamp)
+         case ir_op::i32_trunc_sat_f32_s:
+            this->emit_bytes(0xf3, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i32_trunc_sat_f32_u:
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i32_trunc_sat_f64_s:
+            this->emit_bytes(0xf2, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i32_trunc_sat_f64_u:
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i64_trunc_sat_f32_s:
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i64_trunc_sat_f32_u:
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i64_trunc_sat_f64_s:
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+         case ir_op::i64_trunc_sat_f64_u:
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0x04, 0x24);
+            this->emit_mov(rax, *rsp);
+            break;
+
+         // ── Int-to-float conversions ──
+         case ir_op::f32_convert_s_i32:
+            // cvtsi2ssl (%rsp), %xmm0; movss %xmm0, (%rsp)
+            this->emit_bytes(0xf3, 0x0f, 0x2a, 0x04, 0x24);
+            this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f32_convert_u_i32:
+            // Use 64-bit convert to handle unsigned i32 range
+            // movl (%rsp), %eax (zero-extend to 64-bit)
+            this->emit_bytes(0x8b, 0x04, 0x24);
+            // cvtsi2ssq %rax, %xmm0
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2a, 0xc0);
+            this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f32_convert_s_i64:
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2a, 0x04, 0x24);
+            this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f32_convert_u_i64:
+            // TODO: handle unsigned i64 range properly
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2a, 0x04, 0x24);
+            this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f64_convert_s_i32:
+            this->emit_bytes(0xf2, 0x0f, 0x2a, 0x04, 0x24);
+            this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f64_convert_u_i32:
+            this->emit_bytes(0x8b, 0x04, 0x24);
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2a, 0xc0);
+            this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f64_convert_s_i64:
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2a, 0x04, 0x24);
+            this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f64_convert_u_i64:
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2a, 0x04, 0x24);
+            this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
+            break;
+
+         // ── Float-float conversions ──
+         case ir_op::f32_demote_f64:
+            // cvtsd2ss (%rsp), %xmm0; movss %xmm0, (%rsp)
+            this->emit_bytes(0xf2, 0x0f, 0x5a, 0x04, 0x24);
+            this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
+            break;
+         case ir_op::f64_promote_f32:
+            // cvtss2sd (%rsp), %xmm0; movsd %xmm0, (%rsp)
+            this->emit_bytes(0xf3, 0x0f, 0x5a, 0x04, 0x24);
+            this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
             break;
 
          default:
@@ -890,6 +1096,67 @@ namespace eosio { namespace vm {
             this->emit_push_raw(rax);
          } else {
             this->emit_add(static_cast<uint32_t>(depth_change * 8), rsp);
+         }
+      }
+
+      // ──────── SSE float helpers ────────
+      void emit_f32_binop_sse(uint8_t op) {
+         // movss 8(%rsp), %xmm0
+         this->emit_bytes(0xf3, 0x0f, 0x10, 0x44, 0x24, 0x08);
+         // OPss (%rsp), %xmm0
+         this->emit_bytes(0xf3, 0x0f, op, 0x04, 0x24);
+         // lea 8(%rsp), %rsp
+         this->emit_bytes(0x48, 0x8d, 0x64, 0x24, 0x08);
+         // movss %xmm0, (%rsp)
+         this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
+      }
+
+      void emit_f64_binop_sse(uint8_t op) {
+         this->emit_bytes(0xf2, 0x0f, 0x10, 0x44, 0x24, 0x08);
+         this->emit_bytes(0xf2, 0x0f, op, 0x04, 0x24);
+         this->emit_bytes(0x48, 0x8d, 0x64, 0x24, 0x08);
+         this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
+      }
+
+      void emit_f32_relop_sse(uint8_t cmp_op, bool swap, bool flip) {
+         if (swap) {
+            this->emit_bytes(0xf3, 0x0f, 0x10, 0x04, 0x24);        // movss (%rsp), %xmm0
+            this->emit_bytes(0xf3, 0x0f, 0xc2, 0x44, 0x24, 0x08, cmp_op); // cmpss 8(%rsp), %xmm0
+         } else {
+            this->emit_bytes(0xf3, 0x0f, 0x10, 0x44, 0x24, 0x08);  // movss 8(%rsp), %xmm0
+            this->emit_bytes(0xf3, 0x0f, 0xc2, 0x04, 0x24, cmp_op);       // cmpss (%rsp), %xmm0
+         }
+         this->emit_bytes(0x66, 0x0f, 0x7e, 0xc0); // movd %xmm0, %eax
+         if (!flip) {
+            this->emit_bytes(0x83, 0xe0, 0x01);     // and $1, %eax
+         } else {
+            this->emit_bytes(0xff, 0xc0);            // inc %eax (0xffffffff→0, 0→1)
+         }
+         this->emit_bytes(0x48, 0x8d, 0x64, 0x24, 0x10); // lea 16(%rsp), %rsp
+         this->emit_push_raw(rax);
+      }
+
+      void emit_f64_relop_sse(uint8_t cmp_op, bool swap, bool flip) {
+         if (swap) {
+            this->emit_bytes(0xf2, 0x0f, 0x10, 0x04, 0x24);
+            this->emit_bytes(0xf2, 0x0f, 0xc2, 0x44, 0x24, 0x08, cmp_op);
+         } else {
+            this->emit_bytes(0xf2, 0x0f, 0x10, 0x44, 0x24, 0x08);
+            this->emit_bytes(0xf2, 0x0f, 0xc2, 0x04, 0x24, cmp_op);
+         }
+         this->emit_bytes(0x66, 0x0f, 0x7e, 0xc0);
+         if (!flip) {
+            this->emit_bytes(0x83, 0xe0, 0x01);
+         } else {
+            this->emit_bytes(0xff, 0xc0);
+         }
+         this->emit_bytes(0x48, 0x8d, 0x64, 0x24, 0x10);
+         this->emit_push_raw(rax);
+      }
+
+      void emit_operand64(uint64_t val) {
+         for (int i = 0; i < 8; ++i) {
+            this->emit_bytes(static_cast<uint8_t>(val >> (i * 8)));
          }
       }
 
