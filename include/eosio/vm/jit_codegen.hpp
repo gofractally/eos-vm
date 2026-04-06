@@ -97,6 +97,15 @@ namespace eosio { namespace vm {
          auto* code_start = buf;
          code = buf;
 
+         // Allocate block address tracking (one entry per basic block)
+         _block_addrs = _allocator.alloc<void*>(func.block_count);
+         _block_fixups = _allocator.alloc<block_fixup*>(func.block_count);
+         _num_blocks = func.block_count;
+         for (uint32_t i = 0; i < func.block_count; ++i) {
+            _block_addrs[i] = nullptr;
+            _block_fixups[i] = nullptr;
+         }
+
          start_function(code, func.func_index + _mod.get_imported_functions_size());
 
          // Emit function prologue
@@ -104,12 +113,29 @@ namespace eosio { namespace vm {
 
          // Emit each IR instruction as stack-machine code (naive: all spilled)
          for (uint32_t i = 0; i < func.inst_count; ++i) {
+            // Check if any blocks start at this instruction index
+            for (uint32_t b = 0; b < func.block_count; ++b) {
+               if (func.blocks[b].start == i && _block_addrs[b] == nullptr) {
+                  mark_block_start(b);
+               }
+            }
             emit_ir_inst(func, func.insts[i], i);
+            // Check if any blocks end at this instruction index
+            for (uint32_t b = 0; b < func.block_count; ++b) {
+               if (func.blocks[b].end == i + 1) {
+                  mark_block_end(b);
+               }
+            }
          }
 
          // Record code offset
          _allocator.reclaim(code, buf + est_size - code);
          body.jit_code_offset = code_start - static_cast<unsigned char*>(_code_segment_base);
+
+         // Clear per-function state
+         _block_addrs = nullptr;
+         _block_fixups = nullptr;
+         _num_blocks = 0;
       }
 
       void finalize_code() {
@@ -378,20 +404,35 @@ namespace eosio { namespace vm {
          // ── Nop / control flow markers ──
          case ir_op::nop:
          case ir_op::arg:
+            break;
+
+         // The IR doesn't emit explicit block/loop/if/else/end instructions.
+         // Block boundaries are tracked via ir_basic_block structures.
+         // The jit_codegen marks block addresses when it sees the first
+         // instruction of a block (using block.start) and patches forward
+         // references when it sees the block end (using block.end).
+         // We handle this by checking block boundaries before each instruction
+         // in the main loop.
          case ir_op::block:
          case ir_op::loop:
          case ir_op::end:
          case ir_op::if_:
          case ir_op::else_:
-            // Control flow is handled by machine_code_writer during Phase 3 parsing.
-            // jit_codegen Phase 4 will implement these via block address tracking.
             break;
 
          // ── Control flow (branches) ──
          case ir_op::br:
+            emit_branch_to_block(func, inst.br.target, inst.dest, inst.type);
+            break;
+
          case ir_op::br_if:
+            emit_cond_branch_to_block(func, inst.br.target, inst.dest, inst.type);
+            break;
+
          case ir_op::br_table:
-            // TODO Phase 4: Branch emission requires block address mapping
+            // br_table is followed by individual br instructions for each case
+            // The index was already popped; cases will use it
+            // TODO: implement proper br_table with jump table
             break;
 
          // ── Calls ──
@@ -713,6 +754,96 @@ namespace eosio { namespace vm {
          }
       }
 
+      // ──────── Block address tracking for control flow ────────
+      struct block_fixup {
+         void* branch;        // Code address to patch
+         block_fixup* next;
+      };
+
+      // Record that a block's code starts at current position
+      void mark_block_start(uint32_t block_idx) {
+         if (block_idx < _num_blocks) {
+            _block_addrs[block_idx] = code;
+         }
+      }
+
+      // Record that a block's code ends at current position (for forward branches)
+      void mark_block_end(uint32_t block_idx) {
+         if (block_idx >= _num_blocks) return;
+         _block_addrs[block_idx] = code;
+         // Patch all pending forward references to this block
+         for (auto* f = _block_fixups[block_idx]; f; f = f->next) {
+            base::fix_branch(f->branch, code);
+         }
+         _block_fixups[block_idx] = nullptr;
+      }
+
+      // Emit an unconditional 32-bit relative jump, return address to patch
+      void* emit_jmp32() {
+         this->emit_bytes(0xe9);
+         return this->emit_branch_target32();
+      }
+
+      // Emit a 32-bit relative jump to a block.
+      // For loops: jump to block start (backward, already known).
+      // For non-loops: jump to block end (forward, may need fixup).
+      void emit_branch_to_block(ir_function& func, uint32_t block_idx, uint32_t depth_change, uint8_t rt) {
+         if (block_idx >= _num_blocks) return;
+         // Multipop: adjust stack for the branch
+         emit_branch_multipop(depth_change, rt);
+         // Check if target address is already known
+         if (_block_addrs[block_idx] != nullptr) {
+            // Address known — emit direct jump (backward branch to loop)
+            void* branch = emit_jmp32();
+            base::fix_branch(branch, _block_addrs[block_idx]);
+         } else {
+            // Forward branch — emit placeholder and record fixup
+            void* branch = emit_jmp32();
+            auto* fixup = _allocator.alloc<block_fixup>(1);
+            fixup->branch = branch;
+            fixup->next = _block_fixups[block_idx];
+            _block_fixups[block_idx] = fixup;
+         }
+      }
+
+      // Emit conditional branch to a block
+      void emit_cond_branch_to_block(ir_function& func, uint32_t block_idx, uint32_t depth_change, uint8_t rt) {
+         if (block_idx >= _num_blocks) return;
+         // Pop condition and test
+         this->emit_pop_raw(rax);
+         this->emit(base::TEST, eax, eax);
+         // If no stack adjustment needed, emit simple conditional branch
+         bool needs_multipop = (depth_change > 0);
+         if (!needs_multipop) {
+            if (_block_addrs[block_idx] != nullptr) {
+               void* branch = this->emit_branchcc32(base::JNZ);
+               base::fix_branch(branch, _block_addrs[block_idx]);
+            } else {
+               void* branch = this->emit_branchcc32(base::JNZ);
+               auto* fixup = _allocator.alloc<block_fixup>(1);
+               fixup->branch = branch;
+               fixup->next = _block_fixups[block_idx];
+               _block_fixups[block_idx] = fixup;
+            }
+         } else {
+            // Complex: jz skip; multipop; jmp target; skip:
+            void* skip = this->emit_branchcc32(base::JZ);
+            emit_branch_to_block(func, block_idx, depth_change, rt);
+            base::fix_branch(skip, code);
+         }
+      }
+
+      void emit_branch_multipop(uint32_t depth_change, uint8_t rt) {
+         if (depth_change == 0) return;
+         if (rt != types::pseudo) {
+            this->emit_mov(*rsp, rax);  // Save return value
+            this->emit_add(static_cast<uint32_t>(depth_change * 8), rsp);
+            this->emit_push_raw(rax);
+         } else {
+            this->emit_add(static_cast<uint32_t>(depth_change * 8), rsp);
+         }
+      }
+
       // ──────── Global access helper ────────
       auto emit_global_loc(uint32_t globalidx) {
          auto offset = _mod.get_global_offset(globalidx);
@@ -942,6 +1073,10 @@ namespace eosio { namespace vm {
       void* memory_handler = nullptr;
       func_reloc* _relocs = nullptr;
       uint32_t _num_relocs = 0;
+      // Per-function block address tracking (set during compile_function)
+      void** _block_addrs = nullptr;
+      block_fixup** _block_fixups = nullptr;
+      uint32_t _num_blocks = 0;
    };
 
 }} // namespace eosio::vm

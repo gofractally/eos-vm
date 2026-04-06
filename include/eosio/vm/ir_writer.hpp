@@ -167,6 +167,7 @@ namespace eosio { namespace vm {
       label_t emit_loop() {
          ir_control_entry entry{};
          entry.block_idx = _func->new_block();
+         _func->blocks[entry.block_idx].is_loop = 1;
          entry.stack_depth = _func->vstack_depth();
          entry.result_type = types::pseudo;
          entry.is_loop = 1;
@@ -215,17 +216,19 @@ namespace eosio { namespace vm {
 
       branch_t emit_br(uint32_t dc, uint8_t rt) {
          if (!_unreachable) {
+            // Resolve depth count to target block index via control stack
+            auto& target_entry = _func->ctrl_at(dc);
             ir_inst inst{};
             inst.opcode = ir_op::br;
-            inst.type = types::pseudo;
+            inst.type = rt;
             inst.flags = IR_SIDE_EFFECT;
-            inst.dest = ir_vreg_none;
+            inst.dest = dc; // store depth change for multipop
+            inst.br.target = target_entry.block_idx;
             if (rt != types::pseudo && _func->vstack_depth() > 0) {
                inst.br.src1 = _func->vstack_back();
             } else {
                inst.br.src1 = ir_vreg_none;
             }
-            inst.br.target = dc;
             _func->emit(inst);
          }
          _unreachable = true;
@@ -234,14 +237,15 @@ namespace eosio { namespace vm {
 
       branch_t emit_br_if(uint32_t dc, uint8_t rt) {
          if (!_unreachable) {
+            auto& target_entry = _func->ctrl_at(dc);
             uint32_t cond = _func->vpop();
             ir_inst inst{};
             inst.opcode = ir_op::br_if;
-            inst.type = types::pseudo;
+            inst.type = rt;
             inst.flags = IR_SIDE_EFFECT;
-            inst.dest = ir_vreg_none;
-            inst.rr.src1 = cond;
-            inst.rr.src2 = ir_vreg_none;
+            inst.dest = dc; // store depth change for multipop
+            inst.br.target = target_entry.block_idx;
+            inst.br.src1 = cond;
             _func->emit(inst);
          }
          return 0;
@@ -250,8 +254,23 @@ namespace eosio { namespace vm {
       struct br_table_parser {
          ir_writer* _writer;
          br_table_parser(ir_writer* w) : _writer(w) {}
-         branch_t emit_case(uint32_t /*dc*/, uint8_t /*rt*/) { return 0; }
-         branch_t emit_default(uint32_t /*dc*/, uint8_t /*rt*/) { return 0; }
+         branch_t emit_case(uint32_t dc, uint8_t rt) {
+            if (!_writer->_unreachable) {
+               auto& target_entry = _writer->_func->ctrl_at(dc);
+               ir_inst inst{};
+               inst.opcode = ir_op::br;  // each case is a branch
+               inst.type = rt;
+               inst.flags = IR_SIDE_EFFECT;
+               inst.dest = dc;
+               inst.br.target = target_entry.block_idx;
+               inst.br.src1 = ir_vreg_none;
+               _writer->_func->emit(inst);
+            }
+            return 0;
+         }
+         branch_t emit_default(uint32_t dc, uint8_t rt) {
+            return emit_case(dc, rt);
+         }
       };
       br_table_parser emit_br_table(uint32_t /*table_size*/) {
          if (!_unreachable) {

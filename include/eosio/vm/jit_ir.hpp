@@ -148,6 +148,7 @@ namespace eosio { namespace vm {
       uint32_t end;
       uint32_t successors[2];
       uint8_t  num_successors;
+      uint8_t  is_loop;
       uint32_t loop_depth;
    };
    static_assert(std::is_trivially_copyable_v<ir_basic_block>);
@@ -278,6 +279,7 @@ namespace eosio { namespace vm {
          b.end = 0;
          b.successors[0] = b.successors[1] = UINT32_MAX;
          b.num_successors = 0;
+         b.is_loop = 0;
          b.loop_depth = 0;
          return idx;
       }
