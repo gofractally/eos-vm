@@ -108,12 +108,29 @@ namespace eosio { namespace vm {
             _block_fixups[i] = nullptr;
          }
 
+         // Build vreg → physical register mapping
+         _vreg_map = nullptr;
+         _num_vregs = 0;
+         _num_spill_slots = 0;
+         if (func.interval_count > 0 && func.intervals) {
+            _num_vregs = func.next_vreg;
+            _vreg_map = _allocator.alloc<int8_t>(_num_vregs);
+            for (uint32_t v = 0; v < _num_vregs; ++v) _vreg_map[v] = -1;
+            for (uint32_t iv = 0; iv < func.interval_count; ++iv) {
+               auto& interval = func.intervals[iv];
+               if (interval.vreg < _num_vregs) {
+                  _vreg_map[interval.vreg] = interval.phys_reg;
+               }
+            }
+            _num_spill_slots = func.num_spill_slots;
+         }
+
          start_function(code, func.func_index + _mod.get_imported_functions_size());
 
          // Emit function prologue
          emit_function_prologue(func);
 
-         // Emit each IR instruction as stack-machine code (naive: all spilled)
+         // Emit each IR instruction
          for (uint32_t i = 0; i < func.inst_count; ++i) {
             // Check if any blocks start at this instruction index
             for (uint32_t b = 0; b < func.block_count; ++b) {
@@ -322,19 +339,19 @@ namespace eosio { namespace vm {
          }
 
          // ── Integer arithmetic (binary) ──
-         case ir_op::i32_add: emit_i32_binop([this]{ this->emit_add(ecx, eax); }); break;
-         case ir_op::i32_sub: emit_i32_binop([this]{ this->emit_sub(ecx, eax); }); break;
-         case ir_op::i32_mul: emit_i32_binop([this]{ this->emit(base::IMUL, ecx, eax); }); break;
-         case ir_op::i32_and: emit_i32_binop([this]{ this->emit(base::AND_A, ecx, eax); }); break;
-         case ir_op::i32_or:  emit_i32_binop([this]{ this->emit(base::OR_A, ecx, eax); }); break;
-         case ir_op::i32_xor: emit_i32_binop([this]{ this->emit(base::XOR_A, ecx, eax); }); break;
+         case ir_op::i32_add: emit_binop_ra(inst, [this](auto d, auto s){ this->emit_add(s, d); }, true); break;
+         case ir_op::i32_sub: emit_binop_ra(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, true); break;
+         case ir_op::i32_mul: emit_binop_ra(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, true); break;
+         case ir_op::i32_and: emit_binop_ra(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, true); break;
+         case ir_op::i32_or:  emit_binop_ra(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, true); break;
+         case ir_op::i32_xor: emit_binop_ra(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, true); break;
 
-         case ir_op::i64_add: emit_i64_binop([this]{ this->emit_add(rcx, rax); }); break;
-         case ir_op::i64_sub: emit_i64_binop([this]{ this->emit_sub(rcx, rax); }); break;
-         case ir_op::i64_mul: emit_i64_binop([this]{ this->emit(base::IMUL, rcx, rax); }); break;
-         case ir_op::i64_and: emit_i64_binop([this]{ this->emit(base::AND_A, rcx, rax); }); break;
-         case ir_op::i64_or:  emit_i64_binop([this]{ this->emit(base::OR_A, rcx, rax); }); break;
-         case ir_op::i64_xor: emit_i64_binop([this]{ this->emit(base::XOR_A, rcx, rax); }); break;
+         case ir_op::i64_add: emit_binop_ra(inst, [this](auto d, auto s){ this->emit_add(s, d); }, false); break;
+         case ir_op::i64_sub: emit_binop_ra(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, false); break;
+         case ir_op::i64_mul: emit_binop_ra(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, false); break;
+         case ir_op::i64_and: emit_binop_ra(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, false); break;
+         case ir_op::i64_or:  emit_binop_ra(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, false); break;
+         case ir_op::i64_xor: emit_binop_ra(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, false); break;
 
          // ── Shifts ──
          case ir_op::i32_shl:   emit_i32_shift(base::SHL_cl); break;
@@ -1143,6 +1160,43 @@ namespace eosio { namespace vm {
          }
       }
 
+      // ──────── Register allocation helpers ────────
+      // Map phys_reg index to x86 64-bit register
+      static constexpr general_register64 phys_to_reg64(int8_t pr) {
+         // Must match phys_reg enum in jit_regalloc.hpp
+         constexpr general_register64 map[] = {
+            general_register64(0),  // rax
+            general_register64(1),  // rcx
+            general_register64(2),  // rdx
+            general_register64(8),  // r8
+            general_register64(9),  // r9
+            general_register64(10), // r10
+            general_register64(11), // r11
+         };
+         return map[pr];
+      }
+      static constexpr general_register32 phys_to_reg32(int8_t pr) {
+         constexpr general_register32 map[] = {
+            general_register32(0),  // eax
+            general_register32(1),  // ecx
+            general_register32(2),  // edx
+            general_register32(8),  // r8d
+            general_register32(9),  // r9d
+            general_register32(10), // r10d
+            general_register32(11), // r11d
+         };
+         return map[pr];
+      }
+
+      // Check if a vreg has a physical register assigned
+      bool has_reg(uint32_t vreg) const {
+         return _vreg_map && vreg < _num_vregs && _vreg_map[vreg] >= 0;
+      }
+      int8_t get_phys(uint32_t vreg) const {
+         if (!_vreg_map || vreg >= _num_vregs) return -1;
+         return _vreg_map[vreg];
+      }
+
       // ──────── SSE float helpers ────────
       void emit_f32_binop_sse(uint8_t op) {
          // movss 8(%rsp), %xmm0
@@ -1317,10 +1371,30 @@ namespace eosio { namespace vm {
       }
 
       // ──────── Binary op helpers ────────
+
+      // Register-aware binary op: uses physical registers if available
+      template<typename F>
+      void emit_binop_ra(const ir_inst& inst, F op, bool is32) {
+         int8_t pr_dest = get_phys(inst.dest);
+         int8_t pr_src1 = get_phys(inst.rr.src1);
+         int8_t pr_src2 = get_phys(inst.rr.src2);
+
+         // TODO: Register-based emission when all ops support it
+         // For now, always use stack-based fallback
+         {
+            // Fallback to stack-based
+            this->emit_pop_raw(rcx);
+            this->emit_pop_raw(rax);
+            if (is32) op(eax, ecx);
+            else      op(rax, rcx);
+            this->emit_push_raw(rax);
+         }
+      }
+
       template<typename F>
       void emit_i32_binop(F op) {
-         this->emit_pop_raw(rcx);  // rhs
-         this->emit_pop_raw(rax);  // lhs
+         this->emit_pop_raw(rcx);
+         this->emit_pop_raw(rax);
          op();
          this->emit_push_raw(rax);
       }
@@ -1463,6 +1537,10 @@ namespace eosio { namespace vm {
       bool _in_br_table = false;
       uint32_t _br_table_case = 0;
       uint32_t _br_table_size = 0;
+      // Register allocation mapping (vreg → phys_reg, -1 = spilled)
+      int8_t* _vreg_map = nullptr;
+      uint32_t _num_vregs = 0;
+      uint32_t _num_spill_slots = 0;
    };
 
 }} // namespace eosio::vm
