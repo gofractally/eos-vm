@@ -175,13 +175,13 @@ namespace eosio { namespace vm {
       branch_t emit_if() {
          ir_control_entry entry{};
          entry.block_idx = _func->new_block();
-         entry.stack_depth = _func->vstack_depth();
          entry.result_type = types::pseudo;
          entry.is_loop = 0;
          entry.is_function = 0;
          uint32_t inst_idx = UINT32_MAX;
          if (!_unreachable) {
             uint32_t cond = _func->vpop();
+            entry.stack_depth = _func->vstack_depth(); // after popping condition
             ir_inst inst{};
             inst.opcode = ir_op::if_;
             inst.type = types::pseudo;
@@ -191,6 +191,8 @@ namespace eosio { namespace vm {
             inst.br.target = entry.block_idx;  // default target (patched by fix_branch)
             inst_idx = _func->current_inst_index();
             _func->emit(inst);
+         } else {
+            entry.stack_depth = _func->vstack_depth();
          }
          _func->ctrl_push(entry);
          return inst_idx;
