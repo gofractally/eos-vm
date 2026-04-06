@@ -113,11 +113,11 @@ namespace eosio { namespace vm {
       void emit_nop() { }
 
       label_t emit_end() {
-         // Pop control entry
+         uint32_t block_idx = UINT32_MAX;
          if (_func->ctrl_stack_top > 0) {
             auto entry = _func->ctrl_pop();
+            block_idx = entry.block_idx;
             _func->end_block(entry.block_idx);
-            // Restore stack to block entry depth + result
             if (_unreachable) {
                _func->vstack_resize(entry.stack_depth);
                if (entry.result_type != types::pseudo) {
@@ -127,7 +127,7 @@ namespace eosio { namespace vm {
             }
             _unreachable = false;
          }
-         return 0;
+         return block_idx;
       }
 
       branch_t emit_return(uint32_t dc, uint8_t rt) {
@@ -146,7 +146,7 @@ namespace eosio { namespace vm {
             _func->emit(inst);
          }
          _unreachable = true;
-         return 0;
+         return UINT32_MAX; // return doesn't need branch fixup
       }
 
       void emit_block() {
@@ -169,7 +169,7 @@ namespace eosio { namespace vm {
          entry.is_function = 0;
          _func->ctrl_push(entry);
          _func->start_block(entry.block_idx);
-         return 0;
+         return entry.block_idx;
       }
 
       branch_t emit_if() {
@@ -179,6 +179,7 @@ namespace eosio { namespace vm {
          entry.result_type = types::pseudo;
          entry.is_loop = 0;
          entry.is_function = 0;
+         uint32_t inst_idx = UINT32_MAX;
          if (!_unreachable) {
             uint32_t cond = _func->vpop();
             ir_inst inst{};
@@ -187,26 +188,37 @@ namespace eosio { namespace vm {
             inst.flags = IR_SIDE_EFFECT;
             inst.dest = ir_vreg_none;
             inst.br.src1 = cond;
-            inst.br.target = entry.block_idx;  // block to branch to if false
+            inst.br.target = entry.block_idx;  // default target (patched by fix_branch)
+            inst_idx = _func->current_inst_index();
             _func->emit(inst);
          }
          _func->ctrl_push(entry);
-         return 0;
+         return inst_idx;
       }
 
-      branch_t emit_else(branch_t /*if_loc*/) {
+      branch_t emit_else(branch_t if_inst_idx) {
+         uint32_t else_inst_idx = UINT32_MAX;
          if (_func->ctrl_stack_top > 0) {
             auto& entry = _func->ctrl_back();
-            // Emit else_ instruction: then-block jumps to block end,
-            // else-block starts here
+            // Emit else_ instruction: then-block jumps to block end
             ir_inst inst{};
             inst.opcode = ir_op::else_;
             inst.type = types::pseudo;
             inst.flags = IR_SIDE_EFFECT;
             inst.dest = ir_vreg_none;
-            inst.br.target = entry.block_idx;  // jump target for then-block (skip else)
+            inst.br.target = UINT32_MAX; // patched by fix_branch at end
             inst.br.src1 = ir_vreg_none;
+            else_inst_idx = _func->current_inst_index();
             _func->emit(inst);
+            // Patch the if_ instruction to branch HERE (else start)
+            // We need a new block for the else, mark it with current inst position
+            if (if_inst_idx < _func->inst_count) {
+               // if_ should branch to the else-block, not the end-block
+               // Create a new block for the else entry point
+               uint32_t else_block = _func->new_block();
+               _func->start_block(else_block);
+               _func->insts[if_inst_idx].br.target = else_block;
+            }
             if (!_unreachable) {
                if (entry.result_type != types::pseudo && _func->vstack_depth() > entry.stack_depth) {
                   _func->vpop();
@@ -215,62 +227,64 @@ namespace eosio { namespace vm {
             _func->vstack_resize(entry.stack_depth);
          }
          _unreachable = false;
-         return 0;
+         return else_inst_idx;
       }
 
       branch_t emit_br(uint32_t dc, uint8_t rt) {
+         uint32_t inst_idx = 0;
          if (!_unreachable) {
-            // Resolve depth count to target block index via control stack
-            auto& target_entry = _func->ctrl_at(dc);
             ir_inst inst{};
             inst.opcode = ir_op::br;
             inst.type = rt;
             inst.flags = IR_SIDE_EFFECT;
-            inst.dest = dc; // store depth change for multipop
-            inst.br.target = target_entry.block_idx;
+            inst.dest = dc; // depth change for multipop
+            inst.br.target = UINT32_MAX; // patched by fix_branch
             if (rt != types::pseudo && _func->vstack_depth() > 0) {
                inst.br.src1 = _func->vstack_back();
             } else {
                inst.br.src1 = ir_vreg_none;
             }
+            inst_idx = _func->current_inst_index();
             _func->emit(inst);
          }
          _unreachable = true;
-         return 0;
+         return inst_idx;
       }
 
       branch_t emit_br_if(uint32_t dc, uint8_t rt) {
+         uint32_t inst_idx = 0;
          if (!_unreachable) {
-            auto& target_entry = _func->ctrl_at(dc);
             uint32_t cond = _func->vpop();
             ir_inst inst{};
             inst.opcode = ir_op::br_if;
             inst.type = rt;
             inst.flags = IR_SIDE_EFFECT;
-            inst.dest = dc; // store depth change for multipop
-            inst.br.target = target_entry.block_idx;
+            inst.dest = dc; // depth change for multipop
+            inst.br.target = UINT32_MAX; // patched by fix_branch
             inst.br.src1 = cond;
+            inst_idx = _func->current_inst_index();
             _func->emit(inst);
          }
-         return 0;
+         return inst_idx;
       }
 
       struct br_table_parser {
          ir_writer* _writer;
          br_table_parser(ir_writer* w) : _writer(w) {}
          branch_t emit_case(uint32_t dc, uint8_t rt) {
+            uint32_t inst_idx = UINT32_MAX;
             if (!_writer->_unreachable) {
-               auto& target_entry = _writer->_func->ctrl_at(dc);
                ir_inst inst{};
-               inst.opcode = ir_op::br;  // each case is a branch
+               inst.opcode = ir_op::br;
                inst.type = rt;
                inst.flags = IR_SIDE_EFFECT;
                inst.dest = dc;
-               inst.br.target = target_entry.block_idx;
+               inst.br.target = UINT32_MAX; // patched by fix_branch
                inst.br.src1 = ir_vreg_none;
+               inst_idx = _writer->_func->current_inst_index();
                _writer->_func->emit(inst);
             }
-            return 0;
+            return inst_idx;
          }
          branch_t emit_default(uint32_t dc, uint8_t rt) {
             return emit_case(dc, rt);
@@ -859,8 +873,12 @@ namespace eosio { namespace vm {
       void emit_table_copy() { ir_bulk_mem3(); }
 
       // ──── Branch fixup ────
-      // No-op: IR tracks control flow via the control stack, not code addresses.
-      void fix_branch(branch_t /*br*/, label_t /*lbl*/) { }
+      // Patch a br/br_if IR instruction's target to the resolved block index.
+      void fix_branch(branch_t inst_idx, label_t block_idx) {
+         if (_func && inst_idx < _func->inst_count && block_idx != UINT32_MAX) {
+            _func->insts[inst_idx].br.target = block_idx;
+         }
+      }
 
     private:
       // ──── IR building helpers ────
