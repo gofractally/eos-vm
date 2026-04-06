@@ -53,19 +53,23 @@ namespace eosio { namespace vm {
     public:
       jit_codegen(growable_allocator& alloc, module& mod, void* code_segment_base = nullptr)
          : _allocator(alloc), _mod(mod) {
-         _code_segment_base = code_segment_base ? code_segment_base : _allocator.start_code();
+         // Allocate relocation table BEFORE starting the code region.
+         // _code_base[0] must be the SysV ABI entry point.
          init_relocations();
+         _code_segment_base = code_segment_base ? code_segment_base : _allocator.start_code();
       }
 
       // Emit the SysV ABI entry point (same as machine_code_writer)
       void emit_entry_and_error_handlers() {
-         // Allocate space for sysv_abi_interface
+         // Allocate generous buffers — no reclaim to avoid LIFO issues.
+         // All memory is reclaimed in bulk by end_code<true>().
+
+         // SysV ABI entry point
          auto* buf = _allocator.alloc<unsigned char>(256);
          code = buf;
          emit_sysv_abi_interface();
-         _allocator.reclaim(code, buf + 256 - code);
 
-         // Error handlers (5 * 16 bytes)
+         // Error handlers
          buf = _allocator.alloc<unsigned char>(80);
          code = buf;
          fpe_handler = emit_error_handler(&on_fp_error);
@@ -73,7 +77,6 @@ namespace eosio { namespace vm {
          type_error_handler = emit_error_handler(&on_type_error);
          stack_overflow_handler = emit_error_handler(&on_stack_overflow);
          memory_handler = emit_error_handler(&on_memory_error);
-         _allocator.reclaim(code, buf + 80 - code);
 
          // Host function thunks
          const uint32_t num_imported = _mod.get_imported_functions_size();
@@ -85,7 +88,6 @@ namespace eosio { namespace vm {
                start_function(code, i);
                emit_host_call(i);
             }
-            _allocator.reclaim(code, buf + host_functions_size - code);
          }
       }
 
@@ -115,14 +117,15 @@ namespace eosio { namespace vm {
          for (uint32_t i = 0; i < func.inst_count; ++i) {
             // Check if any blocks start at this instruction index
             for (uint32_t b = 0; b < func.block_count; ++b) {
-               if (func.blocks[b].start == i && _block_addrs[b] == nullptr) {
+               if (func.blocks[b].start != UINT32_MAX && func.blocks[b].start == i
+                   && _block_addrs[b] == nullptr) {
                   mark_block_start(b);
                }
             }
             emit_ir_inst(func, func.insts[i], i);
             // Check if any blocks end at this instruction index
             for (uint32_t b = 0; b < func.block_count; ++b) {
-               if (func.blocks[b].end == i + 1) {
+               if (func.blocks[b].end != UINT32_MAX && func.blocks[b].end == i + 1) {
                   mark_block_end(b);
                }
             }
@@ -274,13 +277,11 @@ namespace eosio { namespace vm {
             base::fix_branch(this->emit_branchcc32(base::JZ), stack_overflow_handler);
          }
 
-         // Allocate space for locals (params are pushed by caller)
-         // Each local gets 8 bytes (or 16 for v128)
-         uint32_t total_local_slots = func.num_locals;
-         if (total_local_slots > 0) {
-            // Initialize locals to zero
+         // Allocate space for body locals only (params are already on stack from caller)
+         uint32_t body_locals = func.num_locals - func.num_params;
+         if (body_locals > 0) {
             this->emit_xor(eax, eax);
-            for (uint32_t i = 0; i < total_local_slots; ++i) {
+            for (uint32_t i = 0; i < body_locals; ++i) {
                this->emit_push_raw(rax);
             }
          }

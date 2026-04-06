@@ -156,6 +156,16 @@ add_executable(unit_tests main.cpp
 
 target_link_libraries(unit_tests eos-vm Catch2::Catch2)
 
+# Minimal test target for fast jit2 iteration
+add_executable(jit2_tests main.cpp
+                          jit2_basic_tests.cpp
+                          backend_tests.cpp
+                          instantiation_tests.cpp)
+target_link_libraries(jit2_tests eos-vm Catch2::Catch2)
+target_include_directories(jit2_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(jit2_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_compile_definitions(jit2_tests PUBLIC -DCATCH_CONFIG_NO_POSIX_SIGNALS)
+
 # ##############
 # disable catch2 from installing it's own signal handlers
 # ##############

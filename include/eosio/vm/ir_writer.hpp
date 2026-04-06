@@ -31,12 +31,9 @@ namespace eosio { namespace vm {
 
       ir_writer(growable_allocator& alloc, std::size_t source_bytes, module& mod)
          : _allocator(alloc), _source_bytes(source_bytes), _mod(mod) {
-         // Mark the start of the code region. All allocations from here (IR buffers
-         // during parsing + native code during compilation) are within this region.
-         // end_code<true>() copies the native code to executable memory and resets
-         // the allocator offset back to this point, reclaiming everything.
-         _code_segment_base = alloc.start_code();
-         // Allocate per-function IR storage from the code region.
+         // Allocate per-function IR storage. This is allocated BEFORE the code
+         // region so that _code_base[0] is the SysV ABI entry point (the runtime
+         // uses _code_base as the entry function pointer).
          _num_functions = mod.code.size();
          _functions = alloc.alloc<ir_function>(_num_functions);
          for (uint32_t i = 0; i < _num_functions; ++i) {
@@ -46,16 +43,15 @@ namespace eosio { namespace vm {
 
       ~ir_writer() {
          // Pass 2: Compile all functions from IR to native x86_64.
-         // jit_codegen uses _code_segment_base (set in our constructor) as the
-         // start of the code region. It allocates native code after the IR data,
-         // then end_code<true>() copies native code to executable memory and
-         // resets the allocator, reclaiming both IR and code buffers.
-         codegen_t codegen(_allocator, _mod, _code_segment_base);
+         codegen_t codegen(_allocator, _mod);
          codegen.emit_entry_and_error_handlers();
          for (uint32_t i = 0; i < _num_functions; ++i) {
             codegen.compile_function(_functions[i], _mod.code[i]);
          }
          codegen.finalize_code();
+         // Reset allocator offset to 0 so that finalize() releases all memory.
+         // IR data was allocated before the code region and is no longer needed.
+         _allocator.reset();
       }
 
       static constexpr uint32_t get_depth_for_type(uint8_t type) {
@@ -97,7 +93,6 @@ namespace eosio { namespace vm {
       }
 
       void finalize(function_body& /*body*/) {
-         // Code offset is set during Pass 2 (jit_codegen::compile_function)
          _func = nullptr;
       }
 
@@ -1007,7 +1002,6 @@ namespace eosio { namespace vm {
       growable_allocator& _allocator;
       std::size_t _source_bytes;
       module& _mod;
-      void* _code_segment_base = nullptr; // Start of code region (from start_code)
       ir_function* _functions = nullptr;  // Per-function IR array
       uint32_t _num_functions = 0;
       ir_function* _func = nullptr;       // Current function being built

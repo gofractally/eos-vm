@@ -275,8 +275,8 @@ namespace eosio { namespace vm {
          EOS_VM_ASSERT(block_count < block_cap, wasm_parse_exception, "IR block buffer overflow");
          uint32_t idx = block_count++;
          auto& b = blocks[idx];
-         b.start = 0;
-         b.end = 0;
+         b.start = UINT32_MAX;  // UINT32_MAX means "not set"
+         b.end = UINT32_MAX;
          b.successors[0] = b.successors[1] = UINT32_MAX;
          b.num_successors = 0;
          b.is_loop = 0;
