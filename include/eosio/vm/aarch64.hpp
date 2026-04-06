@@ -2994,19 +2994,20 @@ namespace eosio { namespace vm {
       void emit_i64x2_le_s() { emit_v128_cmp_neon_swap(0x4EE03C00); }
       void emit_i64x2_ge_s() { emit_v128_cmp_neon(0x4EE03C00); }
 
-      // f32x4/f64x2 compare through softfloat
-      void emit_f32x4_eq() { emit_v128_binop_softfloat(&_eosio_f32x4_eq); }
-      void emit_f32x4_ne() { emit_v128_binop_softfloat(&_eosio_f32x4_ne); }
-      void emit_f32x4_lt() { emit_v128_binop_softfloat(&_eosio_f32x4_lt); }
-      void emit_f32x4_gt() { emit_v128_binop_softfloat(&_eosio_f32x4_gt); }
-      void emit_f32x4_le() { emit_v128_binop_softfloat(&_eosio_f32x4_le); }
-      void emit_f32x4_ge() { emit_v128_binop_softfloat(&_eosio_f32x4_ge); }
-      void emit_f64x2_eq() { emit_v128_binop_softfloat(&_eosio_f64x2_eq); }
-      void emit_f64x2_ne() { emit_v128_binop_softfloat(&_eosio_f64x2_ne); }
-      void emit_f64x2_lt() { emit_v128_binop_softfloat(&_eosio_f64x2_lt); }
-      void emit_f64x2_gt() { emit_v128_binop_softfloat(&_eosio_f64x2_gt); }
-      void emit_f64x2_le() { emit_v128_binop_softfloat(&_eosio_f64x2_le); }
-      void emit_f64x2_ge() { emit_v128_binop_softfloat(&_eosio_f64x2_ge); }
+      // f32x4/f64x2 comparisons — NEON with FPCR.DN=1 for canonical NaN
+      // After pop: V0=lhs, V1=rhs. Rd=V0, Rn/Rm set for correct operand order.
+      void emit_f32x4_eq() { emit_v128_fp_cmp(0x4E21E400); }       // FCMEQ V0.4S, V0.4S, V1.4S
+      void emit_f32x4_ne() { emit_v128_fp_cmp(0x4E21E400, true); } // FCMEQ then NOT
+      void emit_f32x4_lt() { emit_v128_fp_cmp(0x6EA0E420); }       // FCMGT V0.4S, V1.4S, V0.4S
+      void emit_f32x4_gt() { emit_v128_fp_cmp(0x6EA1E400); }       // FCMGT V0.4S, V0.4S, V1.4S
+      void emit_f32x4_le() { emit_v128_fp_cmp(0x6E20E420); }       // FCMGE V0.4S, V1.4S, V0.4S
+      void emit_f32x4_ge() { emit_v128_fp_cmp(0x6E21E400); }       // FCMGE V0.4S, V0.4S, V1.4S
+      void emit_f64x2_eq() { emit_v128_fp_cmp(0x4E61E400); }       // FCMEQ V0.2D, V0.2D, V1.2D
+      void emit_f64x2_ne() { emit_v128_fp_cmp(0x4E61E400, true); } // FCMEQ then NOT
+      void emit_f64x2_lt() { emit_v128_fp_cmp(0x6EE0E420); }       // FCMGT V0.2D, V1.2D, V0.2D
+      void emit_f64x2_gt() { emit_v128_fp_cmp(0x6EE1E400); }       // FCMGT V0.2D, V0.2D, V1.2D
+      void emit_f64x2_le() { emit_v128_fp_cmp(0x6E60E420); }       // FCMGE V0.2D, V1.2D, V0.2D
+      void emit_f64x2_ge() { emit_v128_fp_cmp(0x6E61E400); }       // FCMGE V0.2D, V0.2D, V1.2D
 
       // v128 logical ops
       void emit_v128_not() {
@@ -3452,51 +3453,85 @@ namespace eosio { namespace vm {
          emit_push_v128(0);
       }
 
-      // f32x4 arithmetic (all through softfloat)
-      void emit_f32x4_ceil() { emit_v128_unop_softfloat(&_eosio_f32x4_ceil); }
-      void emit_f32x4_floor() { emit_v128_unop_softfloat(&_eosio_f32x4_floor); }
-      void emit_f32x4_trunc() { emit_v128_unop_softfloat(&_eosio_f32x4_trunc); }
-      void emit_f32x4_nearest() { emit_v128_unop_softfloat(&_eosio_f32x4_nearest); }
-      void emit_f32x4_abs() { emit_v128_unop_softfloat(&_eosio_f32x4_abs); }
-      void emit_f32x4_neg() { emit_v128_unop_softfloat(&_eosio_f32x4_neg); }
-      void emit_f32x4_sqrt() { emit_v128_unop_softfloat(&_eosio_f32x4_sqrt); }
-      void emit_f32x4_add() { emit_v128_binop_softfloat(&_eosio_f32x4_add); }
-      void emit_f32x4_sub() { emit_v128_binop_softfloat(&_eosio_f32x4_sub); }
-      void emit_f32x4_mul() { emit_v128_binop_softfloat(&_eosio_f32x4_mul); }
-      void emit_f32x4_div() { emit_v128_binop_softfloat(&_eosio_f32x4_div); }
-      void emit_f32x4_min() { emit_v128_binop_softfloat(&_eosio_f32x4_min); }
-      void emit_f32x4_max() { emit_v128_binop_softfloat(&_eosio_f32x4_max); }
-      void emit_f32x4_pmin() { emit_v128_binop_softfloat(&_eosio_f32x4_pmin); }
-      void emit_f32x4_pmax() { emit_v128_binop_softfloat(&_eosio_f32x4_pmax); }
+      // f32x4 arithmetic — NEON with FPCR.DN=1
+      void emit_f32x4_ceil()    { emit_neon_fp_unop(0x4EA19800); }  // FRINTP V0.4S, V0.4S
+      void emit_f32x4_floor()   { emit_neon_fp_unop(0x4E219800); }  // FRINTM V0.4S, V0.4S
+      void emit_f32x4_trunc()   { emit_neon_fp_unop(0x4EA19880); }  // FRINTZ V0.4S, V0.4S
+      void emit_f32x4_nearest() { emit_neon_fp_unop(0x4E218800); }  // FRINTN V0.4S, V0.4S
+      void emit_f32x4_abs()     { emit_neon_fp_unop(0x4EA0F800); }  // FABS V0.4S, V0.4S
+      void emit_f32x4_neg()     { emit_neon_fp_unop(0x6EA0F800); }  // FNEG V0.4S, V0.4S
+      void emit_f32x4_sqrt()    { emit_neon_fp_unop(0x6EA1F800); }  // FSQRT V0.4S, V0.4S
+      void emit_f32x4_add()     { emit_neon_fp_binop(0x4E20D400); } // FADD V0.4S, V0.4S, V1.4S
+      void emit_f32x4_sub()     { emit_neon_fp_binop(0x4EA0D400); } // FSUB V0.4S, V0.4S, V1.4S
+      void emit_f32x4_mul()     { emit_neon_fp_binop(0x6E20DC00); } // FMUL V0.4S, V0.4S, V1.4S
+      void emit_f32x4_div()     { emit_neon_fp_binop(0x6E20FC00); } // FDIV V0.4S, V0.4S, V1.4S
+      void emit_f32x4_min()     { emit_neon_fp_binop(0x4EA0F400); } // FMIN V0.4S, V0.4S, V1.4S
+      void emit_f32x4_max()     { emit_neon_fp_binop(0x4E20F400); } // FMAX V0.4S, V0.4S, V1.4S
+      void emit_f32x4_pmin() { emit_neon_fp_pminmax(0x6EA1E402); } // FCMGT V2.4S, V0.4S, V1.4S
+      void emit_f32x4_pmax() { emit_neon_fp_pminmax(0x6EA0E422); } // FCMGT V2.4S, V1.4S, V0.4S
 
-      // f64x2 arithmetic (all through softfloat)
-      void emit_f64x2_ceil() { emit_v128_unop_softfloat(&_eosio_f64x2_ceil); }
-      void emit_f64x2_floor() { emit_v128_unop_softfloat(&_eosio_f64x2_floor); }
-      void emit_f64x2_trunc() { emit_v128_unop_softfloat(&_eosio_f64x2_trunc); }
-      void emit_f64x2_nearest() { emit_v128_unop_softfloat(&_eosio_f64x2_nearest); }
-      void emit_f64x2_abs() { emit_v128_unop_softfloat(&_eosio_f64x2_abs); }
-      void emit_f64x2_neg() { emit_v128_unop_softfloat(&_eosio_f64x2_neg); }
-      void emit_f64x2_sqrt() { emit_v128_unop_softfloat(&_eosio_f64x2_sqrt); }
-      void emit_f64x2_add() { emit_v128_binop_softfloat(&_eosio_f64x2_add); }
-      void emit_f64x2_sub() { emit_v128_binop_softfloat(&_eosio_f64x2_sub); }
-      void emit_f64x2_mul() { emit_v128_binop_softfloat(&_eosio_f64x2_mul); }
-      void emit_f64x2_div() { emit_v128_binop_softfloat(&_eosio_f64x2_div); }
-      void emit_f64x2_min() { emit_v128_binop_softfloat(&_eosio_f64x2_min); }
-      void emit_f64x2_max() { emit_v128_binop_softfloat(&_eosio_f64x2_max); }
-      void emit_f64x2_pmin() { emit_v128_binop_softfloat(&_eosio_f64x2_pmin); }
-      void emit_f64x2_pmax() { emit_v128_binop_softfloat(&_eosio_f64x2_pmax); }
+      // f64x2 arithmetic — NEON with FPCR.DN=1
+      void emit_f64x2_ceil()    { emit_neon_fp_unop(0x4EE19800); }  // FRINTP V0.2D, V0.2D
+      void emit_f64x2_floor()   { emit_neon_fp_unop(0x4E619800); }  // FRINTM V0.2D, V0.2D
+      void emit_f64x2_trunc()   { emit_neon_fp_unop(0x4EE19880); }  // FRINTZ V0.2D, V0.2D
+      void emit_f64x2_nearest() { emit_neon_fp_unop(0x4E618800); }  // FRINTN V0.2D, V0.2D
+      void emit_f64x2_abs()     { emit_neon_fp_unop(0x4EE0F800); }  // FABS V0.2D, V0.2D
+      void emit_f64x2_neg()     { emit_neon_fp_unop(0x6EE0F800); }  // FNEG V0.2D, V0.2D
+      void emit_f64x2_sqrt()    { emit_neon_fp_unop(0x6EE1F800); }  // FSQRT V0.2D, V0.2D
+      void emit_f64x2_add()     { emit_neon_fp_binop(0x4E60D400); } // FADD V0.2D, V0.2D, V1.2D
+      void emit_f64x2_sub()     { emit_neon_fp_binop(0x4EE0D400); } // FSUB V0.2D, V0.2D, V1.2D
+      void emit_f64x2_mul()     { emit_neon_fp_binop(0x6E60DC00); } // FMUL V0.2D, V0.2D, V1.2D
+      void emit_f64x2_div()     { emit_neon_fp_binop(0x6E60FC00); } // FDIV V0.2D, V0.2D, V1.2D
+      void emit_f64x2_min()     { emit_neon_fp_binop(0x4EE0F400); } // FMIN V0.2D, V0.2D, V1.2D
+      void emit_f64x2_max()     { emit_neon_fp_binop(0x4E60F400); } // FMAX V0.2D, V0.2D, V1.2D
+      void emit_f64x2_pmin() { emit_neon_fp_pminmax(0x6EE1E402); } // FCMGT V2.2D, V0.2D, V1.2D
+      void emit_f64x2_pmax() { emit_neon_fp_pminmax(0x6EE0E422); } // FCMGT V2.2D, V1.2D, V0.2D
 
-      // SIMD conversions (all through softfloat)
-      void emit_i32x4_trunc_sat_f32x4_s() { emit_v128_unop_softfloat(&_eosio_i32x4_trunc_sat_f32x4_s); }
-      void emit_i32x4_trunc_sat_f32x4_u() { emit_v128_unop_softfloat(&_eosio_i32x4_trunc_sat_f32x4_u); }
-      void emit_f32x4_convert_i32x4_s() { emit_v128_unop_softfloat(&_eosio_f32x4_convert_i32x4_s); }
-      void emit_f32x4_convert_i32x4_u() { emit_v128_unop_softfloat(&_eosio_f32x4_convert_i32x4_u); }
-      void emit_i32x4_trunc_sat_f64x2_s_zero() { emit_v128_unop_softfloat(&_eosio_i32x4_trunc_sat_f64x2_s_zero); }
-      void emit_i32x4_trunc_sat_f64x2_u_zero() { emit_v128_unop_softfloat(&_eosio_i32x4_trunc_sat_f64x2_u_zero); }
-      void emit_f64x2_convert_low_i32x4_s() { emit_v128_unop_softfloat(&_eosio_f64x2_convert_low_i32x4_s); }
-      void emit_f64x2_convert_low_i32x4_u() { emit_v128_unop_softfloat(&_eosio_f64x2_convert_low_i32x4_u); }
-      void emit_f32x4_demote_f64x2_zero() { emit_v128_unop_softfloat(&_eosio_f32x4_demote_f64x2_zero); }
-      void emit_f64x2_promote_low_f32x4() { emit_v128_unop_softfloat(&_eosio_f64x2_promote_low_f32x4); }
+      // SIMD conversions — NEON
+      void emit_i32x4_trunc_sat_f32x4_s() { emit_neon_fp_unop(0x4EA1B800); } // FCVTZS V0.4S, V0.4S
+      void emit_i32x4_trunc_sat_f32x4_u() { emit_neon_fp_unop(0x6EA1B800); } // FCVTZU V0.4S, V0.4S
+      void emit_f32x4_convert_i32x4_s()   { emit_neon_fp_unop(0x4E21D800); } // SCVTF V0.4S, V0.4S
+      void emit_f32x4_convert_i32x4_u()   { emit_neon_fp_unop(0x6E21D800); } // UCVTF V0.4S, V0.4S
+      void emit_i32x4_trunc_sat_f64x2_s_zero() {
+         if constexpr (!use_native_fp) { unimplemented(); }
+         emit_pop_v128_to(0);
+         emit32(0x4EE1B800); // FCVTZS V0.2D, V0.2D
+         emit32(0x0E614000); // SQXTN V0.2S, V0.2D (saturating narrow to 32-bit)
+         emit_push_v128();
+      }
+      void emit_i32x4_trunc_sat_f64x2_u_zero() {
+         if constexpr (!use_native_fp) { unimplemented(); }
+         emit_pop_v128_to(0);
+         emit32(0x6EE1B800); // FCVTZU V0.2D, V0.2D
+         emit32(0x2E612800); // SQXTUN V0.2S, V0.2D (unsigned saturating narrow)
+         emit_push_v128();
+      }
+      void emit_f64x2_convert_low_i32x4_s() {
+         if constexpr (!use_native_fp) { unimplemented(); }
+         emit_pop_v128_to(0);
+         emit32(0x0F20A400); // SSHLL V0.2D, V0.2S, #0 (sign-extend low 2 x i32 to i64)
+         emit32(0x4E61D800); // SCVTF V0.2D, V0.2D
+         emit_push_v128();
+      }
+      void emit_f64x2_convert_low_i32x4_u() {
+         if constexpr (!use_native_fp) { unimplemented(); }
+         emit_pop_v128_to(0);
+         emit32(0x2F20A400); // USHLL V0.2D, V0.2S, #0 (zero-extend low 2 x i32 to u64)
+         emit32(0x6E61D800); // UCVTF V0.2D, V0.2D
+         emit_push_v128();
+      }
+      void emit_f32x4_demote_f64x2_zero() {
+         if constexpr (!use_native_fp) { unimplemented(); }
+         emit_pop_v128_to(0);
+         emit32(0x0E616800); // FCVTN V0.2S, V0.2D (narrow f64x2 → f32x2 in low half, zeros high)
+         emit_push_v128();
+      }
+      void emit_f64x2_promote_low_f32x4() {
+         if constexpr (!use_native_fp) { unimplemented(); }
+         emit_pop_v128_to(0);
+         emit32(0x0E617800); // FCVTL V0.2D, V0.2S (widen low f32x2 → f64x2)
+         emit_push_v128();
+      }
 
       // ===================================================================
       // Branch fixing and finalization
@@ -4524,6 +4559,48 @@ namespace eosio { namespace vm {
          emit_pop_v128_to(0);
          // Approximate: just emit the instruction
          emit32(opcode | (1 << 16));
+         emit_push_v128();
+      }
+
+      // Float vector comparison with NEON. Opcode includes all register fields.
+      void emit_v128_fp_cmp(uint32_t opcode, bool flip = false) {
+         if constexpr (!use_native_fp) { unimplemented(); }
+         emit_pop_v128_to(1); // rhs
+         emit_pop_v128_to(0); // lhs
+         emit32(opcode);
+         if (flip) {
+            emit32(0x6E205800); // NOT V0.16B, V0.16B
+         }
+         emit_push_v128();
+      }
+
+      // NEON float unary: OP V0.T, V0.T
+      void emit_neon_fp_unop(uint32_t opcode) {
+         if constexpr (!use_native_fp) { unimplemented(); }
+         emit_pop_v128_to(0);
+         emit32(opcode);
+         emit_push_v128();
+      }
+
+      // NEON float binary: OP V0.T, V0.T, V1.T
+      void emit_neon_fp_binop(uint32_t opcode) {
+         if constexpr (!use_native_fp) { unimplemented(); }
+         emit_pop_v128_to(1);
+         emit_pop_v128_to(0);
+         emit32(opcode | (1 << 16));
+         emit_push_v128();
+      }
+
+      // WASM pmin/pmax: comparison-based select (not FMINNM/FMAXNM).
+      // pmin(a,b) = b < a ? b : a; pmax(a,b) = a < b ? b : a.
+      // cmp_opcode encodes FCMGT with appropriate Vn/Vm for the swap direction,
+      // writing the mask to V2.
+      void emit_neon_fp_pminmax(uint32_t cmp_opcode) {
+         if constexpr (!use_native_fp) { unimplemented(); }
+         emit_pop_v128_to(1); // rhs (b)
+         emit_pop_v128_to(0); // lhs (a)
+         emit32(cmp_opcode);         // FCMGT V2, ... (mask where we should pick b)
+         emit32(0x6EE21C20);         // BIT V0.16B, V1.16B, V2.16B (V0 = V1 where mask set)
          emit_push_v128();
       }
 
