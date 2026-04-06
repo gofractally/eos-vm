@@ -1463,8 +1463,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // ADD W0, W0, W1
          emit32(0x0B010000);
          emit_push_x(X0);
@@ -1483,24 +1482,21 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // SUB W0, W0, W1
          emit32(0x4B010000);
          emit_push_x(X0);
       }
 
       void emit_i32_mul() {
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // MUL W0, W0, W1 (MADD W0, W0, W1, WZR)
          emit32(0x1B017C00);
          emit_push_x(X0);
       }
 
       void emit_i32_div_s() {
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // CBZ W1, fpe_handler (div by zero)
          emit_cbz_to_handler32(X1, fpe_handler);
          // Check INT_MIN / -1: CMN W1, #1 (CMP W1, -1)
@@ -1521,8 +1517,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_div_u() {
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // CBZ W1, fpe_handler
          emit_cbz_to_handler32(X1, fpe_handler);
          // UDIV W0, W0, W1
@@ -1531,8 +1526,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_rem_s() {
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // CBZ W1, fpe_handler
          emit_cbz_to_handler32(X1, fpe_handler);
          // Check for -1 case (result is 0)
@@ -1554,8 +1548,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_rem_u() {
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // CBZ W1, fpe_handler
          emit_cbz_to_handler32(X1, fpe_handler);
          // UDIV W8, W0, W1
@@ -1573,8 +1566,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // AND W0, W0, W1
          emit32(0x0A010000);
          emit_push_x(X0);
@@ -1588,8 +1580,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // ORR W0, W0, W1
          emit32(0x2A010000);
          emit_push_x(X0);
@@ -1603,8 +1594,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // EOR W0, W0, W1
          emit32(0x4A010000);
          emit_push_x(X0);
@@ -1622,8 +1612,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // LSLV W0, W0, W1
          emit32(0x1AC12000 | (X1 << 16) | (X0 << 5) | X0);
          emit_push_x(X0);
@@ -1639,8 +1628,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // ASRV W0, W0, W1
          emit32(0x1AC12800 | (X1 << 16) | (X0 << 5) | X0);
          emit_push_x(X0);
@@ -1656,8 +1644,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // LSRV W0, W0, W1
          emit32(0x1AC12400 | (X1 << 16) | (X0 << 5) | X0);
          emit_push_x(X0);
@@ -1674,8 +1661,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // ARM64 has RORV but not ROLV. rotl(x,n) = rotr(x, 32-n)
          // NEG W1, W1 (SUB W1, WZR, W1)
          emit32(0x4B0103E1);
@@ -1694,8 +1680,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // RORV W0, W0, W1
          emit32(0x1AC12C00 | (X1 << 16) | (X0 << 5) | X0);
          emit_push_x(X0);
@@ -1751,8 +1736,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // ADD X0, X0, X1
          emit32(0x8B010000);
          emit_push_x(X0);
@@ -1771,24 +1755,21 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // SUB X0, X0, X1
          emit32(0xCB010000);
          emit_push_x(X0);
       }
 
       void emit_i64_mul() {
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // MUL X0, X0, X1
          emit32(0x9B017C00);
          emit_push_x(X0);
       }
 
       void emit_i64_div_s() {
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // CBZ X1, fpe_handler
          emit_cbz_to_handler64(X1, fpe_handler);
          // Check INT64_MIN / -1
@@ -1806,8 +1787,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_div_u() {
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          emit_cbz_to_handler64(X1, fpe_handler);
          // UDIV X0, X0, X1
          emit32(0x9AC10800 | (X1 << 16) | (X0 << 5) | X0);
@@ -1815,8 +1795,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_rem_s() {
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          emit_cbz_to_handler64(X1, fpe_handler);
          // CMN X1, #1
          emit32(0xB100043F | (X1 << 5));
@@ -1836,8 +1815,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_rem_u() {
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          emit_cbz_to_handler64(X1, fpe_handler);
          // UDIV X8, X0, X1
          emit32(0x9AC10808 | (X1 << 16) | (X0 << 5));
@@ -1854,8 +1832,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          emit32(0x8A010000); // AND X0, X0, X1
          emit_push_x(X0);
       }
@@ -1868,8 +1845,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          emit32(0xAA010000); // ORR X0, X0, X1
          emit_push_x(X0);
       }
@@ -1882,8 +1858,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          emit32(0xCA010000); // EOR X0, X0, X1
          emit_push_x(X0);
       }
@@ -1899,8 +1874,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          emit32(0x9AC12000 | (X1 << 16) | (X0 << 5) | X0); // LSLV X0, X0, X1
          emit_push_x(X0);
       }
@@ -1914,8 +1888,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          emit32(0x9AC12800 | (X1 << 16) | (X0 << 5) | X0); // ASRV X0, X0, X1
          emit_push_x(X0);
       }
@@ -1929,8 +1902,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          emit32(0x9AC12400 | (X1 << 16) | (X0 << 5) | X0); // LSRV X0, X0, X1
          emit_push_x(X0);
       }
@@ -1945,8 +1917,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // NEG X1, X1
          emit32(0xCB0103E1);
          // RORV X0, X0, X1
@@ -1963,8 +1934,7 @@ namespace eosio { namespace vm {
             emit_push_x(X0);
             return;
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          emit32(0x9AC12C00 | (X1 << 16) | (X0 << 5) | X0); // RORV X0, X0, X1
          emit_push_x(X0);
       }
@@ -2245,8 +2215,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f64_copysign() {
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          // AND X1, X1, #0x8000000000000000
          emit32(0x92410021); // AND X1, X1, #0x8000000000000000
          // AND X0, X0, #0x7FFFFFFFFFFFFFFF
@@ -4268,8 +4237,7 @@ namespace eosio { namespace vm {
       }
 
       void emit_f64_binop_softfloat(float64_t (*softfloatfun)(float64_t, float64_t)) {
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          emit_save_context();
          emit_call_c_function(softfloatfun);
          emit_restore_context();
@@ -4297,8 +4265,7 @@ namespace eosio { namespace vm {
                return emit_f64_binop_softfloat(softfloatfun);
             }
          }
-         emit_pop_x(X1);
-         emit_pop_x(X0);
+         emit_binop_pop(X1, X0);
          emit32(0x9E670000); // FMOV D0, X0
          emit32(0x9E670021); // FMOV D1, X1
          emit32(hw_instr);
@@ -4911,6 +4878,40 @@ namespace eosio { namespace vm {
             }
          }
          return {};
+      }
+
+      // Pop two operands for a binary op, optimizing consecutive push patterns.
+      // Handles any combination of get_local, i32_const, i64_const in both slots.
+      void emit_binop_pop(uint32_t rd_rhs, uint32_t rd_lhs) {
+         if (recent_ops[1].end == code && recent_ops[0].end == recent_ops[1].start) {
+            auto can_reconstruct = [](const recent_op_t& op) -> bool {
+               return std::holds_alternative<get_local_op>(op.data) ||
+                      std::holds_alternative<i32_const_op>(op.data) ||
+                      std::holds_alternative<i64_const_op>(op.data);
+            };
+            if (can_reconstruct(recent_ops[1]) && can_reconstruct(recent_ops[0])) {
+               recent_op_t op_rhs = recent_ops[1];
+               recent_op_t op_lhs = recent_ops[0];
+               code = op_lhs.start;
+               recent_ops[0] = {};
+               recent_ops[1] = {};
+               emit_reconstruct(rd_rhs, op_rhs);
+               emit_reconstruct(rd_lhs, op_lhs);
+               return;
+            }
+         }
+         emit_pop_x(rd_rhs);
+         emit_pop_x(rd_lhs);
+      }
+
+      // Materialize a value from a recent_op into a register
+      void emit_reconstruct(uint32_t rd, const recent_op_t& op) {
+         if (auto g = std::get_if<get_local_op>(&op.data))
+            emit_ldr_fp_offset(rd, g->offset);
+         else if (auto c = std::get_if<i32_const_op>(&op.data))
+            emit_mov_imm32(rd, c->value);
+         else if (auto c = std::get_if<i64_const_op>(&op.data))
+            emit_mov_imm64(rd, c->value);
       }
 
       void invalidate_recent_ops() {
