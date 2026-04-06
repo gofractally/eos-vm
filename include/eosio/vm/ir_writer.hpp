@@ -464,31 +464,32 @@ namespace eosio { namespace vm {
       }
 
       // ──── Memory loads ────
-      void emit_i32_load(uint32_t o, uint32_t a)    { ir_load(ir_op::i32_load, types::i32, o); }
-      void emit_i64_load(uint32_t o, uint32_t a)    { ir_load(ir_op::i64_load, types::i64, o); }
-      void emit_f32_load(uint32_t o, uint32_t a)    { ir_load(ir_op::f32_load, types::f32, o); }
-      void emit_f64_load(uint32_t o, uint32_t a)    { ir_load(ir_op::f64_load, types::f64, o); }
-      void emit_i32_load8_s(uint32_t o, uint32_t a) { ir_load(ir_op::i32_load8_s, types::i32, o); }
-      void emit_i32_load16_s(uint32_t o, uint32_t a){ ir_load(ir_op::i32_load16_s, types::i32, o); }
-      void emit_i32_load8_u(uint32_t o, uint32_t a) { ir_load(ir_op::i32_load8_u, types::i32, o); }
-      void emit_i32_load16_u(uint32_t o, uint32_t a){ ir_load(ir_op::i32_load16_u, types::i32, o); }
-      void emit_i64_load8_s(uint32_t o, uint32_t a) { ir_load(ir_op::i64_load8_s, types::i64, o); }
-      void emit_i64_load16_s(uint32_t o, uint32_t a){ ir_load(ir_op::i64_load16_s, types::i64, o); }
-      void emit_i64_load32_s(uint32_t o, uint32_t a){ ir_load(ir_op::i64_load32_s, types::i64, o); }
-      void emit_i64_load8_u(uint32_t o, uint32_t a) { ir_load(ir_op::i64_load8_u, types::i64, o); }
-      void emit_i64_load16_u(uint32_t o, uint32_t a){ ir_load(ir_op::i64_load16_u, types::i64, o); }
-      void emit_i64_load32_u(uint32_t o, uint32_t a){ ir_load(ir_op::i64_load32_u, types::i64, o); }
+      // Parser passes (alignment, offset) — we only need offset for IR
+      void emit_i32_load(uint32_t /*align*/, uint32_t offset)    { ir_load(ir_op::i32_load, types::i32, offset); }
+      void emit_i64_load(uint32_t /*align*/, uint32_t offset)    { ir_load(ir_op::i64_load, types::i64, offset); }
+      void emit_f32_load(uint32_t /*align*/, uint32_t offset)    { ir_load(ir_op::f32_load, types::f32, offset); }
+      void emit_f64_load(uint32_t /*align*/, uint32_t offset)    { ir_load(ir_op::f64_load, types::f64, offset); }
+      void emit_i32_load8_s(uint32_t /*a*/, uint32_t o) { ir_load(ir_op::i32_load8_s, types::i32, o); }
+      void emit_i32_load16_s(uint32_t /*a*/, uint32_t o){ ir_load(ir_op::i32_load16_s, types::i32, o); }
+      void emit_i32_load8_u(uint32_t /*a*/, uint32_t o) { ir_load(ir_op::i32_load8_u, types::i32, o); }
+      void emit_i32_load16_u(uint32_t /*a*/, uint32_t o){ ir_load(ir_op::i32_load16_u, types::i32, o); }
+      void emit_i64_load8_s(uint32_t /*a*/, uint32_t o) { ir_load(ir_op::i64_load8_s, types::i64, o); }
+      void emit_i64_load16_s(uint32_t /*a*/, uint32_t o){ ir_load(ir_op::i64_load16_s, types::i64, o); }
+      void emit_i64_load32_s(uint32_t /*a*/, uint32_t o){ ir_load(ir_op::i64_load32_s, types::i64, o); }
+      void emit_i64_load8_u(uint32_t /*a*/, uint32_t o) { ir_load(ir_op::i64_load8_u, types::i64, o); }
+      void emit_i64_load16_u(uint32_t /*a*/, uint32_t o){ ir_load(ir_op::i64_load16_u, types::i64, o); }
+      void emit_i64_load32_u(uint32_t /*a*/, uint32_t o){ ir_load(ir_op::i64_load32_u, types::i64, o); }
 
       // ──── Memory stores ────
-      void emit_i32_store(uint32_t o, uint32_t a)   { ir_store(ir_op::i32_store, types::i32, o); }
-      void emit_i64_store(uint32_t o, uint32_t a)   { ir_store(ir_op::i64_store, types::i64, o); }
-      void emit_f32_store(uint32_t o, uint32_t a)   { ir_store(ir_op::f32_store, types::f32, o); }
-      void emit_f64_store(uint32_t o, uint32_t a)   { ir_store(ir_op::f64_store, types::f64, o); }
-      void emit_i32_store8(uint32_t o, uint32_t a)  { ir_store(ir_op::i32_store8, types::i32, o); }
-      void emit_i32_store16(uint32_t o, uint32_t a) { ir_store(ir_op::i32_store16, types::i32, o); }
-      void emit_i64_store8(uint32_t o, uint32_t a)  { ir_store(ir_op::i64_store8, types::i64, o); }
-      void emit_i64_store16(uint32_t o, uint32_t a) { ir_store(ir_op::i64_store16, types::i64, o); }
-      void emit_i64_store32(uint32_t o, uint32_t a) { ir_store(ir_op::i64_store32, types::i64, o); }
+      void emit_i32_store(uint32_t /*a*/, uint32_t o)   { ir_store(ir_op::i32_store, types::i32, o); }
+      void emit_i64_store(uint32_t /*a*/, uint32_t o)   { ir_store(ir_op::i64_store, types::i64, o); }
+      void emit_f32_store(uint32_t /*a*/, uint32_t o)   { ir_store(ir_op::f32_store, types::f32, o); }
+      void emit_f64_store(uint32_t /*a*/, uint32_t o)   { ir_store(ir_op::f64_store, types::f64, o); }
+      void emit_i32_store8(uint32_t /*a*/, uint32_t o)  { ir_store(ir_op::i32_store8, types::i32, o); }
+      void emit_i32_store16(uint32_t /*a*/, uint32_t o) { ir_store(ir_op::i32_store16, types::i32, o); }
+      void emit_i64_store8(uint32_t /*a*/, uint32_t o)  { ir_store(ir_op::i64_store8, types::i64, o); }
+      void emit_i64_store16(uint32_t /*a*/, uint32_t o) { ir_store(ir_op::i64_store16, types::i64, o); }
+      void emit_i64_store32(uint32_t /*a*/, uint32_t o) { ir_store(ir_op::i64_store32, types::i64, o); }
 
       // ──── Memory management ────
       void emit_current_memory() {
