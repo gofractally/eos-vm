@@ -12,6 +12,7 @@
 #include <eosio/vm/exceptions.hpp>
 #include <eosio/vm/jit_codegen.hpp>
 #include <eosio/vm/jit_ir.hpp>
+#include <eosio/vm/jit_regalloc.hpp>
 #include <eosio/vm/types.hpp>
 
 #include <cstdint>
@@ -44,6 +45,14 @@ namespace eosio { namespace vm {
       ~ir_writer() {
          // Pass 2: Compile all functions from IR to native x86_64.
          codegen_t codegen(_allocator, _mod);
+         // Pass 1.5: Register allocation (compute but don't use yet)
+         // TODO: Enable register-based codegen once emission is ready
+         // for (uint32_t i = 0; i < _num_functions; ++i) {
+         //    jit_regalloc::compute_live_intervals(_functions[i], _allocator);
+         //    jit_regalloc::allocate_registers(_functions[i]);
+         // }
+
+         // Pass 2: Code generation
          codegen.emit_entry_and_error_handlers();
          for (uint32_t i = 0; i < _num_functions; ++i) {
             codegen.compile_function(_functions[i], _mod.code[i]);
