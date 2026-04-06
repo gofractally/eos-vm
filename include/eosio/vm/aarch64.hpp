@@ -706,17 +706,21 @@ namespace eosio { namespace vm {
             // Drop val2 slots (32 bytes), revealing val1 position (possibly overwritten)
             emit_add_imm_sp(32);
          } else {
-            // Pop condition, val1, val2
-            emit_pop_x(X0); // condition
+            // Check if condition is from a recent comparison (flags still live)
+            auto cond = try_pop_recent_op<condition_op>();
+            if (!cond) {
+               // Pop condition and compare against zero
+               emit_pop_x(X0);
+               emit32(0x7100001F | (X0 << 5)); // CMP W0, #0
+            }
+            uint32_t sel_cond = cond ? cond->cond : COND_NE;
             emit_pop_x(X1); // val1 = top after condition
             emit_pop_x(X2); // val2
-            // CMP W0, #0
-            emit32(0x7100001F | (X0 << 5));
-            // CSEL X0, X2, X1, EQ (if condition==0, pick val2)
+            // CSEL: if condition is true (nonzero), pick val1; else val2
             if(type == types::i32 || type == types::f32) {
-               emit32(0x1A810040 | (X1 << 16) | (COND_NE << 12) | (X2 << 5) | X0);
+               emit32(0x1A810040 | (X1 << 16) | (sel_cond << 12) | (X2 << 5) | X0);
             } else {
-               emit32(0x9A810040 | (X1 << 16) | (COND_NE << 12) | (X2 << 5) | X0);
+               emit32(0x9A810040 | (X1 << 16) | (sel_cond << 12) | (X2 << 5) | X0);
             }
             // Push result
             emit_push_x(X0);
@@ -730,8 +734,11 @@ namespace eosio { namespace vm {
       void emit_get_local(uint32_t local_idx, uint8_t type) {
          int32_t offset = get_frame_offset(local_idx);
          if(type != types::v128) {
+            auto start = code;
             emit_ldr_fp_offset(X0, offset);
-            emit_push_x(X0);
+            // STR X0, [SP, #-16]! (push without tracking as register_push_op)
+            emit32(0xF81F0FE0 | X0);
+            push_recent_op(start, get_local_op{offset});
          } else {
             // v128 = two 16-byte slots in frame: load high half first (deeper), then low
             emit_ldr_fp_offset(X0, offset);
@@ -1149,6 +1156,15 @@ namespace eosio { namespace vm {
       // ===================================================================
 
       void emit_i32_eqz() {
+         // If the input is from a comparison, just invert the condition
+         if (auto c = try_pop_recent_op<condition_op>()) {
+            uint32_t inv = invert_condition(c->cond);
+            auto start = code;
+            emit_cset(X0, inv);
+            emit_push_x(X0);
+            push_recent_op(start, condition_op{inv});
+            return;
+         }
          emit_pop_x(X0);
          // CMP W0, #0
          emit32(0x7100001F | (X0 << 5));
@@ -3655,6 +3671,11 @@ namespace eosio { namespace vm {
             emit_mov_imm64(reg, c->value);
             return;
          }
+         if (auto g = try_pop_recent_op<get_local_op>()) {
+            // Load directly from frame into target register, skipping the stack
+            emit_ldr_fp_offset(reg, g->offset);
+            return;
+         }
          if (auto push = try_undo_push()) {
             if (push->reg != reg) {
                // MOV Xreg, Xpush_reg  (ORR Xd, XZR, Xm)
@@ -4357,22 +4378,48 @@ namespace eosio { namespace vm {
       // ===================================================================
 
       void emit_i32_relop(uint32_t cond) {
-         emit_pop_x(X1); // rhs
-         emit_pop_x(X0); // lhs
-         // CMP W0, W1
-         emit32(0x6B01001F | (X0 << 5));
-         auto start = code; // capture AFTER CMP — only CSET+push will be rewound
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            emit_pop_x(X0); // lhs
+            if (c->value <= 4095) {
+               // CMP W0, #imm
+               emit32(0x7100001F | (c->value << 10) | (X0 << 5));
+            } else if (static_cast<int32_t>(c->value) < 0 && static_cast<int32_t>(c->value) >= -4095) {
+               // CMN W0, #(-imm)  — ADD sets flags, equivalent to CMP with negative
+               uint32_t neg = static_cast<uint32_t>(-static_cast<int32_t>(c->value));
+               emit32(0x3100001F | (neg << 10) | (X0 << 5));
+            } else {
+               emit_mov_imm32(X1, c->value);
+               emit32(0x6B01001F | (X0 << 5)); // CMP W0, W1
+            }
+         } else {
+            emit_pop_x(X1); // rhs
+            emit_pop_x(X0); // lhs
+            // CMP W0, W1
+            emit32(0x6B01001F | (X0 << 5));
+         }
+         auto start = code;
          emit_cset(X0, cond);
          emit_push_x(X0);
          push_recent_op(start, condition_op{cond});
       }
 
       void emit_i64_relop(uint32_t cond) {
-         emit_pop_x(X1);
-         emit_pop_x(X0);
-         // CMP X0, X1
-         emit32(0xEB01001F | (X0 << 5));
-         auto start = code; // capture AFTER CMP
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            emit_pop_x(X0);
+            if (c->value <= 4095) {
+               // CMP X0, #imm
+               emit32(0xF100001F | (static_cast<uint32_t>(c->value) << 10) | (X0 << 5));
+            } else {
+               emit_mov_imm64(X1, c->value);
+               emit32(0xEB01001F | (X0 << 5)); // CMP X0, X1
+            }
+         } else {
+            emit_pop_x(X1);
+            emit_pop_x(X0);
+            // CMP X0, X1
+            emit32(0xEB01001F | (X0 << 5));
+         }
+         auto start = code;
          emit_cset(X0, cond);
          emit_push_x(X0);
          push_recent_op(start, condition_op{cond});
@@ -4812,11 +4859,12 @@ namespace eosio { namespace vm {
       struct i64_const_op { uint64_t value; };
       struct register_push_op { uint32_t reg; };
       struct condition_op { uint32_t cond; };
+      struct get_local_op { int32_t offset; };
 
       struct recent_op_t {
          unsigned char* start = nullptr;
          unsigned char* end = nullptr;
-         std::variant<std::monostate, register_push_op, i32_const_op, i64_const_op, condition_op> data;
+         std::variant<std::monostate, register_push_op, i32_const_op, i64_const_op, condition_op, get_local_op> data;
       };
 
       recent_op_t recent_ops[2] = {};
@@ -4850,10 +4898,11 @@ namespace eosio { namespace vm {
             if (auto res = try_pop_recent_op<register_push_op>()) {
                return res;
             }
-            // For const ops, the code emitted MOV + STR.  Rewind to just before
-            // the STR (the MOV left the value in the destination register).
+            // For const/local ops, the code ends with STR.  Rewind to just before
+            // the STR (the MOV/LDR left the value in the destination register).
             if (std::holds_alternative<i32_const_op>(recent_ops[1].data) ||
-                std::holds_alternative<i64_const_op>(recent_ops[1].data)) {
+                std::holds_alternative<i64_const_op>(recent_ops[1].data) ||
+                std::holds_alternative<get_local_op>(recent_ops[1].data)) {
                // Rewind past the STR instruction (last 4 bytes)
                code = recent_ops[1].end - 4;
                recent_ops[1] = recent_ops[0];
