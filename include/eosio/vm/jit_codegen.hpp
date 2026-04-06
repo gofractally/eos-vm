@@ -487,10 +487,43 @@ namespace eosio { namespace vm {
             }
             break;
          }
-         case ir_op::call_indirect:
-            // TODO: Full call_indirect with table lookup
-            emit_error_handler(&on_call_indirect_error);
+         case ir_op::call_indirect: {
+            uint32_t fti = inst.call.index;
+            const func_type& ft = _mod.types[fti];
+            // Pop table index
+            this->emit_pop_raw(rax);
+            // Bounds check
+            uint32_t table_size = _mod.tables[0].limits.initial;
+            this->emit_cmp(table_size, eax);
+            base::fix_branch(this->emit_branchcc32(base::JAE), call_indirect_handler);
+            // Compute table entry: each entry is 16 bytes {type_idx(4), pad(4), code_ptr(8)}
+            // shlq $4, %rax
+            this->emit_bytes(0x48, 0xc1, 0xe0, 0x04);
+            if (_mod.indirect_table(0)) {
+               this->emit_mov(*(rsi + wasm_allocator::table_offset()), rcx);
+               this->emit_add(rcx, rax);
+            } else {
+               // lea table_offset(%rsi,%rax), %rax
+               this->emit_bytes(0x48, 0x8d, 0x84, 0x06);
+               this->emit_operand32(static_cast<uint32_t>(wasm_allocator::table_offset()));
+            }
+            // Type check: cmp $fti, (%rax)
+            this->emit_bytes(0x81, 0x38); // cmp imm32, (%rax)
+            this->emit_operand32(fti);
+            base::fix_branch(this->emit_branchcc32(base::JNE), type_error_handler);
+            // Call through function pointer
+            if constexpr (!StackLimitIsBytes) {
+               this->emit(base::DECD, ebx);
+               base::fix_branch(this->emit_branchcc32(base::JZ), stack_overflow_handler);
+            }
+            // call *8(%rax)
+            this->emit_bytes(0xff, 0x50, 0x08);
+            emit_call_multipop(ft);
+            if constexpr (!StackLimitIsBytes) {
+               this->emit(base::INCD, ebx);
+            }
             break;
+         }
 
          // ── Local/global access ──
          case ir_op::local_get: {
