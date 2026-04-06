@@ -68,8 +68,6 @@ if(ENABLE_BENCH_WAMR)
          @ONLY
       )
       add_subdirectory("${CMAKE_CURRENT_BINARY_DIR}/wamr_build" "${CMAKE_CURRENT_BINARY_DIR}/wamr_build")
-      list(APPEND BENCH_LIBS vmlib)
-      list(APPEND BENCH_DEFS BENCH_HAS_WAMR)
       message(STATUS "WAMR benchmark: ENABLED")
    else()
       message(WARNING "WAMR build scripts not found, disabling")
@@ -130,8 +128,6 @@ if(ENABLE_BENCH_WASMTIME)
             IMPORTED_LOCATION "${WASMTIME_DIR}/lib/libwasmtime.a"
             INTERFACE_INCLUDE_DIRECTORIES "${WASMTIME_DIR}/include"
          )
-         list(APPEND BENCH_LIBS wasmtime)
-         list(APPEND BENCH_DEFS BENCH_HAS_WASMTIME)
          message(STATUS "wasmtime benchmark: ENABLED (${WASMTIME_VERSION})")
       endif()
    endif()
@@ -192,8 +188,6 @@ if(ENABLE_BENCH_WASMER)
                IMPORTED_LOCATION "${WASMER_LIB}"
                INTERFACE_INCLUDE_DIRECTORIES "${WASMER_DIR}/include"
             )
-            list(APPEND BENCH_LIBS wasmer)
-            list(APPEND BENCH_DEFS BENCH_HAS_WASMER)
             message(STATUS "wasmer benchmark: ENABLED (${WASMER_VERSION})")
          else()
             message(WARNING "wasmer library not found in ${WASMER_DIR}/lib")
@@ -203,23 +197,10 @@ if(ENABLE_BENCH_WASMER)
 endif()
 
 # ##################################################################################################
-# Validate: wasmtime and wasmer both export wasm-c-api symbols and cannot be linked together
+# Note: WAMR, wasmtime, and wasmer all export wasm-c-api symbols (wasm_engine_new, etc.)
+# They cannot be linked into the same executable. Each gets its own bench-compare-<runtime>
+# executable below. wasm3 and eos-vm can combine with any of them.
 # ##################################################################################################
-# WAMR, wasmtime, and wasmer all export wasm-c-api symbols (wasm_engine_new, etc.)
-# Only one of these three can be linked at a time.
-set(_wasm_c_api_count 0)
-if(ENABLE_BENCH_WAMR)
-   math(EXPR _wasm_c_api_count "${_wasm_c_api_count} + 1")
-endif()
-if(ENABLE_BENCH_WASMTIME)
-   math(EXPR _wasm_c_api_count "${_wasm_c_api_count} + 1")
-endif()
-if(ENABLE_BENCH_WASMER)
-   math(EXPR _wasm_c_api_count "${_wasm_c_api_count} + 1")
-endif()
-if(_wasm_c_api_count GREATER 1)
-   message(FATAL_ERROR "Cannot enable more than one of WAMR, wasmtime, or wasmer — they export conflicting wasm-c-api symbols. Enable only one at a time. wasm3 can be combined with any single one.")
-endif()
 
 # ##################################################################################################
 # Compute benchmarks — standalone WASM modules (SHA-256, ECDSA) compiled from C
@@ -306,14 +287,54 @@ if(ENABLE_BENCH_COMPUTE)
 endif()
 
 # ##################################################################################################
-# Build the benchmark executable
+# Build benchmark executables
 # ##################################################################################################
-add_executable(bench-compare ${BENCH_SOURCES})
-target_link_libraries(bench-compare ${BENCH_LIBS})
-target_compile_definitions(bench-compare PRIVATE ${BENCH_DEFS})
+# Base libraries/defs shared by all executables (eos-vm + wasm3 if enabled)
+set(BENCH_BASE_LIBS eos-vm)
+set(BENCH_BASE_DEFS ${BENCH_DEFS})
+if(ENABLE_BENCH_WASM3)
+   list(APPEND BENCH_BASE_LIBS wasm3)
+   list(APPEND BENCH_BASE_DEFS BENCH_HAS_WASM3)
+endif()
+
+# Helper: create a bench-compare variant with the given suffix, extra libs, and defs
+function(add_bench_variant SUFFIX EXTRA_LIBS EXTRA_DEFS)
+   set(_name "bench-compare${SUFFIX}")
+   add_executable(${_name} ${BENCH_SOURCES})
+   target_link_libraries(${_name} ${BENCH_BASE_LIBS} ${EXTRA_LIBS})
+   target_compile_definitions(${_name} PRIVATE ${BENCH_BASE_DEFS} ${EXTRA_DEFS})
+   if(ENABLE_BENCH_COMPUTE)
+      add_dependencies(${_name} compute-wasm)
+      target_compile_definitions(${_name} PRIVATE
+         BENCH_SHA256_WASM="${SHA256_WASM}"
+         BENCH_ECDSA_WASM="${ECDSA_WASM}"
+      )
+   endif()
+endfunction()
+
+# Always build the base executable (eos-vm + wasm3)
+add_bench_variant("" "" "")
+
+# Each wasm-c-api runtime gets its own executable
+if(ENABLE_BENCH_WAMR)
+   add_bench_variant("-wamr" "vmlib" "BENCH_HAS_WAMR")
+endif()
+if(ENABLE_BENCH_WASMTIME)
+   add_bench_variant("-wasmtime" "wasmtime" "BENCH_HAS_WASMTIME")
+endif()
+if(ENABLE_BENCH_WASMER)
+   add_bench_variant("-wasmer" "wasmer" "BENCH_HAS_WASMER")
+endif()
+
+# Compile-time benchmark
+add_executable(bench-compile-time
+   ${CMAKE_CURRENT_SOURCE_DIR}/bench_compile_time.cpp
+)
+target_link_libraries(bench-compile-time ${BENCH_BASE_LIBS})
+target_compile_definitions(bench-compile-time PRIVATE ${BENCH_BASE_DEFS})
 if(ENABLE_BENCH_COMPUTE)
-   add_dependencies(bench-compare compute-wasm)
-   target_compile_definitions(bench-compare PRIVATE
+   add_dependencies(bench-compile-time compute-wasm)
+   target_compile_definitions(bench-compile-time PRIVATE
       BENCH_SHA256_WASM="${SHA256_WASM}"
       BENCH_ECDSA_WASM="${ECDSA_WASM}"
    )
