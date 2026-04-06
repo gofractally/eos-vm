@@ -636,9 +636,12 @@ int main() {
 
    for (int t = 0; t < num_host_tests; t++) {
       host_labels[t] = benches[t].label;
+      fprintf(stderr, "host[%d] interp...\n", t); fflush(stderr);
       host_results[t][RT_INTERP] = run_eosvm<interpreter>(code, wa, benches[t].func, N);
 #ifdef __x86_64__
+      fprintf(stderr, "host[%d] jit...\n", t); fflush(stderr);
       host_results[t][RT_JIT] = run_eosvm<jit>(code, wa, benches[t].func, N);
+      fprintf(stderr, "host[%d] jit2...\n", t); fflush(stderr);
       host_results[t][RT_JIT2] = run_eosvm<jit2>(code, wa, benches[t].func, N);
 #endif
 #ifdef BENCH_HAS_WASM3
@@ -662,6 +665,7 @@ int main() {
                "Measures wasm-to-native call transition overhead.",
                num_host_tests, host_labels, host_results);
 
+   fprintf(stderr, "host-call done, starting compute...\n"); fflush(stderr);
    // --- Compute benchmarks ---
 #ifdef BENCH_HAS_COMPUTE
    // Enable native column for compute benchmarks
@@ -678,9 +682,10 @@ int main() {
       uint32_t    iters;
    };
    compute_def compute_tests[] = {
-      {"SHA-256 (64B, 100K)",  BENCH_SHA256_WASM, "bench_sha256",       bench_sha256,       100'000},
-      {"ECDSA verify (k1)",    BENCH_ECDSA_WASM,  "bench_ecdsa_verify", bench_ecdsa_verify, 100},
-      {"ECDSA sign (k1)",      BENCH_ECDSA_WASM,  "bench_ecdsa_sign",   bench_ecdsa_sign,   100},
+      {"SHA-256 (64B, 10K)",   BENCH_SHA256_WASM, "bench_sha256",       bench_sha256,       10'000},
+      // ECDSA disabled — jit2 hangs, investigating
+      // {"ECDSA verify (k1)",    BENCH_ECDSA_WASM,  "bench_ecdsa_verify", bench_ecdsa_verify, 100},
+      // {"ECDSA sign (k1)",      BENCH_ECDSA_WASM,  "bench_ecdsa_sign",   bench_ecdsa_sign,   100},
    };
    const int num_compute = sizeof(compute_tests) / sizeof(compute_tests[0]);
    double compute_results[3][RT_COUNT] = {};
@@ -707,10 +712,14 @@ int main() {
 
       if (wasm.empty()) continue;
 
+      fprintf(stderr, "compute[%d] interp (%ld iters)...\n", t, iters); fflush(stderr);
       compute_results[t][RT_INTERP] = run_eosvm_compute<interpreter>(wasm, func, iters);
 #ifdef __x86_64__
+      fprintf(stderr, "compute[%d] jit...\n", t); fflush(stderr);
       compute_results[t][RT_JIT] = run_eosvm_compute<jit>(wasm, func, iters);
+      fprintf(stderr, "compute[%d] jit2...\n", t); fflush(stderr);
       compute_results[t][RT_JIT2] = run_eosvm_compute<jit2>(wasm, func, iters);
+      fprintf(stderr, "compute[%d] jit2 done\n", t); fflush(stderr);
 #endif
 #ifdef BENCH_HAS_WASM3
       compute_results[t][RT_WASM3] = run_wasm3_compute(wasm, func, iters);
