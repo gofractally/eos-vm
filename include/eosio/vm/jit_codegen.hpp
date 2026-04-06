@@ -448,22 +448,20 @@ namespace eosio { namespace vm {
             if (_in_br_table) {
                bool is_default = (_br_table_case >= _br_table_size);
                if (is_default) {
-                  // Default case: unconditional branch
+                  // Default case: pop index, unconditional branch
+                  this->emit_pop_raw(rax); // discard index
                   emit_branch_to_block(func, inst.br.target, inst.dest, inst.type);
                   _in_br_table = false;
                } else {
-                  // Numbered case: compare and conditionally branch
-                  this->emit_cmp(static_cast<int32_t>(_br_table_case), r8d);
-                  if (inst.br.target < _num_blocks && _block_addrs[inst.br.target] != nullptr) {
-                     void* branch = this->emit_branchcc32(base::JE);
-                     base::fix_branch(branch, _block_addrs[inst.br.target]);
-                  } else if (inst.br.target < _num_blocks) {
-                     void* branch = this->emit_branchcc32(base::JE);
-                     auto* fixup = _allocator.alloc<block_fixup>(1);
-                     fixup->branch = branch;
-                     fixup->next = _block_fixups[inst.br.target];
-                     _block_fixups[inst.br.target] = fixup;
-                  }
+                  // Numbered case: compare index at (%rsp) without popping
+                  // cmpl $case, (%rsp)
+                  this->emit_bytes(0x81, 0x3c, 0x24);
+                  this->emit_operand32(_br_table_case);
+                  // If equal, pop index and branch
+                  void* skip = this->emit_branchcc32(base::JNE);
+                  this->emit_pop_raw(rax); // pop index
+                  emit_branch_to_block(func, inst.br.target, inst.dest, inst.type);
+                  base::fix_branch(skip, code);
                   _br_table_case++;
                }
             } else {
@@ -476,11 +474,14 @@ namespace eosio { namespace vm {
             break;
 
          case ir_op::br_table:
-            // Pop index to r8d. Subsequent br instructions are cases 0..N then default.
-            this->emit_pop_raw(rax);
-            this->emit_mov(eax, r8d);
+            // Pop index and store on stack as a "hidden" slot below rbp.
+            // We can't use caller-saved registers (clobbered by calls between
+            // br_table and its cases). Use the stack frame instead.
+            // Push index value — it stays on the stack during case checks.
+            // The br cases will read it without popping.
+            // (index is already on x86 stack from the preceding push)
             _br_table_case = 0;
-            _br_table_size = inst.dest; // number of non-default cases
+            _br_table_size = inst.dest;
             _in_br_table = true;
             break;
 
