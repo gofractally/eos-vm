@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -1549,6 +1550,13 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_and() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            emit_pop_x(X0);
+            emit_mov_imm32(X1, c->value);
+            emit32(0x0A010000); // AND W0, W0, W1
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          // AND W0, W0, W1
@@ -1557,6 +1565,13 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_or() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            emit_pop_x(X0);
+            emit_mov_imm32(X1, c->value);
+            emit32(0x2A010000); // ORR W0, W0, W1
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          // ORR W0, W0, W1
@@ -1565,6 +1580,13 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_xor() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            emit_pop_x(X0);
+            emit_mov_imm32(X1, c->value);
+            emit32(0x4A010000); // EOR W0, W0, W1
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          // EOR W0, W0, W1
@@ -1573,6 +1595,17 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_shl() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            uint32_t shift = c->value & 0x1f;
+            if (shift == 0) { return; } // no-op: value already on stack from const removal
+            emit_pop_x(X0);
+            // UBFM W0, W0, #(32-shift), #(31-shift)  encodes LSL by immediate
+            uint32_t immr = (32 - shift) & 0x1f;
+            uint32_t imms = 31 - shift;
+            emit32(0x53000000 | (immr << 16) | (imms << 10) | (X0 << 5) | X0);
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          // LSLV W0, W0, W1
@@ -1581,6 +1614,15 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_shr_s() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            uint32_t shift = c->value & 0x1f;
+            if (shift == 0) { return; }
+            emit_pop_x(X0);
+            // SBFM W0, W0, #shift, #31  encodes ASR by immediate
+            emit32(0x13007C00 | (shift << 16) | (X0 << 5) | X0);
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          // ASRV W0, W0, W1
@@ -1589,6 +1631,15 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_shr_u() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            uint32_t shift = c->value & 0x1f;
+            if (shift == 0) { return; }
+            emit_pop_x(X0);
+            // UBFM W0, W0, #shift, #31  encodes LSR by immediate
+            emit32(0x53007C00 | (shift << 16) | (X0 << 5) | X0);
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          // LSRV W0, W0, W1
@@ -1597,6 +1648,16 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_rotl() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            uint32_t shift = c->value & 0x1f;
+            if (shift == 0) { return; }
+            emit_pop_x(X0);
+            uint32_t rotr_amount = (32 - shift) & 0x1f;
+            // EXTR W0, W0, W0, #rotr_amount  (encodes ROR Wd, Ws, #amount)
+            emit32(0x13800000 | (X0 << 16) | (rotr_amount << 10) | (X0 << 5) | X0);
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          // ARM64 has RORV but not ROLV. rotl(x,n) = rotr(x, 32-n)
@@ -1608,6 +1669,15 @@ namespace eosio { namespace vm {
       }
 
       void emit_i32_rotr() {
+         if (auto c = try_pop_recent_op<i32_const_op>()) {
+            uint32_t shift = c->value & 0x1f;
+            if (shift == 0) { return; }
+            emit_pop_x(X0);
+            // EXTR W0, W0, W0, #shift  (encodes ROR Wd, Ws, #amount)
+            emit32(0x13800000 | (X0 << 16) | (shift << 10) | (X0 << 5) | X0);
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          // RORV W0, W0, W1
@@ -1761,6 +1831,13 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_and() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            emit_pop_x(X0);
+            emit_mov_imm64(X1, c->value);
+            emit32(0x8A010000); // AND X0, X0, X1
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          emit32(0x8A010000); // AND X0, X0, X1
@@ -1768,6 +1845,13 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_or() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            emit_pop_x(X0);
+            emit_mov_imm64(X1, c->value);
+            emit32(0xAA010000); // ORR X0, X0, X1
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          emit32(0xAA010000); // ORR X0, X0, X1
@@ -1775,6 +1859,13 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_xor() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            emit_pop_x(X0);
+            emit_mov_imm64(X1, c->value);
+            emit32(0xCA010000); // EOR X0, X0, X1
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          emit32(0xCA010000); // EOR X0, X0, X1
@@ -1782,6 +1873,16 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_shl() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            uint32_t shift = c->value & 0x3f;
+            if (shift == 0) { return; }
+            emit_pop_x(X0);
+            uint32_t immr = (64 - shift) & 0x3f;
+            uint32_t imms = 63 - shift;
+            emit32(0xD3400000 | (immr << 16) | (imms << 10) | (X0 << 5) | X0);
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          emit32(0x9AC12000 | (X1 << 16) | (X0 << 5) | X0); // LSLV X0, X0, X1
@@ -1789,6 +1890,14 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_shr_s() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            uint32_t shift = c->value & 0x3f;
+            if (shift == 0) { return; }
+            emit_pop_x(X0);
+            emit32(0x9340FC00 | (shift << 16) | (X0 << 5) | X0);
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          emit32(0x9AC12800 | (X1 << 16) | (X0 << 5) | X0); // ASRV X0, X0, X1
@@ -1796,6 +1905,14 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_shr_u() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            uint32_t shift = c->value & 0x3f;
+            if (shift == 0) { return; }
+            emit_pop_x(X0);
+            emit32(0xD340FC00 | (shift << 16) | (X0 << 5) | X0);
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          emit32(0x9AC12400 | (X1 << 16) | (X0 << 5) | X0); // LSRV X0, X0, X1
@@ -1803,6 +1920,15 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_rotl() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            uint32_t shift = c->value & 0x3f;
+            if (shift == 0) { return; }
+            emit_pop_x(X0);
+            uint32_t rotr_amount = (64 - shift) & 0x3f;
+            emit32(0x93C00000 | (X0 << 16) | (rotr_amount << 10) | (X0 << 5) | X0);
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          // NEG X1, X1
@@ -1813,6 +1939,14 @@ namespace eosio { namespace vm {
       }
 
       void emit_i64_rotr() {
+         if (auto c = try_pop_recent_op<i64_const_op>()) {
+            uint32_t shift = c->value & 0x3f;
+            if (shift == 0) { return; }
+            emit_pop_x(X0);
+            emit32(0x93C00000 | (X0 << 16) | (shift << 10) | (X0 << 5) | X0);
+            emit_push_x(X0);
+            return;
+         }
          emit_pop_x(X1);
          emit_pop_x(X0);
          emit32(0x9AC12C00 | (X1 << 16) | (X0 << 5) | X0); // RORV X0, X0, X1
@@ -3562,6 +3696,41 @@ namespace eosio { namespace vm {
          emit_push_v128(vreg);
       }
 
+      // Encode a 32-bit value as an ARM64 logical immediate (immr:imms fields, N=0).
+      // ARM64 logical immediates are patterns of contiguous 1-bits, rotated left
+      // by immr positions within an element of size 2/4/8/16/32, then replicated.
+      static std::optional<uint32_t> encode_bitmask_imm32(uint32_t value) {
+         if (value == 0 || value == 0xFFFFFFFF) return std::nullopt;
+         for (unsigned size = 2; size <= 32; size <<= 1) {
+            uint32_t mask = (size == 32) ? 0xFFFFFFFF : (1u << size) - 1;
+            uint32_t elem = value & mask;
+            bool repeats = true;
+            for (unsigned i = size; i < 32; i += size) {
+               if (((value >> i) & mask) != elem) { repeats = false; break; }
+            }
+            if (!repeats) continue;
+            unsigned ones = __builtin_popcount(elem);
+            if (ones == 0 || ones == (int)size) continue;
+            uint32_t target = (1u << ones) - 1;
+            for (unsigned r = 0; r < size; r++) {
+               // Rotate elem right by r within element to check if result is ones-at-LSB
+               uint32_t rotated = ((elem >> r) | (elem << (size - r))) & mask;
+               if (rotated == target) {
+                  // immr encodes the right-rotation FROM ones-at-LSB TO the pattern
+                  uint32_t immr = (size - r) % size;
+                  uint32_t imms;
+                  if (size == 2)       imms = 0x3C | (ones - 1);
+                  else if (size == 4)  imms = 0x38 | (ones - 1);
+                  else if (size == 8)  imms = 0x30 | (ones - 1);
+                  else if (size == 16) imms = 0x20 | (ones - 1);
+                  else                 imms = ones - 1;
+                  return (immr << 16) | (imms << 10);
+               }
+            }
+         }
+         return std::nullopt;
+      }
+
       // Move a 32-bit immediate into a W register
       void emit_mov_imm32(uint32_t rd, uint32_t value) {
          if (value == 0) {
@@ -3804,9 +3973,17 @@ namespace eosio { namespace vm {
          // ADD Xrd, X20, W0, UXTW  (zero-extend W0 to 64-bit and add to memory base)
          emit32(0x8B204000 | (X0 << 16) | (X20 << 5) | rd);
          if (offset != 0) {
-            emit_mov_imm32(X8, offset);
-            // ADD Xrd, Xrd, X8 (64-bit add, overflow hits guard pages)
-            emit32(0x8B080000 | (rd << 5) | rd);
+            if (offset <= 4095) {
+               // ADD Xrd, Xrd, #offset
+               emit32(0x91000000 | (offset << 10) | (rd << 5) | rd);
+            } else if (offset <= (4095u << 12) && (offset & 0xFFF) == 0) {
+               // ADD Xrd, Xrd, #offset, LSL #12
+               emit32(0x91400000 | ((offset >> 12) << 10) | (rd << 5) | rd);
+            } else {
+               emit_mov_imm32(X8, offset);
+               // ADD Xrd, Xrd, X8 (64-bit add, overflow hits guard pages)
+               emit32(0x8B080000 | (rd << 5) | rd);
+            }
          }
       }
 
