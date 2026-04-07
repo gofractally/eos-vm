@@ -43,11 +43,11 @@ namespace eosio { namespace vm {
       }
 
       ~ir_writer() {
-         // Pass 1.5: Register allocation (before code region starts)
-         for (uint32_t i = 0; i < _num_functions; ++i) {
-            jit_regalloc::compute_live_intervals(_functions[i], _allocator);
-            jit_regalloc::allocate_registers(_functions[i]);
-         }
+         // Pass 1.5: Register allocation (disabled)
+         // for (uint32_t i = 0; i < _num_functions; ++i) {
+         //    jit_regalloc::compute_live_intervals(_functions[i], _allocator);
+         //    jit_regalloc::allocate_registers(_functions[i]);
+         // }
 
          // Pass 2: Code generation (jit_codegen calls start_code in constructor)
          codegen_t codegen(_allocator, _mod);
@@ -317,19 +317,7 @@ namespace eosio { namespace vm {
       // ──── Calls ────
       void emit_call(const func_type& ft, uint32_t funcnum) {
          if (!_unreachable) {
-            // Emit arg instructions (in reverse order: last arg first)
-            // so they're pushed to stack in the right order for the callee
             uint32_t nparams = ft.param_types.size();
-            for (uint32_t i = 0; i < nparams; ++i) {
-               uint32_t arg_vreg = _func->vstack[_func->vstack_top - nparams + i];
-               ir_inst arg_inst{};
-               arg_inst.opcode = ir_op::arg;
-               arg_inst.type = ft.param_types[i];
-               arg_inst.dest = ir_vreg_none;
-               arg_inst.rr.src1 = arg_vreg;
-               arg_inst.rr.src2 = ir_vreg_none;
-               _func->emit(arg_inst);
-            }
             for (uint32_t i = 0; i < nparams; ++i) {
                _func->vpop();
             }
@@ -969,7 +957,7 @@ namespace eosio { namespace vm {
          inst.opcode = op;
          inst.type = type;
          inst.flags = IR_SIDE_EFFECT;
-         inst.dest = val;  // reuse dest field for value vreg (stores have no result)
+         inst.dest = ir_vreg_none;  // stores have no result vreg
          inst.ri.src1 = addr;
          inst.ri.imm = static_cast<int32_t>(offset);
          _func->emit(inst);

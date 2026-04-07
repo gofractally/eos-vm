@@ -172,6 +172,9 @@ namespace eosio { namespace vm {
          _block_fixups = nullptr;
          _num_blocks = 0;
          _if_fixup_top = 0;
+         _in_br_table = false;
+         _br_table_case = 0;
+         _br_table_size = 0;
       }
 
       void finalize_code() {
