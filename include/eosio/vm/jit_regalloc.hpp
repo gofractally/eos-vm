@@ -255,7 +255,10 @@ namespace eosio { namespace vm {
          bool has_calls = false;
          for (uint32_t i = 0; i < func.inst_count; ++i) {
             if (func.insts[i].opcode == ir_op::call ||
-                func.insts[i].opcode == ir_op::call_indirect) {
+                func.insts[i].opcode == ir_op::call_indirect ||
+                func.insts[i].opcode == ir_op::memory_grow ||
+                func.insts[i].opcode == ir_op::memory_size) {
+               // memory_grow/size call native functions that clobber caller-saved regs
                call_bmp[i / 64] |= uint64_t(1) << (i % 64);
                has_calls = true;
             }

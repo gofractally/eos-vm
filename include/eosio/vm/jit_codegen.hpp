@@ -1233,13 +1233,17 @@ namespace eosio { namespace vm {
       // Emit binop with constant src2: load src1 → rax, apply op with immediate, store.
       // Lambda receives int32_t immediate value.
       template<typename F>
-      bool emit_binop_imm(const ir_inst& inst, F op_imm, bool /*is32*/) {
+      bool emit_binop_imm(const ir_inst& inst, F op_imm, bool is32) {
          if (!_func_def_inst || inst.rr.src2 >= _num_vregs) return false;
          uint32_t def = _func_def_inst[inst.rr.src2];
          if (def >= _func_inst_count) return false;
          auto& di = _func_insts[def];
          if (di.opcode != ir_op::const_i32 && di.opcode != ir_op::const_i64) return false;
          int32_t imm = static_cast<int32_t>(di.imm64);
+         // For i64 operations, the imm32 is sign-extended to 64 bits by the CPU.
+         // Reject if the sign-extended value doesn't match the original i64 constant.
+         if (!is32 && static_cast<int64_t>(imm) != static_cast<int64_t>(di.imm64))
+            return false;
          load_vreg_rax(inst.rr.src1);
          op_imm(imm);
          store_rax_vreg(inst.dest);
