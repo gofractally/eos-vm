@@ -290,8 +290,32 @@ namespace eosio { namespace vm {
                }
             }
 
+            // Register coalescing: if this vreg is defined by a mov,
+            // try to reuse the source's physical register (eliminates the mov).
+            int hint_reg = -1;
+            if (func.def_inst) {
+               uint32_t di = func.def_inst[interval.vreg];
+               if (di < func.inst_count && func.insts[di].opcode == ir_op::mov) {
+                  uint32_t src_vreg = func.insts[di].rr.src1;
+                  if (src_vreg != ir_vreg_none && src_vreg < func.next_vreg) {
+                     // Find source's assigned register (already processed)
+                     for (uint32_t k = 0; k < i; ++k) {
+                        if (func.intervals[k].vreg == src_vreg && func.intervals[k].phys_reg >= 0) {
+                           int sr = func.intervals[k].phys_reg;
+                           if (!reg_used[sr] &&
+                               (!crosses_call || sr >= static_cast<int>(phys_reg::caller_saved_count)))
+                              hint_reg = sr;
+                           break;
+                        }
+                     }
+                  }
+               }
+            }
+
             int assigned = -1;
-            if (crosses_call) {
+            if (hint_reg >= 0) {
+               assigned = hint_reg;
+            } else if (crosses_call) {
                // Must use callee-saved register (survives calls)
                for (int r = static_cast<int>(phys_reg::caller_saved_count); r < NUM_REGS; ++r) {
                   if (!reg_used[r]) {
