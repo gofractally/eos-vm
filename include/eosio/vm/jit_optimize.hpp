@@ -268,18 +268,16 @@ namespace eosio { namespace vm {
                count_use(inst.rr.src1);
                break;
             default:
-               // Generic bridge: reads src1/src2 (rr union) for unhandled ops.
-               // Also count dest as a use for stores (already handled above).
-               count_use(inst.rr.src1);
-               count_use(inst.rr.src2);
+               // All opcode categories with vreg sources are handled above.
+               // Unhandled opcodes (memory_fill, memory_copy, table ops, etc.)
+               // use stack-based args — their vreg uses are counted via ir_op::arg.
                break;
             }
          }
 
          // ── Phase 3: Dead code elimination ──
-         // TODO: re-enable once use-count is verified correct for all opcodes.
-         // The default case in Phase 2 over-counts (safe for fusion) but the
-         // interaction with DCE needs careful auditing.
+         // DISABLED: produces wrong results — use-count doesn't cover all vreg reads.
+         // Needs exhaustive audit of every opcode's vreg field usage.
          if (false) for (uint32_t i = 0; i < n; ++i) {
             auto& inst = func.insts[i];
             if (inst.flags & IR_DEAD) continue;
