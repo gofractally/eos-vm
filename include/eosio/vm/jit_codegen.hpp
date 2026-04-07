@@ -128,7 +128,9 @@ namespace eosio { namespace vm {
                }
             }
             _num_spill_slots = func.num_spill_slots;
-            _use_regalloc = true;
+            // TODO: Enable regalloc once call-crossing intervals are handled.
+            // Currently caller-saved registers get clobbered by calls.
+            _use_regalloc = false;
          } else {
             _use_regalloc = false;
          }
@@ -1093,7 +1095,6 @@ namespace eosio { namespace vm {
       bool emit_ir_inst_reg(ir_function& func, const ir_inst& inst, uint32_t idx) {
          switch (inst.opcode) {
          case ir_op::nop:
-         case ir_op::arg:
          case ir_op::block:
          case ir_op::loop:
          case ir_op::drop:
@@ -1172,14 +1173,38 @@ namespace eosio { namespace vm {
             emit_error_handler(&on_unreachable);
             return true;
 
-         // Calls — push args from vregs to stack, call, get result
+         // arg: push a vreg value to the x86 stack (for upcoming call)
+         case ir_op::arg: {
+            load_vreg_rax(inst.rr.src1);
+            this->emit_push_raw(rax);
+            return true;
+         }
+
+         // call: args already pushed by arg instructions
          case ir_op::call: {
-            // For now, fall back to stack mode for calls
-            // TODO: push args from vregs, call, store result to vreg
-            return false;
+            uint32_t funcnum = inst.call.index;
+            const func_type& ft = _mod.get_function_type(funcnum);
+            if constexpr (!StackLimitIsBytes) {
+               this->emit(base::DECD, ebx);
+               base::fix_branch(this->emit_branchcc32(base::JZ), stack_overflow_handler);
+            }
+            void* branch = emit_call32();
+            register_call(branch, funcnum);
+            // Pop args from stack, push result
+            emit_call_multipop(ft);
+            if constexpr (!StackLimitIsBytes) {
+               this->emit(base::INCD, ebx);
+            }
+            // Store result to dest vreg (result is in rax from the call)
+            if (ft.return_count > 0 && inst.dest != ir_vreg_none) {
+               // Result is on x86 stack after multipop pushed it — pop to vreg
+               this->emit_pop_raw(rax);
+               store_rax_vreg(inst.dest);
+            }
+            return true;
          }
          case ir_op::call_indirect:
-            return false;
+            return false; // TODO
 
          // Global access
          case ir_op::global_get: {
