@@ -2417,19 +2417,49 @@ namespace eosio { namespace vm {
          return true;
       }
 
+      // Try to fold addr = add(base, const) into the load displacement.
+      // Returns the base vreg and updated offset, or the original if no folding.
+      uint32_t try_fold_addr(uint32_t addr_vreg, uint32_t& uoffset) {
+         if (!_func_def_inst || addr_vreg >= _num_vregs) return addr_vreg;
+         uint32_t def = _func_def_inst[addr_vreg];
+         if (def >= _func_inst_count) return addr_vreg;
+         auto& di = _func_insts[def];
+         if (di.opcode != ir_op::i32_add) return addr_vreg;
+         // Only fold if the add result is single-use (this load is the only consumer)
+         if (!_func_use_count || _func_use_count[addr_vreg] != 1) return addr_vreg;
+         // Check both sides for a non-negative constant
+         for (int side = 0; side < 2; ++side) {
+            uint32_t cv = (side == 0) ? di.rr.src2 : di.rr.src1;
+            uint32_t bv = (side == 0) ? di.rr.src1 : di.rr.src2;
+            if (cv >= _num_vregs) continue;
+            uint32_t cd = _func_def_inst[cv];
+            if (cd >= _func_inst_count) continue;
+            auto& ci = _func_insts[cd];
+            if (ci.opcode != ir_op::const_i32) continue;
+            int32_t cval = static_cast<int32_t>(ci.imm64);
+            if (cval < 0) continue;
+            uint64_t combined = static_cast<uint64_t>(uoffset) + static_cast<uint64_t>(static_cast<uint32_t>(cval));
+            if (combined > INT32_MAX) continue;
+            uoffset = static_cast<uint32_t>(combined);
+            return bv;
+         }
+         return addr_vreg;
+      }
+
       // Register-based memory load
       template<class I, class R>
       bool emit_load_reg(const ir_inst& inst, I instr, R reg) {
          uint32_t uoffset = static_cast<uint32_t>(inst.ri.imm);
-         int8_t pr_addr = get_phys(inst.ri.src1);
+         uint32_t addr_vreg = try_fold_addr(inst.ri.src1, uoffset);
+         int8_t pr_addr = get_phys(addr_vreg);
          int8_t pr_dest = get_phys(inst.dest);
 
-         // Use addr physical register as SIB index when available (skip mov to rax)
+         // Use addr physical register as SIB index when available
          general_register64 addr = rax;
          if (pr_addr >= 0 && phys_to_reg64(pr_addr) != rax) {
             addr = phys_to_reg64(pr_addr);
          } else {
-            load_vreg_rax(inst.ri.src1);
+            load_vreg_rax(addr_vreg);
          }
 
          // Emit the load
@@ -2455,15 +2485,16 @@ namespace eosio { namespace vm {
       template<class I, class R>
       bool emit_store_reg(const ir_inst& inst, I instr, R reg) {
          uint32_t uoffset = static_cast<uint32_t>(inst.ri.imm);
-         int8_t pr_addr = get_phys(inst.ri.src1);
+         uint32_t addr_vreg = inst.ri.src1; // stores: no folding (addr may be shared)
+         int8_t pr_addr = get_phys(addr_vreg);
 
          // Use address physical register directly when available (skip load to rcx)
-         load_vreg_rax(inst.dest);   // value always in rax (reg = eax/rax/al/ax)
+         load_vreg_rax(inst.dest);   // value always in rax
          general_register64 addr = rcx;
          if (pr_addr >= 0 && phys_to_reg64(pr_addr) != rax) {
             addr = phys_to_reg64(pr_addr);
          } else {
-            load_vreg_rcx(inst.ri.src1);
+            load_vreg_rcx(addr_vreg);
          }
 
          if (uoffset & 0x80000000u) {
