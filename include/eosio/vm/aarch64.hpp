@@ -455,7 +455,7 @@ namespace eosio { namespace vm {
 
       void emit_block(uint8_t = 0x40) {}
 
-      void* emit_loop() {
+      void* emit_loop(uint8_t = 0x40) {
          invalidate_recent_ops();
          return code;
       }
@@ -493,7 +493,7 @@ namespace eosio { namespace vm {
          return branch;
       }
 
-      void* emit_br_if(uint32_t depth_change, uint8_t rt) {
+      void* emit_br_if(uint32_t depth_change, uint8_t rt, uint32_t = UINT32_MAX) {
          // Try to fold: if last op was a comparison, use B.cond directly
          if (auto cond = try_pop_recent_op<condition_op>()) {
             if (is_simple_multipop(depth_change, rt)) {
@@ -536,7 +536,7 @@ namespace eosio { namespace vm {
 
       // Generate a binary search tree for br_table
       struct br_table_generator {
-         void* emit_case(uint32_t depth_change, uint8_t rt) {
+         void* emit_case(uint32_t depth_change, uint8_t rt, uint32_t = UINT32_MAX) {
             while(true) {
                assert(!stack.empty());
                auto [min, max, label] = stack.back();
@@ -576,7 +576,7 @@ namespace eosio { namespace vm {
                }
             }
          }
-         void* emit_default(uint32_t depth_change, uint8_t rt) {
+         void* emit_default(uint32_t depth_change, uint8_t rt, uint32_t = UINT32_MAX) {
             void* result = emit_case(depth_change, rt);
             assert(stack.empty());
             return result;
