@@ -3549,7 +3549,7 @@ namespace eosio { namespace vm {
          case simd_sub::i8x16_shl: {
             this->emit_pop_raw(rax);
             this->emit_vmovdqu(*rsp, xmm0);
-            this->emit(base::AND_A, 7, eax);
+            this->emit_bytes(0x83, 0xe0, 0x07);  // and $7, %eax
             this->emit_vmovd(eax, xmm2);
             this->emit_const_ones(xmm1);
             this->emit(base::VPSLLD, xmm2, xmm1, xmm1);
@@ -3562,7 +3562,7 @@ namespace eosio { namespace vm {
          case simd_sub::i8x16_shr_s: {
             this->emit_pop_raw(rax);
             this->emit_vmovdqu(*rsp, xmm0);
-            this->emit(base::AND_A, 7, eax);
+            this->emit_bytes(0x83, 0xe0, 0x07);  // and $7, %eax
             this->emit_vmovd(eax, xmm2);
             this->emit_const_ones(xmm3);
             this->emit(base::VPSLLW_c, typename base::imm8{8}, xmm3, xmm3);
@@ -3579,7 +3579,7 @@ namespace eosio { namespace vm {
          case simd_sub::i8x16_shr_u: {
             this->emit_pop_raw(rax);
             this->emit_vmovdqu(*rsp, xmm0);
-            this->emit(base::AND_A, 7, eax);
+            this->emit_bytes(0x83, 0xe0, 0x07);  // and $7, %eax
             this->emit_vmovd(eax, xmm2);
             this->emit_const_ones(xmm1);
             this->emit(base::VPSLLW_c, typename base::imm8{8}, xmm1, xmm1);
@@ -3895,7 +3895,7 @@ namespace eosio { namespace vm {
          case simd_sub::i64x2_shr_s: {
             // (x >> n) | ((0 > x) << (64 - n))
             this->emit_pop_raw(rax);
-            this->emit(base::AND_A, 0x3f, eax);
+            this->emit_bytes(0x83, 0xe0, 0x3f);  // and $0x3f, %eax
             this->emit_mov(64, ecx);
             this->emit_sub(eax, ecx);
             this->emit_vmovdqu(*rsp, xmm0);
@@ -4209,19 +4209,6 @@ namespace eosio { namespace vm {
 
       // ──────── Static callbacks (same as machine_code_writer) ────────
       static native_value call_host_function(Context* context, native_value* stack, uint32_t idx, uint32_t remaining_stack) {
-         { // DEBUG: log host call args
-            auto& mod = context->get_module();
-            const auto& ft = mod.get_function_type(idx);
-            static int hc = 0;
-            if (++hc <= 50) {
-               fprintf(stderr, "  HOST[%d] idx=%u params=%u:", hc, idx, (unsigned)ft.param_types.size());
-               for (uint32_t i = 0; i < ft.param_types.size() && i < 6; ++i) {
-                  uint32_t si = ft.param_types.size() - i - 1;
-                  fprintf(stderr, " 0x%lx", stack[si].i64);
-               }
-               fprintf(stderr, "\n");
-            }
-         }
          native_value result;
          vm::longjmp_on_exception([&]() {
             auto saved = context->_remaining_call_depth;

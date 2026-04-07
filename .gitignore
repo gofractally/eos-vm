@@ -41,3 +41,4 @@ build.tar.gz
 build/
 compile_commands.json
 Testing/build-spec-tests/
+build-simd-test/
