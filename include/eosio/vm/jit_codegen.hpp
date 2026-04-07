@@ -2462,13 +2462,17 @@ namespace eosio { namespace vm {
             load_vreg_rax(addr_vreg);
          }
 
-         // Emit the load
-         if (uoffset & 0x80000000u) {
-            this->emit_mov(uoffset, ecx);
-            this->emit_add(rcx, addr);
-            this->emit(instr, *(addr + rsi + 0), reg);
+         // WASM effective address = i32.add(base, offset), must wrap at 2^32.
+         // When offset != 0, add it using 32-bit arithmetic (wraps and zero-extends)
+         // before using as a 64-bit SIB index. Otherwise the 64-bit SIB displacement
+         // doesn't wrap, causing out-of-bounds accesses on large i32 base values.
+         if (uoffset != 0) {
+            // Move addr to rcx (temp), add offset in 32-bit, use rcx as index
+            if (addr != rcx) this->emit_mov(addr, rcx);
+            this->emit_add(static_cast<int32_t>(uoffset), ecx); // 32-bit wrapping add
+            this->emit(instr, *(rcx + rsi + 0), reg);
          } else {
-            this->emit(instr, *(addr + rsi + uoffset), reg);
+            this->emit(instr, *(addr + rsi + 0), reg);
          }
 
          // Move result from reg (eax/rax) to dest physical register if different
@@ -2503,12 +2507,14 @@ namespace eosio { namespace vm {
             }
          }
 
-         if (uoffset & 0x80000000u) {
-            this->emit_mov(uoffset, edx);
-            this->emit_add(rdx, addr);
-            this->emit(instr, *(addr + rsi + 0), reg);
+         // WASM effective address wraps at 2^32 — add offset in 32-bit.
+         if (uoffset != 0) {
+            // Move addr to rdx, add offset in 32-bit (wraps + zero-extends)
+            this->emit_mov(addr, rdx);
+            this->emit_add(static_cast<int32_t>(uoffset), edx);
+            this->emit(instr, *(rdx + rsi + 0), reg);
          } else {
-            this->emit(instr, *(addr + rsi + uoffset), reg);
+            this->emit(instr, *(addr + rsi + 0), reg);
          }
          return true;
       }
@@ -2960,13 +2966,11 @@ namespace eosio { namespace vm {
       void emit_load(int32_t offset, I instr, R reg) {
          uint32_t uoffset = static_cast<uint32_t>(offset);
          this->emit_pop_raw(rax);  // WASM address
-         if (uoffset & 0x80000000u) {
-            this->emit_mov(uoffset, ecx);
-            this->emit_add(rcx, rax);
-            this->emit(instr, *(rax + rsi + 0), reg);
-         } else {
-            this->emit(instr, *(rax + rsi + uoffset), reg);
+         // WASM effective address wraps at 2^32 — add offset in 32-bit
+         if (uoffset != 0) {
+            this->emit_add(static_cast<int32_t>(uoffset), eax); // 32-bit wrapping add
          }
+         this->emit(instr, *(rax + rsi + 0), reg);
          this->emit_push_raw(rax);
       }
 
@@ -2975,13 +2979,11 @@ namespace eosio { namespace vm {
          uint32_t uoffset = static_cast<uint32_t>(offset);
          this->emit_pop_raw(rax);  // value
          this->emit_pop_raw(rcx);  // WASM address
-         if (uoffset & 0x80000000u) {
-            this->emit_mov(uoffset, edx);
-            this->emit_add(rdx, rcx);
-            this->emit(instr, *(rcx + rsi + 0), reg);
-         } else {
-            this->emit(instr, *(rcx + rsi + uoffset), reg);
+         // WASM effective address wraps at 2^32 — add offset in 32-bit
+         if (uoffset != 0) {
+            this->emit_add(static_cast<int32_t>(uoffset), ecx); // 32-bit wrapping add
          }
+         this->emit(instr, *(rcx + rsi + 0), reg);
       }
 
       // ──────── Call helpers ────────
