@@ -1518,12 +1518,21 @@ namespace eosio { namespace vm {
 
          // Unary
          case ir_op::i32_eqz: {
-            load_vreg_rax(inst.rr.src1);
-            this->emit(base::TEST, eax, eax);
+            int8_t pr_s = get_phys(inst.rr.src1);
+            if (pr_s >= 0)
+               this->emit(base::TEST, phys_to_reg32(pr_s), phys_to_reg32(pr_s));
+            else {
+               load_vreg_rax(inst.rr.src1);
+               this->emit(base::TEST, eax, eax);
+            }
             if ((inst.flags & IR_FUSE_NEXT) && emit_fused_branch(func, idx, base::JZ)) return true;
             this->emit_setcc(base::JZ, al);
             this->emit_bytes(0x0f, 0xb6, 0xc0); // movzbl
-            store_rax_vreg(inst.dest);
+            int8_t pr_d = get_phys(inst.dest);
+            if (pr_d >= 0 && phys_to_reg64(pr_d) != rax)
+               this->emit_mov(rax, phys_to_reg64(pr_d));
+            else
+               store_rax_vreg(inst.dest);
             return true;
          }
 
@@ -1591,10 +1600,11 @@ namespace eosio { namespace vm {
             // Restore callee-saved registers before returning
             if (_callee_saved_used) {
                int32_t save_offset = -static_cast<int32_t>((_body_locals + _num_spill_slots + 1) * 8);
-               if (_callee_saved_used & 1) { this->emit_mov(*(rbp + save_offset), r12); save_offset -= 8; }
-               if (_callee_saved_used & 2) { this->emit_mov(*(rbp + save_offset), r13); save_offset -= 8; }
-               if (_callee_saved_used & 4) { this->emit_mov(*(rbp + save_offset), r14); save_offset -= 8; }
-               if (_callee_saved_used & 8) { this->emit_mov(*(rbp + save_offset), r15); save_offset -= 8; }
+               if (_callee_saved_used & 1)  { this->emit_mov(*(rbp + save_offset), rbx); save_offset -= 8; }
+               if (_callee_saved_used & 2)  { this->emit_mov(*(rbp + save_offset), r12); save_offset -= 8; }
+               if (_callee_saved_used & 4)  { this->emit_mov(*(rbp + save_offset), r13); save_offset -= 8; }
+               if (_callee_saved_used & 8)  { this->emit_mov(*(rbp + save_offset), r14); save_offset -= 8; }
+               if (_callee_saved_used & 16) { this->emit_mov(*(rbp + save_offset), r15); save_offset -= 8; }
             }
             this->emit_mov(rbp, rsp);
             this->emit_pop_raw(rbp);
@@ -1650,14 +1660,24 @@ namespace eosio { namespace vm {
             this->emit_bytes(0xf3, 0x0f, 0xb8, 0xc0); // popcnt eax, eax
             store_rax_vreg(inst.dest);
             return true;
-         case ir_op::i64_eqz:
-            load_vreg_rax(inst.rr.src1);
-            this->emit(base::TEST, rax, rax);
+         case ir_op::i64_eqz: {
+            int8_t pr_s = get_phys(inst.rr.src1);
+            if (pr_s >= 0)
+               this->emit(base::TEST, phys_to_reg64(pr_s), phys_to_reg64(pr_s));
+            else {
+               load_vreg_rax(inst.rr.src1);
+               this->emit(base::TEST, rax, rax);
+            }
             if ((inst.flags & IR_FUSE_NEXT) && emit_fused_branch(func, idx, base::JZ)) return true;
             this->emit_setcc(base::JZ, al);
             this->emit_bytes(0x0f, 0xb6, 0xc0);
-            store_rax_vreg(inst.dest);
+            int8_t pr_d = get_phys(inst.dest);
+            if (pr_d >= 0 && phys_to_reg64(pr_d) != rax)
+               this->emit_mov(rax, phys_to_reg64(pr_d));
+            else
+               store_rax_vreg(inst.dest);
             return true;
+         }
          case ir_op::i64_clz:
             load_vreg_rax(inst.rr.src1);
             this->emit_bytes(0xf3, 0x48, 0x0f, 0xbd, 0xc0);
