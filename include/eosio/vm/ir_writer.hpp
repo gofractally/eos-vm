@@ -43,6 +43,7 @@ namespace eosio { namespace vm {
       }
 
       ~ir_writer() {
+         fprintf(stderr,"funcs=%u\n",_num_functions);for(uint32_t fi=0;fi<_num_functions;++fi){auto&f=_functions[fi];bool ops[256]={};for(uint32_t i=0;i<f.inst_count;++i)ops[(uint8_t)f.insts[i].opcode]=true;fprintf(stderr,"f%u:",fi);for(int o=0;o<256;o++)if(ops[o])fprintf(stderr," %d",o);fprintf(stderr,"\n");}
          // Pass 1.5: Register allocation (only if codegen will use it)
          // Skip for large modules to avoid exhausting allocator
          // TODO: compute only for functions that will use regalloc
@@ -884,10 +885,31 @@ namespace eosio { namespace vm {
 #undef SIMD_RELOP
 
       // ──── Bulk memory ────
-      void emit_memory_init(std::uint32_t s) { ir_bulk_mem3(); }
+      void emit_memory_init(std::uint32_t s) {
+         ir_bulk_mem3();
+         if (!_unreachable) {
+            ir_inst inst{}; inst.opcode = ir_op::memory_init;
+            inst.flags = IR_SIDE_EFFECT; inst.dest = ir_vreg_none;
+            _func->emit(inst);
+         }
+      }
       void emit_data_drop(std::uint32_t s) { }
-      void emit_memory_copy() { ir_bulk_mem3(); }
-      void emit_memory_fill() { ir_bulk_mem3(); }
+      void emit_memory_copy() {
+         ir_bulk_mem3(); // vpop the 3 args from vstack
+         if (!_unreachable) {
+            ir_inst inst{}; inst.opcode = ir_op::memory_copy;
+            inst.flags = IR_SIDE_EFFECT; inst.dest = ir_vreg_none;
+            _func->emit(inst);
+         }
+      }
+      void emit_memory_fill() {
+         ir_bulk_mem3();
+         if (!_unreachable) {
+            ir_inst inst{}; inst.opcode = ir_op::memory_fill;
+            inst.flags = IR_SIDE_EFFECT; inst.dest = ir_vreg_none;
+            _func->emit(inst);
+         }
+      }
       void emit_table_init(std::uint32_t s) { ir_bulk_mem3(); }
       void emit_elem_drop(std::uint32_t s) { }
       void emit_table_copy() { ir_bulk_mem3(); }

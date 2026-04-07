@@ -685,7 +685,7 @@ namespace eosio { namespace vm {
             this->emit_pop_raw(rcx);  // val2
             this->emit_pop_raw(rdx);  // val1
             this->emit(base::TEST, eax, eax);
-            this->emit_bytes(0x0f, 0x44, 0xd1); // cmovz %ecx, %edx
+            this->emit_bytes(0x48, 0x0f, 0x44, 0xd1); // cmovz %rcx, %rdx (64-bit)
             this->emit_push_raw(rdx);
             break;
 
@@ -1080,6 +1080,61 @@ namespace eosio { namespace vm {
             // cvtss2sd (%rsp), %xmm0; movsd %xmm0, (%rsp)
             this->emit_bytes(0xf3, 0x0f, 0x5a, 0x04, 0x24);
             this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
+            break;
+
+         // Bulk memory operations
+         case ir_op::memory_fill:
+            // stack: [dest, val, count] with count on top
+            this->emit_pop_raw(rcx);  // count
+            this->emit_mov(rdi, r8);  // save rdi
+            this->emit_pop_raw(rax);  // value (al used by stosb)
+            this->emit_pop_raw(rdi);  // dest addr
+            this->emit_add(rsi, rdi); // convert to native addr
+            this->emit_bytes(0xf3, 0xaa); // rep stosb
+            this->emit_mov(r8, rdi);  // restore rdi
+            break;
+
+         case ir_op::memory_copy:
+            // stack: [dest, src, count] with count on top
+            this->emit_pop_raw(rcx);  // count
+            this->emit_mov(rsi, r8);  // save rsi (linear memory base)
+            this->emit_mov(rdi, r9);  // save rdi (context)
+            this->emit_pop_raw(rsi);  // src addr
+            this->emit_pop_raw(rdi);  // dest addr
+            this->emit_add(r8, rsi);  // convert to native
+            this->emit_add(r8, rdi);
+            // Handle overlapping: if dest > src, copy backward
+            this->emit_mov(rdi, rax);
+            this->emit_sub(rsi, rax);
+            {
+               void* fwd = this->emit_branchcc32(base::JBE);
+               this->emit_cmp(rcx, rax);
+               void* no_overlap = this->emit_branchcc32(base::JAE);
+               // Overlapping backward: std, rep movsb, cld
+               this->emit_add(rcx, rsi);
+               this->emit(base::DEC, rsi);
+               this->emit_add(rcx, rdi);
+               this->emit(base::DEC, rdi);
+               this->emit_bytes(0xfd); // std
+               this->emit_bytes(0xf3, 0xa4); // rep movsb
+               this->emit_bytes(0xfc); // cld
+               void* done = emit_jmp32();
+               base::fix_branch(fwd, code);
+               base::fix_branch(no_overlap, code);
+               // Forward copy
+               this->emit_bytes(0xf3, 0xa4); // rep movsb
+               base::fix_branch(done, code);
+            }
+            this->emit_mov(r8, rsi);  // restore rsi
+            this->emit_mov(r9, rdi);  // restore rdi
+            break;
+
+         case ir_op::memory_init:
+         case ir_op::data_drop:
+         case ir_op::table_init:
+         case ir_op::elem_drop:
+         case ir_op::table_copy:
+            // TODO: implement bulk memory/table ops
             break;
 
          default:
