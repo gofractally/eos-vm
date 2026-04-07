@@ -2488,13 +2488,19 @@ namespace eosio { namespace vm {
          uint32_t addr_vreg = inst.ri.src1; // stores: no folding (addr may be shared)
          int8_t pr_addr = get_phys(addr_vreg);
 
-         // Use address physical register directly when available (skip load to rcx)
-         load_vreg_rax(inst.dest);   // value always in rax
+         // If addr is in rax, load it to rcx BEFORE loading value into rax
+         // (otherwise loading value to rax would destroy the address)
          general_register64 addr = rcx;
-         if (pr_addr >= 0 && phys_to_reg64(pr_addr) != rax) {
-            addr = phys_to_reg64(pr_addr);
+         if (pr_addr >= 0 && phys_to_reg64(pr_addr) == rax) {
+            load_vreg_rcx(addr_vreg);  // save addr to rcx before rax is overwritten
+            load_vreg_rax(inst.dest);  // then load value to rax
          } else {
-            load_vreg_rcx(addr_vreg);
+            load_vreg_rax(inst.dest);  // value to rax
+            if (pr_addr >= 0) {
+               addr = phys_to_reg64(pr_addr);
+            } else {
+               load_vreg_rcx(addr_vreg);
+            }
          }
 
          if (uoffset & 0x80000000u) {
