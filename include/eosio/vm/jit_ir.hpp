@@ -27,9 +27,12 @@ namespace eosio { namespace vm {
          : _alloc(alloc), _watermark(alloc._offset) {}
 
       ~jit_scratch_allocator() {
-         // Reclaim all scratch allocations by resetting to the watermark.
-         _alloc._offset = _watermark;
+         if (_armed) _alloc._offset = _watermark;
       }
+
+      // Prevent destructor from restoring the watermark.
+      // Call before _allocator.reset() to avoid undoing the reset.
+      void disarm() { _armed = false; }
 
       jit_scratch_allocator(const jit_scratch_allocator&) = delete;
       jit_scratch_allocator& operator=(const jit_scratch_allocator&) = delete;
@@ -44,6 +47,7 @@ namespace eosio { namespace vm {
     private:
       growable_allocator& _alloc;
       std::size_t _watermark;
+      bool _armed = true;
    };
 
    // IR opcodes. These mirror WASM operations but in register-transfer form.

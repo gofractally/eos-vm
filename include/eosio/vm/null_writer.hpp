@@ -16,8 +16,8 @@ class null_writer {
    label_t emit_loop() { return {}; }
    branch_t emit_if(uint8_t = 0x40) { return {}; }
    branch_t emit_else(branch_t /*if_loc*/) { return {}; }
-   branch_t emit_br(uint32_t /*depth_change*/, uint8_t /*rt*/) { return {}; }
-   branch_t emit_br_if(uint32_t /*depth_change*/, uint8_t /*rt*/) { return {}; }
+   branch_t emit_br(uint32_t /*depth_change*/, uint8_t /*rt*/, uint32_t /*label*/ = 0) { return {}; }
+   branch_t emit_br_if(uint32_t /*depth_change*/, uint8_t /*rt*/, uint32_t /*label*/ = 0) { return {}; }
    struct br_table_parser {
       branch_t emit_case(uint32_t /*depth_change*/, uint8_t /*rt*/) { return {}; }
       branch_t emit_default(uint32_t /*depth_change*/, uint8_t /*rt*/) { return {}; }

@@ -61,8 +61,10 @@ namespace eosio { namespace vm {
             codegen.compile_function(_functions[i], _mod.code[i]);
          }
          codegen.finalize_code();
-         // Reset code allocator offset to reclaim pre-code memory (module data).
+         // Disarm the scratch allocator so its destructor won't restore the
+         // watermark after we reset. Then reset to reclaim all pre-code memory.
          // The native code has been copied to the jit_allocator by end_code<true>().
+         _scratch.disarm();
          _allocator.reset();
       }
 

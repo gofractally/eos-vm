@@ -299,16 +299,13 @@ namespace eosio { namespace vm {
          _callee_saved_used = func.callee_saved_used;
          _callee_saved_count = __builtin_popcount(_callee_saved_used);
 
-         // Allocate and zero-initialize: body locals + spill slots + callee-saved saves.
-         // Uses sub+rep stosq instead of a push loop to emit constant-size code
-         // regardless of local count (~20 bytes vs 2*N bytes).
+         // Allocate and zero-initialize: body locals + spill slots + callee-saved saves
          uint32_t total_slots = body_locals + _num_spill_slots + _callee_saved_count;
          if (total_slots > 0) {
-            this->emit_sub(static_cast<uint32_t>(total_slots * 8), rsp);  // sub rsp, N*8
-            this->emit_mov(rsp, rdi);                                      // rdi = dest (stosq target)
-            this->emit_xor(eax, eax);                                      // eax = 0 (stosq value)
-            this->emit_mov(static_cast<uint32_t>(total_slots), ecx);       // ecx = count
-            this->emit_bytes(0xF3, 0x48, 0xAB);                            // rep stosq
+            this->emit_xor(eax, eax);
+            for (uint32_t i = 0; i < total_slots; ++i) {
+               this->emit_push_raw(rax);
+            }
          }
 
          // Save callee-saved registers to the frame (after locals and spill slots)

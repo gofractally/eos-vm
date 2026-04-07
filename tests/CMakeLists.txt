@@ -175,6 +175,9 @@ target_link_libraries(jit2_load_test eos-vm)
 add_executable(compile_time ${CMAKE_CURRENT_SOURCE_DIR}/../tests/compile_time.cpp)
 target_link_libraries(compile_time eos-vm)
 
+add_executable(sha_verify ${CMAKE_CURRENT_SOURCE_DIR}/../tests/sha_verify.cpp)
+target_link_libraries(sha_verify eos-vm)
+
 # ##############
 # disable catch2 from installing it's own signal handlers
 # ##############
