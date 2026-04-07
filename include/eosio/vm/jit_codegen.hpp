@@ -129,7 +129,7 @@ namespace eosio { namespace vm {
                }
             }
             _num_spill_slots = func.num_spill_slots;
-            _use_regalloc = false; // Test stack mode for ECDSA
+            _use_regalloc = true;
          } else {
             _use_regalloc = false;
          }
@@ -457,6 +457,12 @@ namespace eosio { namespace vm {
          case ir_op::arg:
             break;
 
+         // ── Mov (phi-node merge at control flow edges) ──
+         case ir_op::mov:
+            // In stack mode: pop src, push to dest position (nop since it's same slot)
+            // The src is on top of stack and dest replaces it — no code needed.
+            break;
+
          // The IR doesn't emit explicit block/loop/if/else/end instructions.
          // Block boundaries are tracked via ir_basic_block structures.
          // The jit_codegen marks block addresses when it sees the first
@@ -487,6 +493,8 @@ namespace eosio { namespace vm {
                fixup->branch = jmp;
                fixup->next = _block_fixups[target_block];
                _block_fixups[target_block] = fixup;
+               // Clear is_if so mark_block_end won't double-pop the if_fixup
+               func.blocks[target_block].is_if = 0;
             }
             // Patch the if_ branch to point HERE (else start)
             pop_if_fixup_to(code);
@@ -1181,6 +1189,30 @@ namespace eosio { namespace vm {
          case ir_op::drop:
             return true;
 
+         // Mov (phi-node merge): dest = src1
+         case ir_op::mov: {
+            int8_t pr_dest = get_phys(inst.dest);
+            int8_t pr_src  = get_phys(inst.rr.src1);
+            if (pr_dest >= 0 && pr_src >= 0) {
+               if (pr_dest != pr_src) {
+                  this->emit_mov(phys_to_reg64(pr_src), phys_to_reg64(pr_dest));
+               }
+            } else if (pr_dest >= 0) {
+               // src is spilled, dest is in register
+               load_vreg_rax(inst.rr.src1);
+               this->emit_mov(rax, phys_to_reg64(pr_dest));
+            } else if (pr_src >= 0) {
+               // src is in register, dest is spilled
+               this->emit_mov(phys_to_reg64(pr_src), rax);
+               store_rax_vreg(inst.dest);
+            } else {
+               // Both spilled
+               load_vreg_rax(inst.rr.src1);
+               store_rax_vreg(inst.dest);
+            }
+            return true;
+         }
+
          // Control flow — uses vregs for conditions, block fixups for branches
          case ir_op::if_: {
             load_vreg_rax(inst.br.src1);
@@ -1197,11 +1229,14 @@ namespace eosio { namespace vm {
                fixup->branch = jmp;
                fixup->next = _block_fixups[target_block];
                _block_fixups[target_block] = fixup;
+               // Clear is_if so mark_block_end won't double-pop the if_fixup
+               func.blocks[target_block].is_if = 0;
             }
             pop_if_fixup_to(code);
             return true;
          }
          case ir_op::br: {
+            // Result value transfer is handled by mov instructions emitted by ir_writer
             if (_in_br_table) {
                bool is_default = (_br_table_case >= _br_table_size);
                if (is_default) {
@@ -1448,15 +1483,14 @@ namespace eosio { namespace vm {
             return true;
          }
 
-         // Memory loads (addr in src1, offset in imm)
+         // Memory loads
          case ir_op::i32_load: return emit_load_reg(inst, base::MOV_A, eax);
          case ir_op::i64_load: return emit_load_reg(inst, base::MOV_A, rax);
          case ir_op::i32_load8_u: return emit_load_reg(inst, base::MOVZXB, eax);
          case ir_op::i32_load16_u: return emit_load_reg(inst, base::MOVZXW, eax);
          case ir_op::i32_load8_s: return emit_load_reg(inst, base::MOVSXB, eax);
          case ir_op::i32_load16_s: return emit_load_reg(inst, base::MOVSXW, eax);
-
-         // Memory stores (addr in src1, value in src2... wait, IR uses ri.src1=addr, stores val separately)
+         // Memory stores
          case ir_op::i32_store: return emit_store_reg(inst, base::MOV_B, eax);
          case ir_op::i64_store: return emit_store_reg(inst, base::MOV_B, rax);
          case ir_op::i32_store8: return emit_store_reg(inst, base::MOVB_B, al);
@@ -1466,6 +1500,14 @@ namespace eosio { namespace vm {
          case ir_op::return_: {
             if (inst.rr.src1 != ir_vreg_none) {
                load_vreg_rax(inst.rr.src1);
+            }
+            // Restore callee-saved registers before returning
+            if (_callee_saved_used) {
+               int32_t save_offset = -static_cast<int32_t>((_body_locals + _num_spill_slots + 1) * 8);
+               if (_callee_saved_used & 1) { this->emit_mov(*(rbp + save_offset), r12); save_offset -= 8; }
+               if (_callee_saved_used & 2) { this->emit_mov(*(rbp + save_offset), r13); save_offset -= 8; }
+               if (_callee_saved_used & 4) { this->emit_mov(*(rbp + save_offset), r14); save_offset -= 8; }
+               if (_callee_saved_used & 8) { this->emit_mov(*(rbp + save_offset), r15); save_offset -= 8; }
             }
             this->emit_mov(rbp, rsp);
             this->emit_pop_raw(rbp);
@@ -1593,13 +1635,16 @@ namespace eosio { namespace vm {
             store_rax_vreg(inst.dest);
             return true;
 
-         // Select
+         // Select: dest = cond ? val1 : val2  (3 source vregs packed in sel union)
          case ir_op::select: {
-            // select: cond=src2 (in rr union it's stored differently)
-            // Actually in our IR: select has dest, src1=val1, src2=val2
-            // and the condition was a separate vpop... hmm
-            // Fall back for select — it has 3 operands which our IR doesn't capture well
-            return false;
+            load_vreg_rax(inst.sel.cond);  // condition
+            this->emit_mov(rax, rdx);
+            load_vreg_rcx(inst.sel.val2);  // val2
+            load_vreg_rax(inst.sel.val1);  // val1
+            this->emit(base::TEST, edx, edx);
+            this->emit_bytes(0x48, 0x0f, 0x44, 0xc1); // cmovz rcx, rax
+            store_rax_vreg(inst.dest);
+            return true;
          }
 
          // i32 sign extensions
@@ -1662,11 +1707,104 @@ namespace eosio { namespace vm {
             return true;
          }
 
+         // ── Bulk memory ops (args already pushed by arg instructions) ──
+         case ir_op::memory_fill: {
+            // Args on stack: [dest][val][count] with count on top
+            // Use stack-based save for rdi instead of r8 (r8 may hold a vreg)
+            this->emit_pop_raw(rcx);  // count
+            this->emit_pop_raw(rax);  // value (al used by stosb)
+            this->emit_pop_raw(rdx);  // dest addr
+            this->emit_push_raw(rdi); // save rdi on stack
+            this->emit_mov(edx, edi); // dest addr to edi
+            this->emit_add(rsi, rdi); // convert to native addr
+            this->emit_bytes(0xf3, 0xaa); // rep stosb
+            this->emit_pop_raw(rdi);  // restore rdi
+            return true;
+         }
+         case ir_op::memory_copy: {
+            // Args on stack: [dest][src][count] with count on top
+            this->emit_pop_raw(rcx);  // count
+            this->emit_pop_raw(rax);  // src addr
+            this->emit_pop_raw(rdx);  // dest addr
+            // Save rsi, rdi on stack (don't use r8/r9 — may hold vregs)
+            this->emit_push_raw(rsi);
+            this->emit_push_raw(rdi);
+            this->emit_mov(*(rsp + 8), rsi); // recover saved rsi (linear memory base)
+            this->emit_add(rsi, rax); // src = rsi + src_addr (rsi = linear memory base)
+            this->emit_add(rsi, rdx); // dest = rsi + dest_addr
+            this->emit_mov(rax, rsi); // native src addr
+            this->emit_mov(rdx, rdi); // native dest addr
+            // Handle overlapping
+            this->emit_mov(rdi, rax);
+            this->emit_sub(rsi, rax); // rax = dest - src
+            {
+               void* fwd = this->emit_branchcc32(base::JBE);
+               this->emit_cmp(rcx, rax);
+               void* no_overlap = this->emit_branchcc32(base::JAE);
+               // Overlapping backward
+               this->emit_add(rcx, rsi);
+               this->emit(base::DEC, rsi);
+               this->emit_add(rcx, rdi);
+               this->emit(base::DEC, rdi);
+               this->emit_bytes(0xfd); // std
+               this->emit_bytes(0xf3, 0xa4); // rep movsb
+               this->emit_bytes(0xfc); // cld
+               void* done = emit_jmp32();
+               base::fix_branch(fwd, code);
+               base::fix_branch(no_overlap, code);
+               this->emit_bytes(0xf3, 0xa4); // rep movsb
+               base::fix_branch(done, code);
+            }
+            this->emit_pop_raw(rdi);  // restore rdi
+            this->emit_pop_raw(rsi);  // restore rsi
+            return true;
+         }
+         case ir_op::memory_init:
+         case ir_op::data_drop:
+         case ir_op::table_init:
+         case ir_op::elem_drop:
+         case ir_op::table_copy:
+            // Not yet implemented — args on stack, just discard
+            return true;
+
          default:
-            // Unknown op — emit unreachable trap so execution stops immediately
-            fprintf(stderr, "REGALLOC: unhandled op %u at inst %u\n", (unsigned)inst.opcode, idx);
-            emit_error_handler(&on_unreachable);
-            return true; // don't fall back to stack mode
+            // Unhandled in register mode — bridge to stack mode:
+            // push source vregs, run stack-mode handler (uses push/pop), store result.
+            // Stack-mode handlers only clobber rax/rcx/rdx/rsi/rdi (not r8-r15).
+            {
+               bool is_store = (inst.opcode >= ir_op::i32_store && inst.opcode <= ir_op::i64_store32);
+               bool is_binary = (inst.opcode >= ir_op::i32_add && inst.opcode <= ir_op::f64_copysign);
+               bool is_unary = (inst.opcode >= ir_op::i32_eqz && inst.opcode <= ir_op::i32_popcnt)
+                            || (inst.opcode >= ir_op::i64_eqz && inst.opcode <= ir_op::i64_popcnt)
+                            || (inst.opcode >= ir_op::i32_wrap_i64 && inst.opcode <= ir_op::i64_trunc_sat_f64_u)
+                            || (inst.opcode >= ir_op::i32_extend8_s && inst.opcode <= ir_op::i64_extend32_s)
+                            || (inst.opcode >= ir_op::f32_abs && inst.opcode <= ir_op::f64_sqrt);
+               bool is_load = (inst.opcode >= ir_op::i32_load && inst.opcode <= ir_op::i64_load32_u);
+
+               if (is_binary) {
+                  load_vreg_rax(inst.rr.src1);
+                  this->emit_push_raw(rax);
+                  load_vreg_rax(inst.rr.src2);
+                  this->emit_push_raw(rax);
+               } else if (is_unary) {
+                  load_vreg_rax(inst.rr.src1);
+                  this->emit_push_raw(rax);
+               } else if (is_load) {
+                  load_vreg_rax(inst.ri.src1);
+                  this->emit_push_raw(rax);
+               } else if (is_store) {
+                  load_vreg_rax(inst.ri.src1);
+                  this->emit_push_raw(rax);
+                  load_vreg_rax(inst.dest);
+                  this->emit_push_raw(rax);
+               }
+               emit_ir_inst(func, inst, idx);
+               if (!is_store && inst.dest != ir_vreg_none) {
+                  this->emit_pop_raw(rax);
+                  store_rax_vreg(inst.dest);
+               }
+               return true;
+            }
          }
       }
 
@@ -1718,6 +1856,7 @@ namespace eosio { namespace vm {
 
       // Register-based shift with constant folding
       bool emit_shift_reg(ir_function& func, const ir_inst& inst, uint8_t reg_field, bool is32) {
+         // Check for constant shift amount
          // Check for constant shift amount
          uint32_t src2_vreg = inst.rr.src2;
          if (src2_vreg != ir_vreg_none) {
@@ -1969,10 +2108,6 @@ namespace eosio { namespace vm {
          } else if (_spill_map && vreg < _num_vregs && _spill_map[vreg] >= 0) {
             int32_t off = get_spill_offset(_spill_map[vreg]);
             this->emit_mov(*(rbp + off), rax);
-         } else if (_use_regalloc) {
-            // Vreg has no register and no spill slot — shouldn't happen
-            // This indicates a bug in live interval computation
-            fprintf(stderr, "BUG: vreg %u has no register and no spill slot!\n", vreg);
          }
       }
 
@@ -2393,6 +2528,7 @@ namespace eosio { namespace vm {
       static int32_t current_memory(Context* context) { return context->current_linear_memory(); }
       static int32_t grow_memory(Context* context, int32_t pages) { return context->grow_linear_memory(pages); }
       static void on_memory_error() { throw_<wasm_memory_exception>("wasm memory out-of-bounds"); }
+
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>("unreachable"); }
       static void on_fp_error() { vm::throw_<wasm_interpreter_exception>("floating point error"); }
       static void on_call_indirect_error() { vm::throw_<wasm_interpreter_exception>("call_indirect out of range"); }

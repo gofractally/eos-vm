@@ -32,9 +32,9 @@ namespace eosio { namespace vm {
       uint32_t* emit_return(uint32_t depth_change, uint8_t rt) {
          return emit_br(depth_change, rt);
       }
-      void emit_block() {}
+      void emit_block(uint8_t = 0x40) {}
       uint32_t emit_loop() { return op_index; }
-      uint32_t* emit_if() { 
+      uint32_t* emit_if(uint8_t = 0x40) { 
          if_t& instr = append_instr(if_t{});
          return &instr.pc;
       }
@@ -43,7 +43,7 @@ namespace eosio { namespace vm {
          *if_loc = _base_offset + op_index;
          return &else_.pc;
       }
-      uint32_t * emit_br(uint32_t depth_change, uint8_t rt) {
+      uint32_t * emit_br(uint32_t depth_change, uint8_t rt, uint32_t = UINT32_MAX) {
          auto& instr = append_instr(br_t{});
          instr.data = encode_depth_change(depth_change, rt);
          return &instr.pc;

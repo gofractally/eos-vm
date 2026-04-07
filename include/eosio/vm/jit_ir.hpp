@@ -121,7 +121,7 @@ namespace eosio { namespace vm {
       IR_DEAD         = 1 << 2,
    };
 
-   // 16-byte IR instruction. POD type — no constructor/destructor.
+   // IR instruction. POD type — no constructor/destructor.
    struct ir_inst {
       ir_op    opcode;
       uint8_t  type;
@@ -136,10 +136,10 @@ namespace eosio { namespace vm {
          struct { uint32_t target; uint32_t src1; } br;
          struct { uint32_t index; uint32_t src1; }  call;
          struct { uint32_t index; uint32_t src1; }  local;
+         struct { uint16_t val1; uint16_t val2; uint16_t cond; uint16_t _pad; } sel;
          v128_t   immv128;
       };
    };
-   static_assert(sizeof(ir_inst) >= 16);
    static_assert(std::is_trivially_copyable_v<ir_inst>);
    static_assert(std::is_trivially_destructible_v<ir_inst>);
 
@@ -176,6 +176,7 @@ namespace eosio { namespace vm {
       uint8_t  is_function;
       uint8_t  _pad;
       uint32_t merge_block;
+      uint32_t merge_vreg;  // For if/else with result: vreg that both branches write to
    };
    static_assert(std::is_trivially_copyable_v<ir_control_entry>);
 

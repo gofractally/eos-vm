@@ -114,8 +114,9 @@ namespace eosio { namespace vm {
             case ir_op::f64_eq: case ir_op::f64_ne: case ir_op::f64_lt: case ir_op::f64_gt:
             case ir_op::f64_le: case ir_op::f64_ge:
             case ir_op::select:
-               use_vreg(inst.rr.src1);
-               use_vreg(inst.rr.src2);
+               use_vreg(inst.sel.val1);
+               use_vreg(inst.sel.val2);
+               use_vreg(inst.sel.cond);
                break;
 
             // Unary ops: only src1 is a vreg
@@ -198,6 +199,11 @@ namespace eosio { namespace vm {
 
             // br_table: rr.src1 is the index vreg
             case ir_op::br_table:
+               use_vreg(inst.rr.src1);
+               break;
+
+            // Mov: src1 is a vreg
+            case ir_op::mov:
                use_vreg(inst.rr.src1);
                break;
 
@@ -313,10 +319,6 @@ namespace eosio { namespace vm {
             }
             if (live > max_live) max_live = live;
          }
-         fprintf(stderr, "regalloc func %u: %u vregs, %u in regs, %u spilled, max_live=%u\n",
-                 func.func_index, func.interval_count,
-                 func.interval_count - next_spill_slot, next_spill_slot, max_live);
-
          return next_spill_slot;
       }
    };

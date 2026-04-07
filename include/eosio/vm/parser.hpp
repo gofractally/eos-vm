@@ -959,7 +959,7 @@ namespace eosio { namespace vm {
                                 expected_result == types::pseudo, wasm_parse_exception,
                                 "Invalid type code in block");
                   pc_stack.push_back({op_stack.depth(), expected_result, expected_result, false, std::vector<branch_t>{}});
-                  code_writer.emit_block();
+                  code_writer.emit_block(expected_result);
                   op_stack.push_scope();
                   _nested_checker.on_control(_options);
                } break;
@@ -987,7 +987,7 @@ namespace eosio { namespace vm {
                                 (expected_result == types::v128 && detail::get_enable_simd(_options)) ||
                                 expected_result == types::pseudo, wasm_parse_exception,
                                 "Invalid type code in if");
-                  auto branch = code_writer.emit_if();
+                  auto branch = code_writer.emit_if(expected_result);
                   op_stack.pop(types::i32);
                   pc_stack.push_back({op_stack.depth(), expected_result, expected_result, true, std::vector{branch}});
                   op_stack.push_scope();
@@ -1014,7 +1014,7 @@ namespace eosio { namespace vm {
                   check_in_bounds();
                   uint32_t label = parse_varuint32(code);
                   auto [depth_change,rt] = compute_depth_change(label);
-                  auto branch = code_writer.emit_br(depth_change, rt);
+                  auto branch = code_writer.emit_br(depth_change, rt, label);
                   handle_branch_target(label, branch);
                   op_stack.start_unreachable();
                } break;

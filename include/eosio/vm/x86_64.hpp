@@ -288,9 +288,9 @@ namespace eosio { namespace vm {
          // Return is defined as equivalent to branching to the outermost label
          return emit_br(depth_change, rt);
       }
-      void emit_block() {}
+      void emit_block(uint8_t = 0x40) {}
       void* emit_loop() { set_branch_target(); return code; }
-      void* emit_if() {
+      void* emit_if(uint8_t = 0x40) {
          if (auto cond = try_pop_recent_op<condition_op>()) {
             COUNT_INSTR_NO_FLAGS();
             return emit_branchcc32(reverse_condition(cond->branchop));
@@ -310,7 +310,7 @@ namespace eosio { namespace vm {
          set_branch_target();
          return result;
       }
-      void* emit_br(uint32_t depth_change, uint8_t rt) {
+      void* emit_br(uint32_t depth_change, uint8_t rt, uint32_t = UINT32_MAX) {
          COUNT_INSTR();
          auto icount = variable_size_instr(5, 22);
          // add RSP, depth_change * 8

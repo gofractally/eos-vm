@@ -43,19 +43,10 @@ namespace eosio { namespace vm {
       }
 
       ~ir_writer() {
-         fprintf(stderr,"funcs=%u\n",_num_functions);for(uint32_t fi=0;fi<_num_functions;++fi){auto&f=_functions[fi];bool ops[256]={};for(uint32_t i=0;i<f.inst_count;++i)ops[(uint8_t)f.insts[i].opcode]=true;fprintf(stderr,"f%u:",fi);for(int o=0;o<256;o++)if(ops[o])fprintf(stderr," %d",o);fprintf(stderr,"\n");}
-         // Pass 1.5: Register allocation (only if codegen will use it)
-         // Skip for large modules to avoid exhausting allocator
-         // TODO: compute only for functions that will use regalloc
-         bool do_regalloc = true;
-         uint32_t total_vregs = 0;
-         for (uint32_t i = 0; i < _num_functions; ++i) total_vregs += _functions[i].next_vreg;
-         if (total_vregs > 10000) do_regalloc = false; // too large
-         if (do_regalloc) {
-            for (uint32_t i = 0; i < _num_functions; ++i) {
-               jit_regalloc::compute_live_intervals(_functions[i], _allocator);
-               jit_regalloc::allocate_registers(_functions[i]);
-            }
+         // Pass 1.5: Register allocation
+         for (uint32_t i = 0; i < _num_functions; ++i) {
+            jit_regalloc::compute_live_intervals(_functions[i], _allocator);
+            jit_regalloc::allocate_registers(_functions[i]);
          }
 
          // Pass 2: Code generation (jit_codegen calls start_code in constructor)
@@ -100,6 +91,7 @@ namespace eosio { namespace vm {
          entry.result_type = ft.return_count > 0 ? static_cast<uint8_t>(ft.return_type) : types::pseudo;
          entry.is_loop = 0;
          entry.is_function = 1;
+         entry.merge_vreg = ir_vreg_none;
          _func->ctrl_push(entry);
          _func->start_block(entry.block_idx);
       }
@@ -134,7 +126,25 @@ namespace eosio { namespace vm {
             auto entry = _func->ctrl_pop();
             block_idx = entry.block_idx;
             _func->end_block(entry.block_idx);
-            if (_unreachable) {
+
+            // If we have a merge vreg from an if/else with result type,
+            // emit a mov from the else-branch result to the merge vreg.
+            if (entry.merge_vreg != ir_vreg_none) {
+               if (!_unreachable && entry.result_type != types::pseudo &&
+                   _func->vstack_depth() > entry.stack_depth) {
+                  uint32_t else_result = _func->vpop();
+                  ir_inst mov{};
+                  mov.opcode = ir_op::mov;
+                  mov.type = entry.result_type;
+                  mov.flags = IR_NONE;
+                  mov.dest = entry.merge_vreg;
+                  mov.rr.src1 = else_result;
+                  mov.rr.src2 = ir_vreg_none;
+                  _func->emit(mov);
+               }
+               _func->vstack_resize(entry.stack_depth);
+               _func->vpush(entry.merge_vreg);
+            } else if (_unreachable) {
                _func->vstack_resize(entry.stack_depth);
                if (entry.result_type != types::pseudo) {
                   uint32_t dest = _func->alloc_vreg(entry.result_type);
@@ -165,13 +175,19 @@ namespace eosio { namespace vm {
          return UINT32_MAX; // return doesn't need branch fixup
       }
 
-      void emit_block() {
+      void emit_block(uint8_t result_type = types::pseudo) {
          ir_control_entry entry{};
          entry.block_idx = _func->new_block();
          entry.stack_depth = _func->vstack_depth();
-         entry.result_type = types::pseudo;
+         entry.result_type = result_type;
          entry.is_loop = 0;
          entry.is_function = 0;
+         // Allocate merge vreg for blocks with result types (needed for br targets)
+         if (result_type != types::pseudo) {
+            entry.merge_vreg = _func->alloc_vreg(result_type);
+         } else {
+            entry.merge_vreg = ir_vreg_none;
+         }
          _func->ctrl_push(entry);
       }
 
@@ -183,18 +199,24 @@ namespace eosio { namespace vm {
          entry.result_type = types::pseudo;
          entry.is_loop = 1;
          entry.is_function = 0;
+         entry.merge_vreg = ir_vreg_none;
          _func->ctrl_push(entry);
          _func->start_block(entry.block_idx);
          return entry.block_idx;
       }
 
-      branch_t emit_if() {
+      branch_t emit_if(uint8_t result_type = types::pseudo) {
          ir_control_entry entry{};
          entry.block_idx = _func->new_block();
          _func->blocks[entry.block_idx].is_if = 1;
-         entry.result_type = types::pseudo;
+         entry.result_type = result_type;
          entry.is_loop = 0;
          entry.is_function = 0;
+         if (result_type != types::pseudo) {
+            entry.merge_vreg = _func->alloc_vreg(result_type);
+         } else {
+            entry.merge_vreg = ir_vreg_none;
+         }
          uint32_t inst_idx = UINT32_MAX;
          if (!_unreachable) {
             uint32_t cond = _func->vpop();
@@ -219,6 +241,23 @@ namespace eosio { namespace vm {
          uint32_t else_inst_idx = UINT32_MAX;
          if (_func->ctrl_stack_top > 0) {
             auto& entry = _func->ctrl_back();
+
+            // If the block has a result type and the then-branch produced a value,
+            // emit a mov to the merge vreg so both branches write the same destination.
+            if (!_unreachable && entry.merge_vreg != ir_vreg_none &&
+                _func->vstack_depth() > entry.stack_depth) {
+               uint32_t then_result = _func->vpop();
+               // Emit mov: merge = then_result
+               ir_inst mov{};
+               mov.opcode = ir_op::mov;
+               mov.type = entry.result_type;
+               mov.flags = IR_NONE;
+               mov.dest = entry.merge_vreg;
+               mov.rr.src1 = then_result;
+               mov.rr.src2 = ir_vreg_none;
+               _func->emit(mov);
+            }
+
             // Emit else_ instruction: then-block jumps to block end
             ir_inst inst{};
             inst.opcode = ir_op::else_;
@@ -238,20 +277,36 @@ namespace eosio { namespace vm {
                _func->start_block(else_block);
                _func->insts[if_inst_idx].br.target = else_block;
             }
-            if (!_unreachable) {
-               if (entry.result_type != types::pseudo && _func->vstack_depth() > entry.stack_depth) {
-                  _func->vpop();
-               }
-            }
             _func->vstack_resize(entry.stack_depth);
          }
          _unreachable = false;
          return else_inst_idx;
       }
 
-      branch_t emit_br(uint32_t dc, uint8_t rt) {
+      branch_t emit_br(uint32_t dc, uint8_t rt, uint32_t label = UINT32_MAX) {
          uint32_t inst_idx = 0;
          if (!_unreachable) {
+            // If the br carries a result value and the target block has a merge vreg,
+            // emit a mov to copy the result to the merge vreg
+            if (rt != types::pseudo && _func->vstack_depth() > 0 && label != UINT32_MAX) {
+               uint32_t target_ctrl = _func->ctrl_stack_top - 1 - label;
+               if (target_ctrl < _func->ctrl_stack_top) {
+                  auto& target_entry = _func->ctrl_stack[target_ctrl];
+                  if (target_entry.merge_vreg != ir_vreg_none && !target_entry.is_loop) {
+                     uint32_t src = _func->vstack_back();
+                     if (src != target_entry.merge_vreg) {
+                        ir_inst mov{};
+                        mov.opcode = ir_op::mov;
+                        mov.type = rt;
+                        mov.flags = IR_NONE;
+                        mov.dest = target_entry.merge_vreg;
+                        mov.rr.src1 = src;
+                        mov.rr.src2 = ir_vreg_none;
+                        _func->emit(mov);
+                     }
+                  }
+               }
+            }
             ir_inst inst{};
             inst.opcode = ir_op::br;
             inst.type = rt;
@@ -328,8 +383,22 @@ namespace eosio { namespace vm {
       void emit_call(const func_type& ft, uint32_t funcnum) {
          if (!_unreachable) {
             uint32_t nparams = ft.param_types.size();
+            // Emit arg instructions for each parameter (needed by register mode
+            // to push vreg values to the native stack before the call)
+            // Pop params in reverse to get them in correct stack order
+            uint32_t param_vregs[64]; // bounded by max params
             for (uint32_t i = 0; i < nparams; ++i) {
-               _func->vpop();
+               param_vregs[nparams - 1 - i] = _func->vpop();
+            }
+            for (uint32_t i = 0; i < nparams; ++i) {
+               ir_inst arg{};
+               arg.opcode = ir_op::arg;
+               arg.type = types::pseudo;
+               arg.flags = IR_NONE;
+               arg.dest = ir_vreg_none;
+               arg.rr.src1 = param_vregs[i];
+               arg.rr.src2 = ir_vreg_none;
+               _func->emit(arg);
             }
             if (ft.return_count > 0) {
                uint32_t dest = _func->alloc_vreg(ft.return_type);
@@ -359,8 +428,31 @@ namespace eosio { namespace vm {
          if (!_unreachable) {
             uint32_t table_idx = _func->vpop();
             uint32_t nparams = ft.param_types.size();
+            // Emit arg instructions for each parameter
+            uint32_t param_vregs[64];
             for (uint32_t i = 0; i < nparams; ++i) {
-               _func->vpop();
+               param_vregs[nparams - 1 - i] = _func->vpop();
+            }
+            for (uint32_t i = 0; i < nparams; ++i) {
+               ir_inst arg{};
+               arg.opcode = ir_op::arg;
+               arg.type = types::pseudo;
+               arg.flags = IR_NONE;
+               arg.dest = ir_vreg_none;
+               arg.rr.src1 = param_vregs[i];
+               arg.rr.src2 = ir_vreg_none;
+               _func->emit(arg);
+            }
+            // Emit arg for table index (must be on top of stack for call_indirect)
+            {
+               ir_inst arg{};
+               arg.opcode = ir_op::arg;
+               arg.type = types::pseudo;
+               arg.flags = IR_NONE;
+               arg.dest = ir_vreg_none;
+               arg.rr.src1 = table_idx;
+               arg.rr.src2 = ir_vreg_none;
+               _func->emit(arg);
             }
             if (ft.return_count > 0) {
                uint32_t dest = _func->alloc_vreg(ft.return_type);
@@ -404,8 +496,9 @@ namespace eosio { namespace vm {
             inst.opcode = ir_op::select;
             inst.type = type;
             inst.dest = dest;
-            inst.rr.src1 = val1;
-            inst.rr.src2 = val2;
+            inst.sel.val1 = static_cast<uint16_t>(val1);
+            inst.sel.val2 = static_cast<uint16_t>(val2);
+            inst.sel.cond = static_cast<uint16_t>(cond);
             _func->emit(inst);
             _func->vpush(dest);
          }
@@ -1064,7 +1157,22 @@ namespace eosio { namespace vm {
       }
       void ir_bulk_mem3() {
          if (_unreachable) return;
-         _func->vpop(); _func->vpop(); _func->vpop();
+         // Pop 3 operands and emit arg instructions so register mode
+         // pushes them to the native stack for the bulk memory handler.
+         uint32_t v2 = _func->vpop(); // count (top)
+         uint32_t v1 = _func->vpop(); // val/src
+         uint32_t v0 = _func->vpop(); // dest
+         uint32_t vregs[3] = {v0, v1, v2};
+         for (int i = 0; i < 3; ++i) {
+            ir_inst arg{};
+            arg.opcode = ir_op::arg;
+            arg.type = types::pseudo;
+            arg.flags = IR_NONE;
+            arg.dest = ir_vreg_none;
+            arg.rr.src1 = vregs[i];
+            arg.rr.src2 = ir_vreg_none;
+            _func->emit(arg);
+         }
       }
 
       // ──── State ────
