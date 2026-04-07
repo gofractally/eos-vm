@@ -19,12 +19,12 @@ namespace eosio { namespace vm {
    // Physical register assignment
    enum class phys_reg : int8_t {
       none = -1,
-      // rax and rcx reserved as temporaries for spill loads
+      // rax, rcx, rdx reserved (temps + implicit x86 usage in div/mul)
       // Caller-saved (free, no save/restore):
-      rdx = 0, r8 = 1, r9 = 2, r10 = 3, r11 = 4,
-      // Callee-saved disabled for debugging
-      caller_saved_count = 5,
-      count = 5,
+      r8 = 0, r9 = 1, r10 = 2, r11 = 3,
+      // Callee-saved disabled for correctness testing
+      caller_saved_count = 4,
+      count = 4,
    };
 
    class jit_regalloc {
@@ -55,27 +55,151 @@ namespace eosio { namespace vm {
             const auto& inst = func.insts[i];
 
             // Destination vreg: defined at this instruction
-            if (inst.dest != ir_vreg_none && inst.dest < num_vregs) {
+            // Exception: for store instructions, dest holds the VALUE vreg (a use, not def)
+            // — handled in the switch below instead.
+            bool is_store = (inst.opcode >= ir_op::i32_store && inst.opcode <= ir_op::i64_store32);
+            if (!is_store && inst.dest != ir_vreg_none && inst.dest < num_vregs) {
                auto& iv = func.intervals[inst.dest];
                if (i < iv.start) iv.start = i;
                if (i > iv.end) iv.end = i;
                iv.type = inst.type;
             }
 
-            // Source vregs: used at this instruction
-            // Note: for load/store instructions, rr.src2 == ri.imm (not a vreg!)
-            if (inst.rr.src1 != ir_vreg_none && inst.rr.src1 < num_vregs) {
-               auto& iv = func.intervals[inst.rr.src1];
-               if (i < iv.start) iv.start = i;
-               if (i > iv.end) iv.end = i;
-            }
-            // Only read src2 for instructions that use the rr union (not ri/br/call)
-            bool has_src2 = (inst.opcode >= ir_op::i32_eqz && inst.opcode <= ir_op::i64_rotr)
-                         || inst.opcode == ir_op::select;
-            if (has_src2 && inst.rr.src2 != ir_vreg_none && inst.rr.src2 < num_vregs) {
-               auto& iv = func.intervals[inst.rr.src2];
-               if (i < iv.start) iv.start = i;
-               if (i > iv.end) iv.end = i;
+            // Source vregs: must check per-opcode which union fields are vregs.
+            // rr.src1/src2 are ONLY vregs for arithmetic/comparison/select ops.
+            // For br/call/local/global ops, the union holds indices, not vregs.
+            auto use_vreg = [&](uint32_t vreg) {
+               if (vreg != ir_vreg_none && vreg < num_vregs) {
+                  auto& iv = func.intervals[vreg];
+                  if (i < iv.start) iv.start = i;
+                  if (i > iv.end) iv.end = i;
+               }
+            };
+
+            switch (inst.opcode) {
+            // Binary ops: src1 and src2 are both vregs
+            case ir_op::i32_add: case ir_op::i32_sub: case ir_op::i32_mul:
+            case ir_op::i32_div_s: case ir_op::i32_div_u: case ir_op::i32_rem_s: case ir_op::i32_rem_u:
+            case ir_op::i32_and: case ir_op::i32_or: case ir_op::i32_xor:
+            case ir_op::i32_shl: case ir_op::i32_shr_s: case ir_op::i32_shr_u:
+            case ir_op::i32_rotl: case ir_op::i32_rotr:
+            case ir_op::i64_add: case ir_op::i64_sub: case ir_op::i64_mul:
+            case ir_op::i64_div_s: case ir_op::i64_div_u: case ir_op::i64_rem_s: case ir_op::i64_rem_u:
+            case ir_op::i64_and: case ir_op::i64_or: case ir_op::i64_xor:
+            case ir_op::i64_shl: case ir_op::i64_shr_s: case ir_op::i64_shr_u:
+            case ir_op::i64_rotl: case ir_op::i64_rotr:
+            case ir_op::i32_eq: case ir_op::i32_ne: case ir_op::i32_lt_s: case ir_op::i32_lt_u:
+            case ir_op::i32_gt_s: case ir_op::i32_gt_u: case ir_op::i32_le_s: case ir_op::i32_le_u:
+            case ir_op::i32_ge_s: case ir_op::i32_ge_u:
+            case ir_op::i64_eq: case ir_op::i64_ne: case ir_op::i64_lt_s: case ir_op::i64_lt_u:
+            case ir_op::i64_gt_s: case ir_op::i64_gt_u: case ir_op::i64_le_s: case ir_op::i64_le_u:
+            case ir_op::i64_ge_s: case ir_op::i64_ge_u:
+            case ir_op::f32_add: case ir_op::f32_sub: case ir_op::f32_mul: case ir_op::f32_div:
+            case ir_op::f32_min: case ir_op::f32_max: case ir_op::f32_copysign:
+            case ir_op::f64_add: case ir_op::f64_sub: case ir_op::f64_mul: case ir_op::f64_div:
+            case ir_op::f64_min: case ir_op::f64_max: case ir_op::f64_copysign:
+            case ir_op::f32_eq: case ir_op::f32_ne: case ir_op::f32_lt: case ir_op::f32_gt:
+            case ir_op::f32_le: case ir_op::f32_ge:
+            case ir_op::f64_eq: case ir_op::f64_ne: case ir_op::f64_lt: case ir_op::f64_gt:
+            case ir_op::f64_le: case ir_op::f64_ge:
+            case ir_op::select:
+               use_vreg(inst.rr.src1);
+               use_vreg(inst.rr.src2);
+               break;
+
+            // Unary ops: only src1 is a vreg
+            case ir_op::i32_eqz: case ir_op::i64_eqz:
+            case ir_op::i32_clz: case ir_op::i32_ctz: case ir_op::i32_popcnt:
+            case ir_op::i64_clz: case ir_op::i64_ctz: case ir_op::i64_popcnt:
+            case ir_op::i32_wrap_i64: case ir_op::i64_extend_s_i32: case ir_op::i64_extend_u_i32:
+            case ir_op::i32_extend8_s: case ir_op::i32_extend16_s:
+            case ir_op::i64_extend8_s: case ir_op::i64_extend16_s: case ir_op::i64_extend32_s:
+            case ir_op::f32_abs: case ir_op::f32_neg: case ir_op::f32_sqrt:
+            case ir_op::f32_ceil: case ir_op::f32_floor: case ir_op::f32_trunc: case ir_op::f32_nearest:
+            case ir_op::f64_abs: case ir_op::f64_neg: case ir_op::f64_sqrt:
+            case ir_op::f64_ceil: case ir_op::f64_floor: case ir_op::f64_trunc: case ir_op::f64_nearest:
+            case ir_op::i32_reinterpret_f32: case ir_op::i64_reinterpret_f64:
+            case ir_op::f32_reinterpret_i32: case ir_op::f64_reinterpret_i64:
+            case ir_op::i32_trunc_s_f32: case ir_op::i32_trunc_u_f32:
+            case ir_op::i32_trunc_s_f64: case ir_op::i32_trunc_u_f64:
+            case ir_op::i64_trunc_s_f32: case ir_op::i64_trunc_u_f32:
+            case ir_op::i64_trunc_s_f64: case ir_op::i64_trunc_u_f64:
+            case ir_op::f32_convert_s_i32: case ir_op::f32_convert_u_i32:
+            case ir_op::f32_convert_s_i64: case ir_op::f32_convert_u_i64:
+            case ir_op::f64_convert_s_i32: case ir_op::f64_convert_u_i32:
+            case ir_op::f64_convert_s_i64: case ir_op::f64_convert_u_i64:
+            case ir_op::f32_demote_f64: case ir_op::f64_promote_f32:
+            case ir_op::i32_trunc_sat_f32_s: case ir_op::i32_trunc_sat_f32_u:
+            case ir_op::i32_trunc_sat_f64_s: case ir_op::i32_trunc_sat_f64_u:
+            case ir_op::i64_trunc_sat_f32_s: case ir_op::i64_trunc_sat_f32_u:
+            case ir_op::i64_trunc_sat_f64_s: case ir_op::i64_trunc_sat_f64_u:
+               use_vreg(inst.rr.src1);
+               break;
+
+            // Loads: ri.src1 = addr vreg
+            case ir_op::i32_load: case ir_op::i64_load: case ir_op::f32_load: case ir_op::f64_load:
+            case ir_op::i32_load8_s: case ir_op::i32_load8_u:
+            case ir_op::i32_load16_s: case ir_op::i32_load16_u:
+            case ir_op::i64_load8_s: case ir_op::i64_load8_u:
+            case ir_op::i64_load16_s: case ir_op::i64_load16_u:
+            case ir_op::i64_load32_s: case ir_op::i64_load32_u:
+               use_vreg(inst.ri.src1); // addr vreg
+               break;
+
+            // Stores: ri.src1 = addr vreg, dest = value vreg (both are uses)
+            case ir_op::i32_store: case ir_op::i64_store: case ir_op::f32_store: case ir_op::f64_store:
+            case ir_op::i32_store8: case ir_op::i32_store16:
+            case ir_op::i64_store8: case ir_op::i64_store16: case ir_op::i64_store32:
+               use_vreg(inst.ri.src1); // addr
+               use_vreg(inst.dest);    // value (stored in dest field for stores)
+               break;
+
+            // Local set/tee: local.src1 is a vreg
+            case ir_op::local_set: case ir_op::local_tee:
+            case ir_op::global_set:
+               use_vreg(inst.local.src1);
+               break;
+
+            // Branch with condition: br.src1 is a vreg
+            case ir_op::br_if: case ir_op::if_:
+               use_vreg(inst.br.src1);
+               break;
+
+            // br with return value: br.src1 might be a vreg
+            case ir_op::br:
+               use_vreg(inst.br.src1);
+               break;
+
+            // return: rr.src1 is the return value vreg
+            case ir_op::return_:
+               use_vreg(inst.rr.src1);
+               break;
+
+            // arg: rr.src1 is the argument vreg
+            case ir_op::arg:
+               use_vreg(inst.rr.src1);
+               break;
+
+            // memory_grow: rr.src1 is the pages vreg
+            case ir_op::memory_grow:
+               use_vreg(inst.rr.src1);
+               break;
+
+            // br_table: rr.src1 is the index vreg
+            case ir_op::br_table:
+               use_vreg(inst.rr.src1);
+               break;
+
+            // No source vregs
+            case ir_op::nop: case ir_op::unreachable: case ir_op::drop:
+            case ir_op::const_i32: case ir_op::const_i64:
+            case ir_op::const_f32: case ir_op::const_f64: case ir_op::const_v128:
+            case ir_op::local_get: case ir_op::global_get:
+            case ir_op::memory_size:
+            case ir_op::block: case ir_op::loop: case ir_op::end:
+            case ir_op::else_: case ir_op::call: case ir_op::call_indirect:
+            default:
+               break;
             }
          }
       }

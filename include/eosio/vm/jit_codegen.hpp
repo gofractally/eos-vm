@@ -129,7 +129,7 @@ namespace eosio { namespace vm {
                }
             }
             _num_spill_slots = func.num_spill_slots;
-            _use_regalloc = false; // Register mode has correctness issues — using stack mode
+            _use_regalloc = true;
          } else {
             _use_regalloc = false;
          }
@@ -1576,13 +1576,21 @@ namespace eosio { namespace vm {
          int8_t pr_s2 = get_phys(inst.rr.src2);
 
          if (pr_d >= 0 && pr_s1 >= 0 && pr_s2 >= 0) {
-            // All in registers — optimal
-            if (pr_d != pr_s1) {
-               if (is32) this->emit_mov(phys_to_reg32(pr_s1), phys_to_reg32(pr_d));
-               else      this->emit_mov(phys_to_reg64(pr_s1), phys_to_reg64(pr_d));
+            // All in registers — optimal path
+            if (pr_d == pr_s1) {
+               // dest = src1, just apply op with src2
+               if (is32) op(phys_to_reg32(pr_d), phys_to_reg32(pr_s2));
+               else      op(phys_to_reg64(pr_d), phys_to_reg64(pr_s2));
+            } else if (pr_d == pr_s2) {
+               // dest = src2, need temp to avoid clobbering src2
+               // Use rax as temp: rax = src1, op(rax, src2), mov rax to dest
+               if (is32) { this->emit_mov(phys_to_reg32(pr_s1), eax); op(eax, phys_to_reg32(pr_s2)); this->emit_mov(eax, phys_to_reg32(pr_d)); }
+               else      { this->emit_mov(phys_to_reg64(pr_s1), rax); op(rax, phys_to_reg64(pr_s2)); this->emit_mov(rax, phys_to_reg64(pr_d)); }
+            } else {
+               // dest != src1 && dest != src2: mov src1 to dest, op with src2
+               if (is32) { this->emit_mov(phys_to_reg32(pr_s1), phys_to_reg32(pr_d)); op(phys_to_reg32(pr_d), phys_to_reg32(pr_s2)); }
+               else      { this->emit_mov(phys_to_reg64(pr_s1), phys_to_reg64(pr_d)); op(phys_to_reg64(pr_d), phys_to_reg64(pr_s2)); }
             }
-            if (is32) op(phys_to_reg32(pr_d), phys_to_reg32(pr_s2));
-            else      op(phys_to_reg64(pr_d), phys_to_reg64(pr_s2));
          } else {
             // Some spilled — use rax/rcx temps
             load_vreg_rcx(inst.rr.src2);
@@ -1598,11 +1606,10 @@ namespace eosio { namespace vm {
       bool emit_relop_reg(const ir_inst& inst, Jcc cc, bool is32) {
          load_vreg_rcx(inst.rr.src2);
          load_vreg_rax(inst.rr.src1);
-         this->emit_xor(edx, edx);
          if (is32) this->emit_cmp(ecx, eax);
          else      this->emit_cmp(rcx, rax);
-         this->emit_setcc(cc, dl);
-         this->emit_mov(edx, eax);
+         this->emit_setcc(cc, al);
+         this->emit_bytes(0x0f, 0xb6, 0xc0); // movzbl %al, %eax
          store_rax_vreg(inst.dest);
          return true;
       }
@@ -1815,8 +1822,8 @@ namespace eosio { namespace vm {
       // Must match phys_reg enum: rdx=0, r8=1, r9=2, r10=3, r11=4
       // rax and rcx are reserved as temporaries for spill loads
       static constexpr general_register64 phys_to_reg64(int8_t pr) {
+         // rax/rcx/rdx reserved as temps. Map: r8=0, r9=1, r10=2, r11=3, r12-r15=4-7
          constexpr general_register64 map[] = {
-            general_register64(2),  // rdx
             general_register64(8),  // r8
             general_register64(9),  // r9
             general_register64(10), // r10
@@ -1830,7 +1837,6 @@ namespace eosio { namespace vm {
       }
       static constexpr general_register32 phys_to_reg32(int8_t pr) {
          constexpr general_register32 map[] = {
-            general_register32(2),  // edx
             general_register32(8),  // r8d
             general_register32(9),  // r9d
             general_register32(10), // r10d
