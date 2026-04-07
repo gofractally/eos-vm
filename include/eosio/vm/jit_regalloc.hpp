@@ -22,10 +22,9 @@ namespace eosio { namespace vm {
       // rax and rcx reserved as temporaries for spill loads
       // Caller-saved (free, no save/restore):
       rdx = 0, r8 = 1, r9 = 2, r10 = 3, r11 = 4,
-      // Callee-saved (must save/restore in prologue/epilogue):
-      r12 = 5, r13 = 6, r14 = 7, r15 = 8,
+      // Callee-saved disabled for debugging
       caller_saved_count = 5,
-      count = 9,
+      count = 5,
    };
 
    class jit_regalloc {
