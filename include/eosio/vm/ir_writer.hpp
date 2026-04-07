@@ -12,6 +12,7 @@
 #include <eosio/vm/exceptions.hpp>
 #include <eosio/vm/jit_codegen.hpp>
 #include <eosio/vm/jit_ir.hpp>
+#include <eosio/vm/jit_optimize.hpp>
 #include <eosio/vm/jit_regalloc.hpp>
 #include <eosio/vm/types.hpp>
 
@@ -54,6 +55,7 @@ namespace eosio { namespace vm {
          codegen_t codegen(_allocator, _mod);
          codegen.emit_entry_and_error_handlers();
          for (uint32_t i = 0; i < _num_functions; ++i) {
+            jit_optimizer::optimize(_functions[i], _scratch);
             jit_regalloc::compute_live_intervals(_functions[i], _scratch);
             jit_regalloc::allocate_registers(_functions[i]);
             codegen.compile_function(_functions[i], _mod.code[i]);
