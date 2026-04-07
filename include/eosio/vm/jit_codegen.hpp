@@ -129,7 +129,7 @@ namespace eosio { namespace vm {
                }
             }
             _num_spill_slots = func.num_spill_slots;
-            _use_regalloc = true;
+            _use_regalloc = false; // Register mode has correctness issues — using stack mode
          } else {
             _use_regalloc = false;
          }
