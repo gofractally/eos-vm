@@ -182,6 +182,7 @@ extern template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio
 extern template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::jit>;
 extern template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::jit2>;
 #elif defined(__aarch64__)
+extern template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::jit>;
 extern template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::jit2>;
 #endif
 
@@ -190,7 +191,7 @@ extern template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio
   TEMPLATE_TEST_CASE(name, tags, eosio::vm::interpreter, eosio::vm::jit, eosio::vm::jit2)
 #elif defined(__aarch64__)
 #define BACKEND_TEST_CASE(name, tags) \
-  TEMPLATE_TEST_CASE(name, tags, eosio::vm::interpreter, eosio::vm::jit2)
+  TEMPLATE_TEST_CASE(name, tags, eosio::vm::interpreter, eosio::vm::jit, eosio::vm::jit2)
 #else
 #define BACKEND_TEST_CASE(name, tags) \
   TEMPLATE_TEST_CASE(name, tags, eosio::vm::interpreter)
