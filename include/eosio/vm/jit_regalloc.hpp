@@ -164,12 +164,6 @@ namespace eosio { namespace vm {
          }
 
          func.num_spill_slots = next_spill_slot;
-         uint32_t in_reg = 0;
-         for (uint32_t i = 0; i < func.interval_count; ++i) {
-            if (func.intervals[i].start != UINT32_MAX && func.intervals[i].phys_reg >= 0) in_reg++;
-         }
-         fprintf(stderr, "regalloc func %u: %u vregs, %u in regs, %u spilled\n",
-                 func.func_index, func.interval_count, in_reg, next_spill_slot);
          return next_spill_slot;
       }
    };

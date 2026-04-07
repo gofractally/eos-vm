@@ -129,15 +129,7 @@ namespace eosio { namespace vm {
                }
             }
             _num_spill_slots = func.num_spill_slots;
-            _use_regalloc = true;
-            { uint32_t in_reg = 0, spilled = 0;
-              for (uint32_t v = 0; v < _num_vregs; ++v) {
-                 if (_vreg_map[v] >= 0) in_reg++;
-                 else if (_spill_map[v] >= 0) spilled++;
-              }
-              fprintf(stderr, "jit2 func %u: %u vregs, %u in regs, %u spilled, regalloc=%d\n",
-                      func.func_index, _num_vregs, in_reg, spilled, _use_regalloc);
-            }
+            _use_regalloc = false; // Disabled: phi-node issue at control flow join points
          } else {
             _use_regalloc = false;
          }
