@@ -596,8 +596,19 @@ namespace eosio { namespace vm {
       }
       template<int W, int N, typename RM, typename Reg>
       void emit(IA32_t<W, N> opcode, RM r_m, Reg reg) {
+         // Legacy prefixes (66h, 67h, F2h, F3h) must be emitted BEFORE REX.
+         // The x86-64 rule: if REX is not immediately before the opcode, it is ignored.
+         int prefix_count = 0;
+         if constexpr (N >= 2) {
+            while (prefix_count < N - 1 &&
+                   (opcode.opcode[prefix_count] == 0x66 || opcode.opcode[prefix_count] == 0x67 ||
+                    opcode.opcode[prefix_count] == 0xF2 || opcode.opcode[prefix_count] == 0xF3)) {
+               emit_bytes(opcode.opcode[prefix_count]);
+               ++prefix_count;
+            }
+         }
          emit_REX_prefix(get_operand_size<W>(r_m, reg), r_m, reg);
-         for(int i = 0; i < N; ++i) emit_bytes(opcode.opcode[i]);
+         for(int i = prefix_count; i < N; ++i) emit_bytes(opcode.opcode[i]);
          emit_modrm_sib_disp(r_m, reg);
       }
       template<int W, int N, typename RM, typename Reg>
