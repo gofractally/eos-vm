@@ -1461,10 +1461,12 @@ namespace eosio { namespace vm {
             return true;
          }
 
-         // Integer binary ops
+         // Integer binary ops (with const-immediate for add/sub)
          case ir_op::i32_add:
+            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_add(imm, eax); }, true)) return true;
             return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_add(s, d); }, true);
          case ir_op::i32_sub:
+            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_sub(imm, eax); }, true)) return true;
             return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, true);
          case ir_op::i32_mul: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, true);
          case ir_op::i32_and:
@@ -1475,8 +1477,10 @@ namespace eosio { namespace vm {
             return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, true);
 
          case ir_op::i64_add:
+            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_add(imm, rax); }, false)) return true;
             return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_add(s, d); }, false);
          case ir_op::i64_sub:
+            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_sub(imm, rax); }, false)) return true;
             return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, false);
          case ir_op::i64_mul: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, false);
          case ir_op::i64_and: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, false);
