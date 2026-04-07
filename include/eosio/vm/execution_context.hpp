@@ -618,8 +618,9 @@ namespace eosio { namespace vm {
          return i;
       }
 
-      static constexpr bool async_backtrace() { return EnableBacktrace; }
 #endif
+
+      static constexpr bool async_backtrace() { return EnableBacktrace; }
 
       inline int32_t get_global_i32(uint32_t index) {
          return _globals[index].value.i32;

@@ -17,6 +17,23 @@
 namespace eosio { namespace vm {
 
    // Physical register assignment
+#ifdef __aarch64__
+   enum class phys_reg : int8_t {
+      none = -1,
+      // X0, X1 reserved (temps for spill loads, like rax/rcx on x86)
+      // X16, X17 reserved (scratch for large immediates / linker veneers)
+      // X18 reserved (platform register)
+      // X19 = context pointer, X20 = linear memory base, X21 = call depth (all callee-saved)
+      // X29 = FP, X30 = LR, SP = stack pointer
+      // Caller-saved (free, no save/restore):
+      x2 = 0, x3 = 1, x4 = 2, x5 = 3, x6 = 4, x7 = 5,
+      x8 = 6, x9 = 7, x10 = 8, x11 = 9, x12 = 10, x13 = 11, x14 = 12, x15 = 13,
+      caller_saved_count = 14,
+      // Callee-saved (must save/restore in prologue/epilogue):
+      x22 = 14, x23 = 15, x24 = 16, x25 = 17, x26 = 18, x27 = 19, x28 = 20,
+      count = 21,
+   };
+#else
    enum class phys_reg : int8_t {
       none = -1,
       // rax, rcx, rdx reserved (temps + implicit x86 usage in div/mul)
@@ -28,6 +45,7 @@ namespace eosio { namespace vm {
       rbx = 4, r12 = 5, r13 = 6, r14 = 7, r15 = 8,
       count = 9,
    };
+#endif
 
    class jit_regalloc {
     public:

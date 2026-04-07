@@ -12,6 +12,8 @@
 
 #ifdef __x86_64__
 #include <eosio/vm/x86_64.hpp>
+#endif
+#if defined(__x86_64__) || defined(__aarch64__)
 #include <eosio/vm/ir_writer.hpp>
 #endif
 
@@ -42,6 +44,9 @@ namespace eosio { namespace vm {
       static constexpr bool is_jit = true;
    };
 
+#endif
+
+#if defined(__x86_64__) || defined(__aarch64__)
    struct jit2 {
       template<typename Host>
       using context = jit_execution_context<Host>;

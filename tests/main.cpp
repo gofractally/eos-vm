@@ -17,4 +17,6 @@ template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::i
 #ifdef __x86_64__
 template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::jit>;
 template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::jit2>;
+#elif defined(__aarch64__)
+template class eosio::vm::backend<eosio::vm::standalone_function_t, eosio::vm::jit2>;
 #endif

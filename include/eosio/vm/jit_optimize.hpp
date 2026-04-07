@@ -245,6 +245,9 @@ namespace eosio { namespace vm {
             case ir_op::br:
                count_use(inst.br.src1);
                break;
+            case ir_op::br_table:
+               count_use(inst.rr.src1);
+               break;
             case ir_op::return_:
                count_use(inst.rr.src1);
                break;

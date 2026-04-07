@@ -10,7 +10,11 @@
 
 #include <eosio/vm/allocator.hpp>
 #include <eosio/vm/exceptions.hpp>
+#ifdef __aarch64__
+#include <eosio/vm/jit_codegen_a64.hpp>
+#else
 #include <eosio/vm/jit_codegen.hpp>
+#endif
 #include <eosio/vm/jit_ir.hpp>
 #include <eosio/vm/jit_optimize.hpp>
 #include <eosio/vm/jit_regalloc.hpp>
@@ -24,7 +28,11 @@ namespace eosio { namespace vm {
 
    template<typename Context, bool StackLimitIsBytes>
    class ir_writer {
+#ifdef __aarch64__
+      using codegen_t = jit_codegen_a64<Context, StackLimitIsBytes>;
+#else
       using codegen_t = jit_codegen<Context, StackLimitIsBytes>;
+#endif
     public:
       // Branch/label types — dummy values since IR tracks control flow directly.
       // The parser stores and passes these between emit_if/emit_else/emit_end/emit_br
@@ -132,10 +140,11 @@ namespace eosio { namespace vm {
          if (_func->ctrl_stack_top > 0) {
             auto entry = _func->ctrl_pop();
             block_idx = entry.block_idx;
-            _func->end_block(entry.block_idx);
 
             // If we have a merge vreg from an if/else with result type,
             // emit a mov from the else-branch result to the merge vreg.
+            // This must happen BEFORE end_block so that branches targeting
+            // this block (e.g., else_'s forward branch) land AFTER the mov.
             if (entry.merge_vreg != ir_vreg_none) {
                if (!_unreachable && entry.result_type != types::pseudo &&
                    _func->vstack_depth() > entry.stack_depth) {
@@ -167,6 +176,8 @@ namespace eosio { namespace vm {
                   }
                }
             }
+
+            _func->end_block(entry.block_idx);
             _unreachable = false;
          }
          return block_idx;
