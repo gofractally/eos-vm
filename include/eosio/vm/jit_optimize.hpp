@@ -144,6 +144,12 @@ namespace eosio { namespace vm {
          }
 
          // ── Phase 2: Count vreg uses ──
+         // Count the function return value as a use (read by epilogue, not by any IR instruction)
+         if (func.vstack_top > 0) {
+            uint32_t ret_vreg = func.vstack[func.vstack_top - 1];
+            if (ret_vreg != ir_vreg_none && ret_vreg < num_vregs)
+               use_count[ret_vreg]++;
+         }
          for (uint32_t i = 0; i < n; ++i) {
             const auto& inst = func.insts[i];
             if (inst.flags & IR_DEAD) continue;
@@ -276,18 +282,29 @@ namespace eosio { namespace vm {
          }
 
          // ── Phase 3: Dead code elimination ──
-         // DISABLED: produces wrong results — use-count doesn't cover all vreg reads.
-         // Needs exhaustive audit of every opcode's vreg field usage.
-         if (false) for (uint32_t i = 0; i < n; ++i) {
+         // Only eliminate pure instructions (no side effects, result never used).
+         // Conservative: skip control flow, calls, stores, memory ops, block markers.
+         for (uint32_t i = 0; i < n; ++i) {
             auto& inst = func.insts[i];
-            if (inst.flags & IR_DEAD) continue;
-            if (inst.flags & IR_SIDE_EFFECT) continue;
+            if (inst.flags & (IR_DEAD | IR_SIDE_EFFECT)) continue;
+            if (inst.dest == ir_vreg_none || inst.dest >= num_vregs) continue;
+            if (use_count[inst.dest] != 0) continue;
 
-            bool is_store = (inst.opcode >= ir_op::i32_store && inst.opcode <= ir_op::i64_store32);
-            bool is_block_marker = (inst.opcode == ir_op::block_start || inst.opcode == ir_op::block_end);
-            if (is_store || is_block_marker) continue;
-
-            if (inst.dest != ir_vreg_none && inst.dest < num_vregs && use_count[inst.dest] == 0) {
+            // Only eliminate pure computation: const, binop, unop, comparison, mov
+            bool is_pure = false;
+            switch (inst.opcode) {
+            case ir_op::const_i32: case ir_op::const_i64:
+            case ir_op::const_f32: case ir_op::const_f64:
+            case ir_op::mov:
+               is_pure = true; break;
+            default:
+               // Arithmetic, comparison, conversion — check opcode ranges
+               is_pure = (inst.opcode >= ir_op::i32_eqz && inst.opcode <= ir_op::i64_extend32_s)
+                       || (inst.opcode >= ir_op::i32_add && inst.opcode <= ir_op::f64_copysign)
+                       || (inst.opcode >= ir_op::f32_abs && inst.opcode <= ir_op::f64_sqrt);
+               break;
+            }
+            if (is_pure) {
                inst.flags |= IR_DEAD;
             }
          }
