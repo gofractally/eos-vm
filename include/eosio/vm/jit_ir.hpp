@@ -277,7 +277,7 @@ namespace eosio { namespace vm {
          v128_t   immv128;
          // For v128_op: sub-opcode goes in dest field (cast from simd_sub).
          // This struct carries load/store offset and lane index.
-         struct { uint32_t offset; uint8_t lane; uint8_t _pad2[11]; } simd;
+         struct { uint32_t offset; uint32_t addr; uint8_t lane; uint8_t _pad2[7]; } simd;
       };
    };
    static_assert(std::is_trivially_copyable_v<ir_inst>);

@@ -90,7 +90,9 @@ namespace eosio { namespace vm {
             // block_start/block_end use dest for block_idx, not a vreg — skip them.
             bool is_store = (inst.opcode >= ir_op::i32_store && inst.opcode <= ir_op::i64_store32);
             bool is_block_marker = (inst.opcode == ir_op::block_start || inst.opcode == ir_op::block_end);
-            if (!is_store && !is_block_marker && inst.dest != ir_vreg_none && inst.dest < num_vregs) {
+            // v128_op uses dest for sub-opcode, not a vreg
+            bool is_v128_op = (inst.opcode == ir_op::v128_op);
+            if (!is_store && !is_block_marker && !is_v128_op && inst.dest != ir_vreg_none && inst.dest < num_vregs) {
                auto& iv = func.intervals[inst.dest];
                if (i < iv.start) iv.start = i;
                if (i > iv.end) iv.end = i;
@@ -228,6 +230,12 @@ namespace eosio { namespace vm {
                use_vreg(inst.rr.src1);
                break;
 
+            // v128_op: addr field may reference a GPR vreg (for loads/stores)
+            case ir_op::v128_op:
+               if (inst.simd.addr != ir_vreg_none)
+                  use_vreg(inst.simd.addr);
+               break;
+
             // No source vregs
             case ir_op::nop: case ir_op::unreachable: case ir_op::drop:
             case ir_op::const_i32: case ir_op::const_i64:
@@ -279,6 +287,8 @@ namespace eosio { namespace vm {
          for (uint32_t i = 0; i < func.interval_count; ++i) {
             auto& interval = func.intervals[i];
             if (interval.start == UINT32_MAX) continue;
+            // Skip v128-typed vregs — they use the x86 stack, not GPR registers
+            if (interval.type == types::v128) continue;
 
             // Branchless bitmap check: any call in (start, end)?
             bool crosses_call = false;

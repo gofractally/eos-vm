@@ -1227,8 +1227,13 @@ namespace eosio { namespace vm {
       void emit_function_epilogue(ir_function& func) {
          if (_use_regalloc) {
             if (func.type->return_count != 0 && func.vstack_top > 0) {
-               uint32_t result_vreg = func.vstack[func.vstack_top - 1];
-               load_vreg_rax(result_vreg);
+               if (func.type->return_type == types::v128) {
+                  // v128 return: load 16 bytes from x86 stack into xmm0
+                  this->emit_vmovdqu(*rsp, xmm0);
+               } else {
+                  uint32_t result_vreg = func.vstack[func.vstack_top - 1];
+                  load_vreg_rax(result_vreg);
+               }
             }
          } else {
             if (func.type->return_count != 0) {
@@ -1342,7 +1347,11 @@ namespace eosio { namespace vm {
          case ir_op::nop:
          case ir_op::block:
          case ir_op::loop:
+            return true;
          case ir_op::drop:
+            if (inst.type == types::v128) {
+               this->emit_add(16, rsp);
+            }
             return true;
          case ir_op::block_start:
             mark_block_start(inst.dest);
@@ -1353,6 +1362,11 @@ namespace eosio { namespace vm {
 
          // Mov (phi-node merge): dest = src1
          case ir_op::mov: {
+            if (inst.type == types::v128) {
+               // v128 values live on x86 stack — mov is a no-op since both
+               // branches write to the same stack position
+               return true;
+            }
             int8_t pr_dest = get_phys(inst.dest);
             int8_t pr_src  = get_phys(inst.rr.src1);
             if (pr_dest >= 0 && pr_src >= 0) {
@@ -1451,7 +1465,14 @@ namespace eosio { namespace vm {
             return true;
 
          // arg: push a vreg value to the x86 stack (for upcoming call)
+         // For v128, the value is already on the x86 stack — no-op.
          case ir_op::arg: {
+            if (inst.rr.src1 != ir_vreg_none && inst.rr.src1 < _num_vregs &&
+                _vreg_map && _vreg_map[inst.rr.src1] < 0 &&
+                _spill_map && _spill_map[inst.rr.src1] < 0) {
+               // v128 vreg: no GPR, no spill slot — value is on x86 stack already
+               return true;
+            }
             load_vreg_rax(inst.rr.src1);
             this->emit_push_raw(rax);
             return true;
@@ -1471,9 +1492,15 @@ namespace eosio { namespace vm {
             if (arg_bytes > 0)
                this->emit_add(arg_bytes, rsp);
             emit_call_depth_inc();
-            // Store result to dest vreg (result already in rax)
+            // Store result
             if (ft.return_count > 0 && inst.dest != ir_vreg_none) {
-               store_rax_vreg(inst.dest);
+               if (ft.return_type == types::v128) {
+                  // v128 return: callee put result in xmm0, push 16 bytes to x86 stack
+                  this->emit_sub(16, rsp);
+                  this->emit_vmovdqu(xmm0, *rsp);
+               } else {
+                  store_rax_vreg(inst.dest);
+               }
             }
             return true;
          }
@@ -1507,7 +1534,12 @@ namespace eosio { namespace vm {
             if (arg_bytes > 0) this->emit_add(arg_bytes, rsp);
             emit_call_depth_inc();
             if (ft.return_count > 0 && inst.dest != ir_vreg_none) {
-               store_rax_vreg(inst.dest);
+               if (ft.return_type == types::v128) {
+                  this->emit_sub(16, rsp);
+                  this->emit_vmovdqu(xmm0, *rsp);
+               } else {
+                  store_rax_vreg(inst.dest);
+               }
             }
             return true;
          }
@@ -1633,31 +1665,54 @@ namespace eosio { namespace vm {
          // Local access
          case ir_op::local_get: {
             int32_t offset = get_frame_offset(func, inst.local.index);
-            int8_t pr = get_phys(inst.dest);
-            if (pr >= 0) {
-               this->emit_mov(*(rbp + offset), phys_to_reg64(pr));
+            if (inst.type == types::v128) {
+               // Load 16-byte v128 from frame and push to x86 stack
+               auto addr = *(rbp + offset);
+               this->emit_vmovdqu(addr, xmm0);
+               this->emit_sub(16, rsp);
+               this->emit_vmovdqu(xmm0, *rsp);
             } else {
-               this->emit_mov(*(rbp + offset), rax);
-               store_rax_vreg(inst.dest);
+               int8_t pr = get_phys(inst.dest);
+               if (pr >= 0) {
+                  this->emit_mov(*(rbp + offset), phys_to_reg64(pr));
+               } else {
+                  this->emit_mov(*(rbp + offset), rax);
+                  store_rax_vreg(inst.dest);
+               }
             }
             return true;
          }
          case ir_op::local_set: {
             int32_t offset = get_frame_offset(func, inst.local.index);
-            int8_t pr = get_phys(inst.local.src1);
-            if (pr >= 0) {
-               this->emit_mov(phys_to_reg64(pr), *(rbp + offset));
+            if (inst.type == types::v128) {
+               // Pop 16-byte v128 from x86 stack and store to frame
+               this->emit_vmovdqu(*rsp, xmm0);
+               this->emit_add(16, rsp);
+               auto addr = *(rbp + offset);
+               this->emit_vmovdqu(xmm0, addr);
             } else {
-               load_vreg_rax(inst.local.src1);
-               this->emit_mov(rax, *(rbp + offset));
+               int8_t pr = get_phys(inst.local.src1);
+               if (pr >= 0) {
+                  this->emit_mov(phys_to_reg64(pr), *(rbp + offset));
+               } else {
+                  load_vreg_rax(inst.local.src1);
+                  this->emit_mov(rax, *(rbp + offset));
+               }
             }
             return true;
          }
          case ir_op::local_tee: {
             int32_t offset = get_frame_offset(func, inst.local.index);
-            load_vreg_rax(inst.local.src1);
-            this->emit_mov(rax, *(rbp + offset));
-            // Value stays in src register (tee doesn't consume)
+            if (inst.type == types::v128) {
+               // Copy TOS v128 (16 bytes) to frame without popping
+               this->emit_vmovdqu(*rsp, xmm0);
+               auto addr = *(rbp + offset);
+               this->emit_vmovdqu(xmm0, addr);
+            } else {
+               load_vreg_rax(inst.local.src1);
+               this->emit_mov(rax, *(rbp + offset));
+               // Value stays in src register (tee doesn't consume)
+            }
             return true;
          }
 
@@ -1677,7 +1732,12 @@ namespace eosio { namespace vm {
          // Return
          case ir_op::return_: {
             if (inst.rr.src1 != ir_vreg_none) {
-               load_vreg_rax(inst.rr.src1);
+               if (inst.type == types::v128) {
+                  // v128 return: load into xmm0 from x86 stack
+                  this->emit_vmovdqu(*rsp, xmm0);
+               } else {
+                  load_vreg_rax(inst.rr.src1);
+               }
             }
             // Restore callee-saved registers before returning
             if (_callee_saved_used) {
@@ -1827,6 +1887,23 @@ namespace eosio { namespace vm {
 
          // Select: dest = cond ? val1 : val2  (3 source vregs packed in sel union)
          case ir_op::select: {
+            if (inst.type == types::v128) {
+               // v128 select: condition vreg, then val2 (16 bytes), val1 (16 bytes) on x86 stack
+               load_vreg_rax(inst.sel.cond);
+               this->emit(base::TEST, eax, eax);
+               // Stack layout: val1 (NOS) at rsp+16, val2 (TOS) at rsp+0
+               // Wait, for v128 the vstack had: val1_lo, val1_hi, val2_lo, val2_hi, cond
+               // After vpop of cond and the extra slots, the x86 stack should have:
+               // val2 (16 bytes at rsp), val1 (16 bytes at rsp+16)
+               void* skip = this->emit_branch8(base::JNZ);
+               // condition is zero: keep val2, copy it over val1 position
+               this->emit_vmovdqu(*rsp, xmm0);
+               this->emit_vmovdqu(xmm0, *(rsp + 16));
+               base::fix_branch8(skip, code);
+               // Remove val2, keep val1
+               this->emit_add(16, rsp);
+               return true;
+            }
             load_vreg_rax(inst.sel.cond);  // condition
             this->emit_mov(rax, rdx);
             load_vreg_rcx(inst.sel.val2);  // val2
@@ -1896,6 +1973,23 @@ namespace eosio { namespace vm {
             store_rax_vreg(inst.dest);
             return true;
          }
+
+         // v128 const: push 16-byte constant to x86 stack
+         case ir_op::const_v128: {
+            uint64_t low, high;
+            memcpy(&high, reinterpret_cast<const char*>(&inst.immv128) + 8, 8);
+            memcpy(&low, &inst.immv128, 8);
+            this->emit_mov(high, rax);
+            this->emit_push_raw(rax);
+            this->emit_mov(low, rax);
+            this->emit_push_raw(rax);
+            return true;
+         }
+
+         // v128 SIMD operations: operands/results live on x86 stack
+         case ir_op::v128_op:
+            emit_simd_op(inst);
+            return true;
 
          // ── Bulk memory ops (args already pushed by arg instructions) ──
          case ir_op::memory_fill: {
@@ -3078,59 +3172,60 @@ namespace eosio { namespace vm {
       // Pop a WASM address from the x86 stack, add offset, compute native address.
       // Result: *(rax + rsi + 0) is the effective memory address.
       // Uses ecx as temp for large offsets.
-      void simd_pop_address(uint32_t offset) {
-         this->emit_pop_raw(rax);  // WASM address (i32)
+      void simd_load_address(uint32_t offset, uint32_t addr_vreg) {
+         if (addr_vreg != ir_vreg_none) {
+            int8_t pr = get_phys(addr_vreg);
+            int16_t sp = (_spill_map && addr_vreg < _num_vregs) ? _spill_map[addr_vreg] : -1;
+            load_vreg_rax(addr_vreg);  // load from GPR register/spill
+         } else {
+            this->emit_pop_raw(rax);   // fallback: pop from stack
+         }
          if (offset != 0) {
             this->emit_add(static_cast<int32_t>(offset), eax);  // 32-bit wrapping add
          }
          // rsi holds linear memory base; effective address is rax + rsi
       }
 
-      // v128 load: pop address, load 16 bytes into xmm0, push 16 bytes
+      // v128 load: load address from vreg, load 16 bytes into xmm0, push 16 bytes
       template<typename Op>
-      void simd_loadop(Op op, uint32_t offset) {
-         simd_pop_address(offset);
+      void simd_loadop(Op op, uint32_t offset, uint32_t addr_vreg = ir_vreg_none) {
+         simd_load_address(offset, addr_vreg);
          this->emit(op, *(rax + rsi + 0), xmm0);
          this->emit_sub(16, rsp);
          this->emit_vmovdqu(xmm0, *rsp);
       }
 
-      // v128 store: pop 16 bytes into xmm0, pop address, store 16 bytes
-      void simd_storeop(uint32_t offset) {
-         this->emit_vmovups(*rsp, xmm0);
-         this->emit_add(16, rsp);
-         this->emit_pop_raw(rax);  // WASM address
-         if (offset != 0) {
-            this->emit_add(static_cast<int32_t>(offset), eax);
-         }
-         this->emit_add(rsi, rax);  // native address = wasm_addr + memory_base
-         this->emit_vmovups(xmm0, *rax);
+      // v128 store: pop 16 bytes into xmm0, load addr from vreg, store 16 bytes
+      void simd_storeop(uint32_t offset, uint32_t addr_vreg = ir_vreg_none) {
+         // Pop low and high qwords from x86 stack
+         this->emit_pop_raw(rcx);   // low qword (was pushed last, on top)
+         this->emit_pop_raw(rdx);   // high qword (was pushed first)
+         // Load address
+         simd_load_address(offset, addr_vreg);
+         this->emit_add(rsi, rax);  // native address
+         // Store via two MOV64
+         this->emit_mov(rcx, *(rax + 0));  // low at addr
+         this->emit_mov(rdx, *(rax + 8));  // high at addr+8
       }
 
       // v128 load lane: pop v128 into xmm0, pop address, insert lane
       template<typename Op>
-      void simd_load_laneop(Op op, uint32_t offset, uint8_t lane) {
+      void simd_load_laneop(Op op, uint32_t offset, uint8_t lane, uint32_t addr_vreg = ir_vreg_none) {
          this->emit_vmovdqu(*rsp, xmm0);
          this->emit_add(16, rsp);
-         this->emit_pop_raw(rax);  // WASM address
-         if (offset != 0) {
-            this->emit_add(static_cast<int32_t>(offset), eax);
-         }
+         simd_load_address(offset, addr_vreg);
          this->emit_add(rsi, rax);
          this->emit(op, typename base::imm8{lane}, *rax, xmm0, xmm0);
          this->emit_sub(16, rsp);
          this->emit_vmovdqu(xmm0, *rsp);
       }
 
-      // v128 store lane: pop v128, pop address, extract lane to memory
+      // v128 store lane: pop v128, load addr from vreg, extract lane to memory
       template<typename Op>
-      void simd_store_laneop(Op op, uint32_t offset, uint8_t lane) {
+      void simd_store_laneop(Op op, uint32_t offset, uint8_t lane, uint32_t addr_vreg = ir_vreg_none) {
          this->emit_vmovdqu(*rsp, xmm0);
          this->emit_add(16, rsp);
-         this->emit_pop_raw(rax);  // WASM address
-         if (offset != 0) {
-            this->emit_add(static_cast<int32_t>(offset), eax);
-         }
+         simd_load_address(offset, addr_vreg);
          this->emit_add(rsi, rax);
          this->emit(op, typename base::imm8{lane}, *rax, xmm0);
       }
@@ -3311,29 +3406,29 @@ namespace eosio { namespace vm {
          auto sub = static_cast<simd_sub>(inst.dest);
          switch (sub) {
          // ── Memory operations ──
-         case simd_sub::v128_load: simd_loadop(base::VMOVDQU_A, inst.simd.offset); break;
-         case simd_sub::v128_load8x8_s: simd_loadop(base::VPMOVSXBW, inst.simd.offset); break;
-         case simd_sub::v128_load8x8_u: simd_loadop(base::VPMOVZXBW, inst.simd.offset); break;
-         case simd_sub::v128_load16x4_s: simd_loadop(base::VPMOVSXWD, inst.simd.offset); break;
-         case simd_sub::v128_load16x4_u: simd_loadop(base::VPMOVZXWD, inst.simd.offset); break;
-         case simd_sub::v128_load32x2_s: simd_loadop(base::VPMOVSXDQ, inst.simd.offset); break;
-         case simd_sub::v128_load32x2_u: simd_loadop(base::VPMOVZXDQ, inst.simd.offset); break;
-         case simd_sub::v128_load8_splat: simd_loadop(base::VPBROADCASTB, inst.simd.offset); break;
-         case simd_sub::v128_load16_splat: simd_loadop(base::VPBROADCASTW, inst.simd.offset); break;
-         case simd_sub::v128_load32_splat: simd_loadop(base::VPBROADCASTD, inst.simd.offset); break;
-         case simd_sub::v128_load64_splat: simd_loadop(base::VPBROADCASTQ, inst.simd.offset); break;
-         case simd_sub::v128_load32_zero: simd_loadop(base::VMOVD_A, inst.simd.offset); break;
-         case simd_sub::v128_load64_zero: simd_loadop(base::VMOVQ_A, inst.simd.offset); break;
-         case simd_sub::v128_store: simd_storeop(inst.simd.offset); break;
+         case simd_sub::v128_load: simd_loadop(base::VMOVDQU_A, inst.simd.offset, inst.simd.addr); break;
+         case simd_sub::v128_load8x8_s: simd_loadop(base::VPMOVSXBW, inst.simd.offset, inst.simd.addr); break;
+         case simd_sub::v128_load8x8_u: simd_loadop(base::VPMOVZXBW, inst.simd.offset, inst.simd.addr); break;
+         case simd_sub::v128_load16x4_s: simd_loadop(base::VPMOVSXWD, inst.simd.offset, inst.simd.addr); break;
+         case simd_sub::v128_load16x4_u: simd_loadop(base::VPMOVZXWD, inst.simd.offset, inst.simd.addr); break;
+         case simd_sub::v128_load32x2_s: simd_loadop(base::VPMOVSXDQ, inst.simd.offset, inst.simd.addr); break;
+         case simd_sub::v128_load32x2_u: simd_loadop(base::VPMOVZXDQ, inst.simd.offset, inst.simd.addr); break;
+         case simd_sub::v128_load8_splat: simd_loadop(base::VPBROADCASTB, inst.simd.offset, inst.simd.addr); break;
+         case simd_sub::v128_load16_splat: simd_loadop(base::VPBROADCASTW, inst.simd.offset, inst.simd.addr); break;
+         case simd_sub::v128_load32_splat: simd_loadop(base::VPBROADCASTD, inst.simd.offset, inst.simd.addr); break;
+         case simd_sub::v128_load64_splat: simd_loadop(base::VPBROADCASTQ, inst.simd.offset, inst.simd.addr); break;
+         case simd_sub::v128_load32_zero: simd_loadop(base::VMOVD_A, inst.simd.offset, inst.simd.addr); break;
+         case simd_sub::v128_load64_zero: simd_loadop(base::VMOVQ_A, inst.simd.offset, inst.simd.addr); break;
+         case simd_sub::v128_store: simd_storeop(inst.simd.offset, inst.simd.addr); break;
 
-         case simd_sub::v128_load8_lane: simd_load_laneop(base::VPINSRB, inst.simd.offset, inst.simd.lane); break;
-         case simd_sub::v128_load16_lane: simd_load_laneop(base::VPINSRW, inst.simd.offset, inst.simd.lane); break;
-         case simd_sub::v128_load32_lane: simd_load_laneop(base::VPINSRD, inst.simd.offset, inst.simd.lane); break;
-         case simd_sub::v128_load64_lane: simd_load_laneop(base::VPINSRQ, inst.simd.offset, inst.simd.lane); break;
-         case simd_sub::v128_store8_lane: simd_store_laneop(base::VPEXTRB, inst.simd.offset, inst.simd.lane); break;
-         case simd_sub::v128_store16_lane: simd_store_laneop(base::VPEXTRW, inst.simd.offset, inst.simd.lane); break;
-         case simd_sub::v128_store32_lane: simd_store_laneop(base::VPEXTRD, inst.simd.offset, inst.simd.lane); break;
-         case simd_sub::v128_store64_lane: simd_store_laneop(base::VPEXTRQ, inst.simd.offset, inst.simd.lane); break;
+         case simd_sub::v128_load8_lane: simd_load_laneop(base::VPINSRB, inst.simd.offset, inst.simd.lane, inst.simd.addr); break;
+         case simd_sub::v128_load16_lane: simd_load_laneop(base::VPINSRW, inst.simd.offset, inst.simd.lane, inst.simd.addr); break;
+         case simd_sub::v128_load32_lane: simd_load_laneop(base::VPINSRD, inst.simd.offset, inst.simd.lane, inst.simd.addr); break;
+         case simd_sub::v128_load64_lane: simd_load_laneop(base::VPINSRQ, inst.simd.offset, inst.simd.lane, inst.simd.addr); break;
+         case simd_sub::v128_store8_lane: simd_store_laneop(base::VPEXTRB, inst.simd.offset, inst.simd.lane, inst.simd.addr); break;
+         case simd_sub::v128_store16_lane: simd_store_laneop(base::VPEXTRW, inst.simd.offset, inst.simd.lane, inst.simd.addr); break;
+         case simd_sub::v128_store32_lane: simd_store_laneop(base::VPEXTRD, inst.simd.offset, inst.simd.lane, inst.simd.addr); break;
+         case simd_sub::v128_store64_lane: simd_store_laneop(base::VPEXTRQ, inst.simd.offset, inst.simd.lane, inst.simd.addr); break;
 
          // ── Shuffle ──
          case simd_sub::i8x16_shuffle: {

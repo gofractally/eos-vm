@@ -64,12 +64,8 @@ namespace eosio { namespace vm {
          codegen.emit_entry_and_error_handlers();
          for (uint32_t i = 0; i < _num_functions; ++i) {
             jit_optimizer::optimize(_functions[i], _scratch);
-            // Skip register allocation for functions with SIMD operations.
-            // SIMD functions use the stack-based fallback codegen exclusively.
-            if (!_functions[i].has_simd) {
-               jit_regalloc::compute_live_intervals(_functions[i], _scratch);
-               jit_regalloc::allocate_registers(_functions[i]);
-            }
+            jit_regalloc::compute_live_intervals(_functions[i], _scratch);
+            jit_regalloc::allocate_registers(_functions[i]);
             codegen.compile_function(_functions[i], _mod.code[i]);
          }
          codegen.finalize_code();
@@ -952,20 +948,20 @@ namespace eosio { namespace vm {
       void emit_i64_extend32_s()     { ir_unop(ir_op::i64_extend32_s, types::i64); }
 
       // ──── SIMD (vstack tracking + v128_op IR emission) ────
-      void emit_v128_load(uint32_t o, uint32_t a)  { ir_simd_load(simd_sub::v128_load, o); }
-      void emit_v128_load8x8_s(uint32_t o, uint32_t a)  { ir_simd_load(simd_sub::v128_load8x8_s, o); }
-      void emit_v128_load8x8_u(uint32_t o, uint32_t a)  { ir_simd_load(simd_sub::v128_load8x8_u, o); }
-      void emit_v128_load16x4_s(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load16x4_s, o); }
-      void emit_v128_load16x4_u(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load16x4_u, o); }
-      void emit_v128_load32x2_s(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load32x2_s, o); }
-      void emit_v128_load32x2_u(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load32x2_u, o); }
-      void emit_v128_load8_splat(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load8_splat, o); }
-      void emit_v128_load16_splat(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load16_splat, o); }
-      void emit_v128_load32_splat(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load32_splat, o); }
-      void emit_v128_load64_splat(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load64_splat, o); }
-      void emit_v128_load32_zero(uint32_t o, uint32_t a)  { ir_simd_load(simd_sub::v128_load32_zero, o); }
-      void emit_v128_load64_zero(uint32_t o, uint32_t a)  { ir_simd_load(simd_sub::v128_load64_zero, o); }
-      void emit_v128_store(uint32_t o, uint32_t a) { ir_simd_store(simd_sub::v128_store, o); }
+      void emit_v128_load(uint32_t /*align*/, uint32_t offset)  { ir_simd_load(simd_sub::v128_load, offset); }
+      void emit_v128_load8x8_s(uint32_t /*align*/, uint32_t offset)  { ir_simd_load(simd_sub::v128_load8x8_s, offset); }
+      void emit_v128_load8x8_u(uint32_t /*align*/, uint32_t offset)  { ir_simd_load(simd_sub::v128_load8x8_u, offset); }
+      void emit_v128_load16x4_s(uint32_t /*align*/, uint32_t offset) { ir_simd_load(simd_sub::v128_load16x4_s, offset); }
+      void emit_v128_load16x4_u(uint32_t /*align*/, uint32_t offset) { ir_simd_load(simd_sub::v128_load16x4_u, offset); }
+      void emit_v128_load32x2_s(uint32_t /*align*/, uint32_t offset) { ir_simd_load(simd_sub::v128_load32x2_s, offset); }
+      void emit_v128_load32x2_u(uint32_t /*align*/, uint32_t offset) { ir_simd_load(simd_sub::v128_load32x2_u, offset); }
+      void emit_v128_load8_splat(uint32_t /*align*/, uint32_t offset) { ir_simd_load(simd_sub::v128_load8_splat, offset); }
+      void emit_v128_load16_splat(uint32_t /*align*/, uint32_t offset) { ir_simd_load(simd_sub::v128_load16_splat, offset); }
+      void emit_v128_load32_splat(uint32_t /*align*/, uint32_t offset) { ir_simd_load(simd_sub::v128_load32_splat, offset); }
+      void emit_v128_load64_splat(uint32_t /*align*/, uint32_t offset) { ir_simd_load(simd_sub::v128_load64_splat, offset); }
+      void emit_v128_load32_zero(uint32_t /*align*/, uint32_t offset)  { ir_simd_load(simd_sub::v128_load32_zero, offset); }
+      void emit_v128_load64_zero(uint32_t /*align*/, uint32_t offset)  { ir_simd_load(simd_sub::v128_load64_zero, offset); }
+      void emit_v128_store(uint32_t /*align*/, uint32_t offset) { ir_simd_store(simd_sub::v128_store, offset); }
       void emit_v128_load8_lane(uint32_t o, uint32_t a, uint8_t l)  { ir_simd_load_lane(simd_sub::v128_load8_lane, o, l); }
       void emit_v128_load16_lane(uint32_t o, uint32_t a, uint8_t l) { ir_simd_load_lane(simd_sub::v128_load16_lane, o, l); }
       void emit_v128_load32_lane(uint32_t o, uint32_t a, uint8_t l) { ir_simd_load_lane(simd_sub::v128_load32_lane, o, l); }
@@ -977,7 +973,7 @@ namespace eosio { namespace vm {
 
       void emit_v128_const(v128_t v) {
          if (!_unreachable) {
-            _func->has_simd = true;
+
             // Emit const_v128 IR instruction with the v128 value in immv128
             ir_inst inst{};
             inst.opcode = ir_op::const_v128;
@@ -994,7 +990,7 @@ namespace eosio { namespace vm {
       }
       void emit_i8x16_shuffle(const uint8_t* l) {
          if (!_unreachable) {
-            _func->has_simd = true;
+
             // Pop two v128 operands (4 vregs)
             _func->vpop(); _func->vpop();
             _func->vpop(); _func->vpop();
@@ -1258,7 +1254,7 @@ namespace eosio { namespace vm {
       SIMD_BINOP(emit_v128_xor)
       void emit_v128_bitselect() {
          if (!_unreachable) {
-            _func->has_simd = true;
+
             _func->vpop(); _func->vpop(); // mask
             _func->vpop(); _func->vpop(); // val2
             _func->vpop(); _func->vpop(); // val1
@@ -1274,7 +1270,7 @@ namespace eosio { namespace vm {
       }
       void emit_v128_any_true() {
          if (!_unreachable) {
-            _func->has_simd = true;
+
             _func->vpop(); _func->vpop();
             ir_inst inst{};
             inst.opcode = ir_op::v128_op;
@@ -1471,13 +1467,14 @@ namespace eosio { namespace vm {
          inst.dest = static_cast<uint32_t>(sub);
          _func->emit(inst);
       }
-      void ir_simd_emit_with_offset(simd_sub sub, uint32_t offset) {
+      void ir_simd_emit_with_offset(simd_sub sub, uint32_t offset, uint32_t addr_vreg = ir_vreg_none) {
          ir_inst inst{};
          inst.opcode = ir_op::v128_op;
          inst.type = types::v128;
          inst.flags = IR_SIDE_EFFECT;
          inst.dest = static_cast<uint32_t>(sub);
          inst.simd.offset = offset;
+         inst.simd.addr = addr_vreg;
          _func->emit(inst);
       }
       void ir_simd_emit_with_offset_lane(simd_sub sub, uint32_t offset, uint8_t lane) {
@@ -1501,18 +1498,16 @@ namespace eosio { namespace vm {
       }
       void ir_simd_load(simd_sub sub, uint32_t offset) {
          if (_unreachable) return;
-         _func->has_simd = true;
-         _func->vpop();
-         ir_simd_emit_with_offset(sub, offset);
+         uint32_t addr = _func->vpop();  // address vreg
+         ir_simd_emit_with_offset(sub, offset, addr);
          uint32_t d1 = _func->alloc_vreg(types::v128); _func->vpush(d1);
          uint32_t d2 = _func->alloc_vreg(types::v128); _func->vpush(d2);
       }
       void ir_simd_store(simd_sub sub, uint32_t offset) {
          if (_unreachable) return;
-         _func->has_simd = true;
-         _func->vpop(); _func->vpop();
-         _func->vpop();
-         ir_simd_emit_with_offset(sub, offset);
+         _func->vpop(); _func->vpop();  // v128 value (2 slots)
+         uint32_t addr = _func->vpop(); // address vreg
+         ir_simd_emit_with_offset(sub, offset, addr);
       }
       void ir_simd_load_lane(simd_sub sub, uint32_t offset, uint8_t lane) {
          if (_unreachable) return;

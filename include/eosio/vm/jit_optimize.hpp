@@ -276,6 +276,10 @@ namespace eosio { namespace vm {
             case ir_op::memory_grow:
                count_use(inst.rr.src1);
                break;
+            case ir_op::v128_op:
+               if (inst.simd.addr != ir_vreg_none)
+                  count_use(inst.simd.addr);
+               break;
             default:
                // All opcode categories with vreg sources are handled above.
                // Unhandled opcodes (memory_fill, memory_copy, table ops, etc.)
