@@ -2314,24 +2314,42 @@ namespace eosio { namespace vm {
 
       // Register-based comparison helper
       bool emit_relop_reg(ir_function& func, const ir_inst& inst, uint32_t idx, Jcc cc, bool is32) {
-         // Try const-immediate: cmp $imm, rax (avoids loading src2 into rcx)
-         bool used_imm = false;
-         if (_func_def_inst && inst.rr.src2 != ir_vreg_none && inst.rr.src2 < _num_vregs) {
+         int8_t pr_s1 = get_phys(inst.rr.src1);
+         int8_t pr_s2 = get_phys(inst.rr.src2);
+
+         // Fast path: both in physical registers — compare directly
+         if (pr_s1 >= 0 && pr_s2 >= 0) {
+            if (is32) this->emit_cmp(phys_to_reg32(pr_s2), phys_to_reg32(pr_s1));
+            else      this->emit_cmp(phys_to_reg64(pr_s2), phys_to_reg64(pr_s1));
+         }
+         // Try const-immediate: cmp $imm, reg
+         else if (_func_def_inst && inst.rr.src2 != ir_vreg_none && inst.rr.src2 < _num_vregs) {
             uint32_t def = _func_def_inst[inst.rr.src2];
+            bool used_imm = false;
             if (def < _func_inst_count) {
                auto& di = _func_insts[def];
                if (di.opcode == ir_op::const_i32 || di.opcode == ir_op::const_i64) {
                   int32_t imm = static_cast<int32_t>(di.imm64);
-                  load_vreg_rax(inst.rr.src1);
-                  if (is32) this->emit_cmp(imm, eax);
-                  else      this->emit_cmp(imm, rax);
+                  if (pr_s1 >= 0) {
+                     if (is32) this->emit_cmp(imm, phys_to_reg32(pr_s1));
+                     else      this->emit_cmp(imm, phys_to_reg64(pr_s1));
+                  } else {
+                     load_vreg_rax(inst.rr.src1);
+                     if (is32) this->emit_cmp(imm, eax);
+                     else      this->emit_cmp(imm, rax);
+                  }
                   if (_func_use_count && _func_use_count[inst.rr.src2] == 1)
                      di.flags |= IR_DEAD;
                   used_imm = true;
                }
             }
-         }
-         if (!used_imm) {
+            if (!used_imm) {
+               load_vreg_rcx(inst.rr.src2);
+               load_vreg_rax(inst.rr.src1);
+               if (is32) this->emit_cmp(ecx, eax);
+               else      this->emit_cmp(rcx, rax);
+            }
+         } else {
             load_vreg_rcx(inst.rr.src2);
             load_vreg_rax(inst.rr.src1);
             if (is32) this->emit_cmp(ecx, eax);
