@@ -154,7 +154,7 @@ namespace eosio { namespace vm {
             // Check if any blocks end at this instruction index
             for (uint32_t b = 0; b < func.block_count; ++b) {
                if (func.blocks[b].end != UINT32_MAX && func.blocks[b].end == i + 1) {
-                  mark_block_end(b);
+                  mark_block_end(func, b);
                }
             }
          }
@@ -465,19 +465,15 @@ namespace eosio { namespace vm {
          // We handle this by checking block boundaries before each instruction
          // in the main loop.
          case ir_op::block:
-            push_if_fixup(nullptr);  // placeholder — block doesn't have an if_ branch
-            break;
          case ir_op::loop:
-            push_if_fixup(nullptr);
             break;
 
          case ir_op::if_: {
-            // Pop condition, test, emit forward conditional branch.
-            // Target will be patched to else_ or end.
+            // Pop condition, test, emit forward conditional branch
             this->emit_pop_raw(rax);
             this->emit(base::TEST, eax, eax);
             void* branch = this->emit_branchcc32(base::JZ);
-            // Store on the if_fixup stack
+            // Store on if_fixup stack (patched by else_ or block end)
             push_if_fixup(branch);
             break;
          }
@@ -492,8 +488,8 @@ namespace eosio { namespace vm {
                fixup->next = _block_fixups[target_block];
                _block_fixups[target_block] = fixup;
             }
-            // Patch the if_ branch to point here (start of else-block)
-            pop_if_fixup(code);
+            // Patch the if_ branch to point HERE (else start)
+            pop_if_fixup_to(code);
             break;
          }
 
@@ -1132,7 +1128,7 @@ namespace eosio { namespace vm {
 
          // Control flow — uses vregs for conditions, block fixups for branches
          case ir_op::if_: {
-            load_vreg_rax(inst.br.src1); // condition vreg
+            load_vreg_rax(inst.br.src1);
             this->emit(base::TEST, eax, eax);
             void* branch = this->emit_branchcc32(base::JZ);
             push_if_fixup(branch);
@@ -1147,7 +1143,7 @@ namespace eosio { namespace vm {
                fixup->next = _block_fixups[target_block];
                _block_fixups[target_block] = fixup;
             }
-            pop_if_fixup(code);
+            pop_if_fixup_to(code);
             return true;
          }
          case ir_op::br: {
@@ -1685,7 +1681,7 @@ namespace eosio { namespace vm {
       }
 
       // Record that a block's code ends at current position (for forward branches)
-      void mark_block_end(uint32_t block_idx) {
+      void mark_block_end(ir_function& func, uint32_t block_idx) {
          if (block_idx >= _num_blocks) return;
          _block_addrs[block_idx] = code;
          // Patch all pending forward references to this block
@@ -1693,8 +1689,10 @@ namespace eosio { namespace vm {
             base::fix_branch(f->branch, code);
          }
          _block_fixups[block_idx] = nullptr;
-         // If there's a pending if_ branch (no else), patch it here
-         pop_if_fixup(code);
+         // For if-blocks without else: patch the if_ conditional branch here
+         if (func.blocks[block_idx].is_if) {
+            pop_if_fixup_to(code);
+         }
       }
 
       // Emit an unconditional 32-bit relative jump, return address to patch
@@ -1958,16 +1956,22 @@ namespace eosio { namespace vm {
          }
       }
 
-      // ──────── If/else fixup stack ────────
+      // ──────── If fixup stack ────────
+      // ONLY used for if_ instructions (not blocks or loops).
+      // The if_ conditional branch is stored here until else_ or block end patches it.
+      static constexpr uint32_t MAX_IF_DEPTH = 256;
+      void* _if_fixups[MAX_IF_DEPTH];
+      uint32_t _if_fixup_top = 0;
+
       void push_if_fixup(void* branch) {
          if (_if_fixup_top < MAX_IF_DEPTH) {
             _if_fixups[_if_fixup_top++] = branch;
          }
       }
-      void pop_if_fixup(void* target) {
+      void pop_if_fixup_to(void* target) {
          if (_if_fixup_top > 0) {
             void* branch = _if_fixups[--_if_fixup_top];
-            if (branch != nullptr && target != nullptr) {
+            if (branch && target) {
                base::fix_branch(branch, target);
             }
          }
@@ -2274,10 +2278,7 @@ namespace eosio { namespace vm {
       void** _block_addrs = nullptr;
       block_fixup** _block_fixups = nullptr;
       uint32_t _num_blocks = 0;
-      // If/else fixup stack — tracks pending if_ conditional branches
-      static constexpr uint32_t MAX_IF_DEPTH = 256;
-      void* _if_fixups[MAX_IF_DEPTH];
-      uint32_t _if_fixup_top = 0;
+      // (if/else fixups stored in block_fixups, no separate stack)
       // br_table state
       bool _in_br_table = false;
       uint32_t _br_table_case = 0;

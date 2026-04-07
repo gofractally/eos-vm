@@ -43,17 +43,11 @@ namespace eosio { namespace vm {
       }
 
       ~ir_writer() {
-         // Dump IR op usage per function
-         for (uint32_t fi = 0; fi < _num_functions; ++fi) {
-            auto& f = _functions[fi];
-            bool ops[256] = {};
-            for (uint32_t i = 0; i < f.inst_count; ++i)
-               ops[static_cast<uint8_t>(f.insts[i].opcode)] = true;
-            fprintf(stderr, "func[%u] ops:", fi);
-            for (int o = 0; o < 256; ++o)
-               if (ops[o]) fprintf(stderr, " %d", o);
-            fprintf(stderr, "\n");
-         }
+         // Pass 1.5: Register allocation (disabled)
+         // for (uint32_t i = 0; i < _num_functions; ++i) {
+         //    jit_regalloc::compute_live_intervals(_functions[i], _allocator);
+         //    jit_regalloc::allocate_registers(_functions[i]);
+         // }
 
          // Pass 2: Code generation (jit_codegen calls start_code in constructor)
          codegen_t codegen(_allocator, _mod);
@@ -188,6 +182,7 @@ namespace eosio { namespace vm {
       branch_t emit_if() {
          ir_control_entry entry{};
          entry.block_idx = _func->new_block();
+         _func->blocks[entry.block_idx].is_if = 1;
          entry.result_type = types::pseudo;
          entry.is_loop = 0;
          entry.is_function = 0;
