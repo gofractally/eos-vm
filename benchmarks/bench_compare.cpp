@@ -421,6 +421,29 @@ static double run_wamr(const std::vector<uint8_t>& wasm, const char* func, uint3
 // ============================================================================
 
 template<typename Impl>
+static void dump_code_sizes(const std::vector<uint8_t>& wasm_bytes, const char* label) {
+   if constexpr (!Impl::is_jit) return;
+   using backend_t = eosio::vm::backend<std::nullptr_t, Impl>;
+   wasm_code code(wasm_bytes.begin(), wasm_bytes.end());
+   wasm_allocator wa;
+   backend_t bkend(code, &wa);
+   bkend.initialize(nullptr);
+   auto& mod = bkend.get_module();
+   uint32_t total = 0;
+   for (uint32_t i = 0; i < mod.code.size(); ++i) {
+      uint32_t offset = mod.code[i].jit_code_offset;
+      uint32_t next = (i + 1 < mod.code.size()) ? mod.code[i+1].jit_code_offset : offset + 1000;
+      uint32_t size = next - offset;
+      total += size;
+      if (mod.code.size() <= 5) {
+         fprintf(stderr, "  %s func[%u]: wasm=%u bytes, native=%u bytes (%.1fx)\n",
+                 label, i, mod.code[i].size, size, (float)size / mod.code[i].size);
+      }
+   }
+   fprintf(stderr, "  %s: %u functions, total native=%u bytes\n", label, (uint32_t)mod.code.size(), total);
+}
+
+template<typename Impl>
 static double run_eosvm_compute(const std::vector<uint8_t>& wasm_bytes, const char* func, uint32_t n) {
    using backend_t = eosio::vm::backend<std::nullptr_t, Impl>;
    wasm_code code(wasm_bytes.begin(), wasm_bytes.end());
@@ -428,9 +451,13 @@ static double run_eosvm_compute(const std::vector<uint8_t>& wasm_bytes, const ch
    backend_t bkend(code, &wa);
    bkend.initialize(nullptr);
 
+   auto result = bkend.call_with_return("env", func, n);
+   int64_t rv = result ? result->to_i64() : -1;
+
    auto t1 = std::chrono::high_resolution_clock::now();
    bkend.call_with_return("env", func, n);
    auto t2 = std::chrono::high_resolution_clock::now();
+   fprintf(stderr, "  %s result=%ld\n", func, rv);
    return std::chrono::duration<double, std::milli>(t2 - t1).count();
 }
 
@@ -712,14 +739,19 @@ int main() {
 
       if (wasm.empty()) continue;
 
-      fprintf(stderr, "compute[%d] interp (%ld iters)...\n", t, iters); fflush(stderr);
+      fprintf(stderr, "\n=== %s ===\n", compute_tests[t].label); fflush(stderr);
+#ifdef __x86_64__
+      dump_code_sizes<jit>(wasm, "jit1");
+      dump_code_sizes<jit2>(wasm, "jit2");
+#endif
+      fprintf(stderr, "interp...\n"); fflush(stderr);
       compute_results[t][RT_INTERP] = run_eosvm_compute<interpreter>(wasm, func, iters);
 #ifdef __x86_64__
-      fprintf(stderr, "compute[%d] jit...\n", t); fflush(stderr);
+      fprintf(stderr, "jit1...\n"); fflush(stderr);
       compute_results[t][RT_JIT] = run_eosvm_compute<jit>(wasm, func, iters);
-      fprintf(stderr, "compute[%d] jit2...\n", t); fflush(stderr);
+      fprintf(stderr, "jit2...\n"); fflush(stderr);
       compute_results[t][RT_JIT2] = run_eosvm_compute<jit2>(wasm, func, iters);
-      fprintf(stderr, "compute[%d] jit2 done\n", t); fflush(stderr);
+      fprintf(stderr, "jit2 done\n"); fflush(stderr);
 #endif
 #ifdef BENCH_HAS_WASM3
       compute_results[t][RT_WASM3] = run_wasm3_compute(wasm, func, iters);
