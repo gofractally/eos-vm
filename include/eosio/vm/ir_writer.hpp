@@ -956,7 +956,7 @@ namespace eosio { namespace vm {
          inst.opcode = op;
          inst.type = type;
          inst.flags = IR_SIDE_EFFECT;
-         inst.dest = ir_vreg_none;
+         inst.dest = val;  // reuse dest field for value vreg (stores have no result)
          inst.ri.src1 = addr;
          inst.ri.imm = static_cast<int32_t>(offset);
          _func->emit(inst);

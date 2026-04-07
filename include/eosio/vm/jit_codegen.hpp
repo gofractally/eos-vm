@@ -115,14 +115,22 @@ namespace eosio { namespace vm {
          if (func.interval_count > 0 && func.intervals) {
             _num_vregs = func.next_vreg;
             _vreg_map = _allocator.alloc<int8_t>(_num_vregs);
-            for (uint32_t v = 0; v < _num_vregs; ++v) _vreg_map[v] = -1;
+            _spill_map = _allocator.alloc<int16_t>(_num_vregs);
+            for (uint32_t v = 0; v < _num_vregs; ++v) {
+               _vreg_map[v] = -1;
+               _spill_map[v] = -1;
+            }
             for (uint32_t iv = 0; iv < func.interval_count; ++iv) {
                auto& interval = func.intervals[iv];
                if (interval.vreg < _num_vregs) {
                   _vreg_map[interval.vreg] = interval.phys_reg;
+                  _spill_map[interval.vreg] = interval.spill_slot;
                }
             }
             _num_spill_slots = func.num_spill_slots;
+            _use_regalloc = true;
+         } else {
+            _use_regalloc = false;
          }
 
          start_function(code, func.func_index + _mod.get_imported_functions_size());
@@ -139,7 +147,9 @@ namespace eosio { namespace vm {
                   mark_block_start(b);
                }
             }
-            emit_ir_inst(func, func.insts[i], i);
+            if (!_use_regalloc || !emit_ir_inst_reg(func, func.insts[i], i)) {
+               emit_ir_inst(func, func.insts[i], i);
+            }
             // Check if any blocks end at this instruction index
             for (uint32_t b = 0; b < func.block_count; ++b) {
                if (func.blocks[b].end != UINT32_MAX && func.blocks[b].end == i + 1) {
@@ -292,9 +302,11 @@ namespace eosio { namespace vm {
          // Allocate space for body locals + spill slots
          uint32_t body_locals = func.num_locals - func.num_params;
          _body_locals = body_locals;
-         if (body_locals > 0) {
+         // Allocate space for body locals + spill slots
+         uint32_t total_slots = body_locals + _num_spill_slots;
+         if (total_slots > 0) {
             this->emit_xor(eax, eax);
-            for (uint32_t i = 0; i < body_locals; ++i) {
+            for (uint32_t i = 0; i < total_slots; ++i) {
                this->emit_push_raw(rax);
             }
          }
@@ -1054,17 +1066,395 @@ namespace eosio { namespace vm {
       }
 
       void emit_function_epilogue(ir_function& func) {
-         // Pop return value if function has one
-         if (func.type->return_count != 0) {
-            this->emit_pop_raw(rax);
+         if (_use_regalloc) {
+            // Register mode: load last vstack value to rax for return
+            if (func.type->return_count != 0 && func.vstack_top > 0) {
+               uint32_t result_vreg = func.vstack[func.vstack_top - 1];
+               load_vreg_rax(result_vreg);
+            }
+         } else {
+            // Stack-based: pop return value
+            if (func.type->return_count != 0) {
+               this->emit_pop_raw(rax);
+            }
          }
          // Restore frame
-         if (func.num_locals > func.num_params) {
-            this->emit_mov(rbp, rsp);
-         }
+         this->emit_mov(rbp, rsp);
          this->emit_pop_raw(rbp);
-         // Call depth counter is managed at call sites, not in epilogue
          this->emit(base::RET);
+      }
+
+      // ──────── Register-based IR emission ────────
+      // Uses physical registers for vreg values instead of push/pop.
+      // rax and rcx are temporaries. Vregs in physical registers are
+      // accessed directly; spilled vregs use fixed rbp-offset slots.
+      //
+      // Returns true if handled, false to fall back to stack-based emission.
+      bool emit_ir_inst_reg(ir_function& func, const ir_inst& inst, uint32_t idx) {
+         switch (inst.opcode) {
+         case ir_op::nop:
+         case ir_op::arg:
+         case ir_op::block:
+         case ir_op::loop:
+         case ir_op::drop:
+            return true;
+
+         // Control flow — uses vregs for conditions, block fixups for branches
+         case ir_op::if_: {
+            load_vreg_rax(inst.br.src1); // condition vreg
+            this->emit(base::TEST, eax, eax);
+            void* branch = this->emit_branchcc32(base::JZ);
+            push_if_fixup(branch);
+            return true;
+         }
+         case ir_op::else_: {
+            uint32_t target_block = inst.br.target;
+            if (target_block < _num_blocks) {
+               void* jmp = emit_jmp32();
+               auto* fixup = _allocator.alloc<block_fixup>(1);
+               fixup->branch = jmp;
+               fixup->next = _block_fixups[target_block];
+               _block_fixups[target_block] = fixup;
+            }
+            pop_if_fixup(code);
+            return true;
+         }
+         case ir_op::br: {
+            if (_in_br_table) {
+               bool is_default = (_br_table_case >= _br_table_size);
+               if (is_default) {
+                  // Default: discard index, branch unconditionally
+                  this->emit_pop_raw(rax);
+                  emit_branch_to_block(func, inst.br.target, 0, types::pseudo);
+                  _in_br_table = false;
+               } else {
+                  this->emit_bytes(0x81, 0x3c, 0x24);
+                  this->emit_operand32(_br_table_case);
+                  void* skip = this->emit_branchcc32(base::JNE);
+                  this->emit_pop_raw(rax);
+                  emit_branch_to_block(func, inst.br.target, 0, types::pseudo);
+                  base::fix_branch(skip, code);
+                  _br_table_case++;
+               }
+            } else {
+               emit_branch_to_block(func, inst.br.target, 0, types::pseudo);
+            }
+            return true;
+         }
+         case ir_op::br_if: {
+            load_vreg_rax(inst.br.src1); // condition
+            this->emit(base::TEST, eax, eax);
+            // Branch to target block if nonzero
+            if (inst.br.target < _num_blocks) {
+               if (_block_addrs[inst.br.target] != nullptr) {
+                  void* branch = this->emit_branchcc32(base::JNZ);
+                  base::fix_branch(branch, _block_addrs[inst.br.target]);
+               } else {
+                  void* branch = this->emit_branchcc32(base::JNZ);
+                  auto* fixup = _allocator.alloc<block_fixup>(1);
+                  fixup->branch = branch;
+                  fixup->next = _block_fixups[inst.br.target];
+                  _block_fixups[inst.br.target] = fixup;
+               }
+            }
+            return true;
+         }
+         case ir_op::br_table: {
+            // Push index to x86 stack for case comparisons (same as stack mode)
+            load_vreg_rax(inst.rr.src1);
+            this->emit_push_raw(rax);
+            _br_table_case = 0;
+            _br_table_size = inst.dest;
+            _in_br_table = true;
+            return true;
+         }
+         case ir_op::unreachable:
+            emit_error_handler(&on_unreachable);
+            return true;
+
+         // Calls — push args from vregs to stack, call, get result
+         case ir_op::call: {
+            // For now, fall back to stack mode for calls
+            // TODO: push args from vregs, call, store result to vreg
+            return false;
+         }
+         case ir_op::call_indirect:
+            return false;
+
+         // Global access
+         case ir_op::global_get: {
+            auto loc = emit_global_loc(inst.local.index);
+            this->emit_mov(loc, rax);
+            store_rax_vreg(inst.dest);
+            return true;
+         }
+         case ir_op::global_set: {
+            load_vreg_rax(inst.local.src1);
+            auto loc = emit_global_loc(inst.local.index);
+            this->emit_mov(rax, loc);
+            return true;
+         }
+
+         // Memory management
+         case ir_op::memory_size:
+         case ir_op::memory_grow:
+            return false; // fall back for these
+
+         case ir_op::const_i32: {
+            uint32_t val = static_cast<uint32_t>(inst.imm64);
+            int8_t pr = get_phys(inst.dest);
+            if (pr >= 0) {
+               this->emit_mov(val, phys_to_reg32(pr));
+            } else {
+               this->emit_mov(val, eax);
+               store_rax_vreg(inst.dest);
+            }
+            return true;
+         }
+         case ir_op::const_i64: {
+            uint64_t val = static_cast<uint64_t>(inst.imm64);
+            int8_t pr = get_phys(inst.dest);
+            if (pr >= 0) {
+               this->emit_mov(val, phys_to_reg64(pr));
+            } else {
+               this->emit_mov(val, rax);
+               store_rax_vreg(inst.dest);
+            }
+            return true;
+         }
+
+         // Integer binary ops
+         case ir_op::i32_add: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_add(s, d); }, true);
+         case ir_op::i32_sub: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, true);
+         case ir_op::i32_mul: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, true);
+         case ir_op::i32_and: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, true);
+         case ir_op::i32_or:  return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, true);
+         case ir_op::i32_xor: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, true);
+
+         case ir_op::i64_add: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_add(s, d); }, false);
+         case ir_op::i64_sub: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, false);
+         case ir_op::i64_mul: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, false);
+         case ir_op::i64_and: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, false);
+         case ir_op::i64_or:  return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, false);
+         case ir_op::i64_xor: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, false);
+
+         // Shifts/rotates with constant folding
+         case ir_op::i32_shl:   return emit_shift_reg(func, inst, 4, true);
+         case ir_op::i32_shr_s: return emit_shift_reg(func, inst, 7, true);
+         case ir_op::i32_shr_u: return emit_shift_reg(func, inst, 5, true);
+         case ir_op::i32_rotl:  return emit_shift_reg(func, inst, 0, true);
+         case ir_op::i32_rotr:  return emit_shift_reg(func, inst, 1, true);
+         case ir_op::i64_shl:   return emit_shift_reg(func, inst, 4, false);
+         case ir_op::i64_shr_s: return emit_shift_reg(func, inst, 7, false);
+         case ir_op::i64_shr_u: return emit_shift_reg(func, inst, 5, false);
+         case ir_op::i64_rotl:  return emit_shift_reg(func, inst, 0, false);
+         case ir_op::i64_rotr:  return emit_shift_reg(func, inst, 1, false);
+
+         // Unary
+         case ir_op::i32_eqz: {
+            load_vreg_rax(inst.rr.src1);
+            this->emit(base::TEST, eax, eax);
+            this->emit_setcc(base::JZ, al);
+            this->emit_bytes(0x0f, 0xb6, 0xc0); // movzbl
+            store_rax_vreg(inst.dest);
+            return true;
+         }
+
+         // Comparisons
+         case ir_op::i32_eq: return emit_relop_reg(inst, base::JE, true);
+         case ir_op::i32_ne: return emit_relop_reg(inst, base::JNE, true);
+         case ir_op::i32_lt_s: return emit_relop_reg(inst, base::JL, true);
+         case ir_op::i32_lt_u: return emit_relop_reg(inst, base::JB, true);
+         case ir_op::i32_gt_s: return emit_relop_reg(inst, base::JG, true);
+         case ir_op::i32_gt_u: return emit_relop_reg(inst, base::JA, true);
+         case ir_op::i32_le_s: return emit_relop_reg(inst, base::JLE, true);
+         case ir_op::i32_le_u: return emit_relop_reg(inst, base::JBE, true);
+         case ir_op::i32_ge_s: return emit_relop_reg(inst, base::JGE, true);
+         case ir_op::i32_ge_u: return emit_relop_reg(inst, base::JAE, true);
+
+         // Local access
+         case ir_op::local_get: {
+            int32_t offset = get_frame_offset(func, inst.local.index);
+            this->emit_mov(*(rbp + offset), rax);
+            store_rax_vreg(inst.dest);
+            return true;
+         }
+         case ir_op::local_set: {
+            int32_t offset = get_frame_offset(func, inst.local.index);
+            load_vreg_rax(inst.local.src1);
+            this->emit_mov(rax, *(rbp + offset));
+            return true;
+         }
+         case ir_op::local_tee: {
+            int32_t offset = get_frame_offset(func, inst.local.index);
+            load_vreg_rax(inst.local.src1);
+            this->emit_mov(rax, *(rbp + offset));
+            // Value stays in src register (tee doesn't consume)
+            return true;
+         }
+
+         // Memory loads (addr in src1, offset in imm)
+         case ir_op::i32_load: return emit_load_reg(inst, base::MOV_A, eax);
+         case ir_op::i64_load: return emit_load_reg(inst, base::MOV_A, rax);
+         case ir_op::i32_load8_u: return emit_load_reg(inst, base::MOVZXB, eax);
+         case ir_op::i32_load16_u: return emit_load_reg(inst, base::MOVZXW, eax);
+         case ir_op::i32_load8_s: return emit_load_reg(inst, base::MOVSXB, eax);
+         case ir_op::i32_load16_s: return emit_load_reg(inst, base::MOVSXW, eax);
+
+         // Memory stores (addr in src1, value in src2... wait, IR uses ri.src1=addr, stores val separately)
+         case ir_op::i32_store: return emit_store_reg(inst, base::MOV_B, eax);
+         case ir_op::i64_store: return emit_store_reg(inst, base::MOV_B, rax);
+         case ir_op::i32_store8: return emit_store_reg(inst, base::MOVB_B, al);
+         case ir_op::i32_store16: return emit_store_reg(inst, base::MOVW_B, ax);
+
+         // Return
+         case ir_op::return_: {
+            if (inst.rr.src1 != ir_vreg_none) {
+               load_vreg_rax(inst.rr.src1);
+            }
+            this->emit_mov(rbp, rsp);
+            this->emit_pop_raw(rbp);
+            this->emit(base::RET);
+            return true;
+         }
+
+         // Conversions that are just register ops
+         case ir_op::i32_wrap_i64: {
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x89, 0xc0); // mov eax, eax (zero-extend)
+            store_rax_vreg(inst.dest);
+            return true;
+         }
+         case ir_op::i64_extend_u_i32: {
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x89, 0xc0); // mov eax, eax
+            store_rax_vreg(inst.dest);
+            return true;
+         }
+         case ir_op::i64_extend_s_i32: {
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x48, 0x63, 0xc0); // movsxd eax, rax
+            store_rax_vreg(inst.dest);
+            return true;
+         }
+
+         // Reinterpret — no-op, just transfer the register
+         case ir_op::i32_reinterpret_f32:
+         case ir_op::i64_reinterpret_f64:
+         case ir_op::f32_reinterpret_i32:
+         case ir_op::f64_reinterpret_i64: {
+            if (inst.rr.src1 != ir_vreg_none && inst.dest != ir_vreg_none) {
+               load_vreg_rax(inst.rr.src1);
+               store_rax_vreg(inst.dest);
+            }
+            return true;
+         }
+
+         default:
+            return false; // fall back to stack-based emission
+         }
+      }
+
+      // Register-based binary op helper
+      template<typename F>
+      bool emit_binop_reg(const ir_inst& inst, F op, bool is32) {
+         int8_t pr_d = get_phys(inst.dest);
+         int8_t pr_s1 = get_phys(inst.rr.src1);
+         int8_t pr_s2 = get_phys(inst.rr.src2);
+
+         if (pr_d >= 0 && pr_s1 >= 0 && pr_s2 >= 0) {
+            // All in registers — optimal
+            if (pr_d != pr_s1) {
+               if (is32) this->emit_mov(phys_to_reg32(pr_s1), phys_to_reg32(pr_d));
+               else      this->emit_mov(phys_to_reg64(pr_s1), phys_to_reg64(pr_d));
+            }
+            if (is32) op(phys_to_reg32(pr_d), phys_to_reg32(pr_s2));
+            else      op(phys_to_reg64(pr_d), phys_to_reg64(pr_s2));
+         } else {
+            // Some spilled — use rax/rcx temps
+            load_vreg_rcx(inst.rr.src2);
+            load_vreg_rax(inst.rr.src1);
+            if (is32) op(eax, ecx);
+            else      op(rax, rcx);
+            store_rax_vreg(inst.dest);
+         }
+         return true;
+      }
+
+      // Register-based comparison helper
+      bool emit_relop_reg(const ir_inst& inst, Jcc cc, bool is32) {
+         load_vreg_rcx(inst.rr.src2);
+         load_vreg_rax(inst.rr.src1);
+         this->emit_xor(edx, edx);
+         if (is32) this->emit_cmp(ecx, eax);
+         else      this->emit_cmp(rcx, rax);
+         this->emit_setcc(cc, dl);
+         this->emit_mov(edx, eax);
+         store_rax_vreg(inst.dest);
+         return true;
+      }
+
+      // Register-based shift with constant folding
+      bool emit_shift_reg(ir_function& func, const ir_inst& inst, uint8_t reg_field, bool is32) {
+         // Check for constant shift amount
+         uint32_t src2_vreg = inst.rr.src2;
+         if (src2_vreg != ir_vreg_none) {
+            for (uint32_t j = func.inst_count; j > 0; --j) {
+               auto& prev = func.insts[j - 1];
+               if (prev.dest == src2_vreg) {
+                  if (prev.opcode == ir_op::const_i32 || prev.opcode == ir_op::const_i64) {
+                     uint8_t amt = static_cast<uint8_t>(prev.imm64 & (is32 ? 0x1f : 0x3f));
+                     prev.flags |= IR_DEAD;
+                     load_vreg_rax(inst.rr.src1);
+                     if (is32) this->emit_bytes(0xc1, static_cast<uint8_t>(0xc0 | (reg_field << 3)), amt);
+                     else      this->emit_bytes(0x48, 0xc1, static_cast<uint8_t>(0xc0 | (reg_field << 3)), amt);
+                     store_rax_vreg(inst.dest);
+                     return true;
+                  }
+                  break;
+               }
+            }
+         }
+         // Variable shift
+         load_vreg_rcx(inst.rr.src2);
+         load_vreg_rax(inst.rr.src1);
+         if (is32) this->emit_bytes(0xd3, static_cast<uint8_t>(0xc0 | (reg_field << 3)));
+         else      this->emit_bytes(0x48, 0xd3, static_cast<uint8_t>(0xc0 | (reg_field << 3)));
+         store_rax_vreg(inst.dest);
+         return true;
+      }
+
+      // Register-based memory load
+      template<class I, class R>
+      bool emit_load_reg(const ir_inst& inst, I instr, R reg) {
+         uint32_t uoffset = static_cast<uint32_t>(inst.ri.imm);
+         load_vreg_rax(inst.ri.src1); // addr
+         if (uoffset & 0x80000000u) {
+            this->emit_mov(uoffset, ecx);
+            this->emit_add(rcx, rax);
+            this->emit(instr, *(rax + rsi + 0), reg);
+         } else {
+            this->emit(instr, *(rax + rsi + uoffset), reg);
+         }
+         store_rax_vreg(inst.dest);
+         return true;
+      }
+
+      // Register-based memory store
+      // inst.dest = value vreg, inst.ri.src1 = addr vreg, inst.ri.imm = offset
+      template<class I, class R>
+      bool emit_store_reg(const ir_inst& inst, I instr, R reg) {
+         uint32_t uoffset = static_cast<uint32_t>(inst.ri.imm);
+         load_vreg_rax(inst.dest);   // value
+         load_vreg_rcx(inst.ri.src1); // addr
+         if (uoffset & 0x80000000u) {
+            this->emit_mov(uoffset, edx);
+            this->emit_add(rdx, rcx);
+            this->emit(instr, *(rcx + rsi + 0), reg);
+         } else {
+            this->emit(instr, *(rcx + rsi + uoffset), reg);
+         }
+         return true;
       }
 
       // ──────── Block address tracking for control flow ────────
@@ -1239,45 +1629,50 @@ namespace eosio { namespace vm {
          return _vreg_map[vreg];
       }
 
-      // Load a vreg's value to rax (temp register)
-      // If vreg is in a phys reg, emit mov. If spilled, load from frame.
-      void load_vreg_to_rax(uint32_t vreg) {
+      // Load a vreg value into rax (temp register for operand loading)
+      void load_vreg_rax(uint32_t vreg) {
+         if (vreg == ir_vreg_none) return;
          int8_t pr = get_phys(vreg);
          if (pr >= 0) {
             this->emit_mov(phys_to_reg64(pr), rax);
-         } else {
-            // Spill slot — load from frame
-            // TODO: compute spill offset from _spill_frame_offset
-            this->emit_mov(*(rbp + spill_offset(vreg)), rax);
+         } else if (_spill_map && vreg < _num_vregs && _spill_map[vreg] >= 0) {
+            this->emit_mov(*(rbp + get_spill_offset(_spill_map[vreg])), rax);
          }
       }
 
-      // Load a vreg to rcx (second temp)
-      void load_vreg_to_rcx(uint32_t vreg) {
+      // Load a vreg value into rcx (second temp)
+      void load_vreg_rcx(uint32_t vreg) {
+         if (vreg == ir_vreg_none) return;
          int8_t pr = get_phys(vreg);
          if (pr >= 0) {
             this->emit_mov(phys_to_reg64(pr), rcx);
-         } else {
-            this->emit_mov(*(rbp + spill_offset(vreg)), rcx);
+         } else if (_spill_map && vreg < _num_vregs && _spill_map[vreg] >= 0) {
+            this->emit_mov(*(rbp + get_spill_offset(_spill_map[vreg])), rcx);
          }
       }
 
-      // Store rax to a vreg's home
-      void store_rax_to_vreg(uint32_t vreg) {
+      // Store rax value to a vreg's home (register or spill slot)
+      void store_rax_vreg(uint32_t vreg) {
+         if (vreg == ir_vreg_none) return;
          int8_t pr = get_phys(vreg);
          if (pr >= 0) {
             this->emit_mov(rax, phys_to_reg64(pr));
-         } else {
-            this->emit_mov(rax, *(rbp + spill_offset(vreg)));
+         } else if (_spill_map && vreg < _num_vregs && _spill_map[vreg] >= 0) {
+            this->emit_mov(rax, *(rbp + get_spill_offset(_spill_map[vreg])));
          }
       }
 
       // Get rbp-relative offset for a spill slot
-      int32_t spill_offset(uint32_t vreg) {
-         // Spill slots are stored in intervals. Find this vreg's spill slot.
-         // For simplicity, use vreg index * -8 after locals
-         // TODO: use actual spill_slot from interval data
-         return -static_cast<int32_t>((_body_locals + vreg + 1) * 8);
+      // Spill slots are after body locals: rbp - (body_locals + slot + 1) * 8
+      int32_t get_spill_offset(int16_t slot) const {
+         return -static_cast<int32_t>((_body_locals + static_cast<uint32_t>(slot) + 1) * 8);
+      }
+
+      // Find the spill slot for a vreg (search intervals)
+      int16_t get_spill_slot(uint32_t vreg) const {
+         // Linear search — could be optimized with a vreg→spill_slot map
+         // but this is only called for spilled vregs (rare path)
+         return -1; // TODO: look up from intervals
       }
 
       // ──────── SSE float helpers ────────
@@ -1665,11 +2060,13 @@ namespace eosio { namespace vm {
       bool _in_br_table = false;
       uint32_t _br_table_case = 0;
       uint32_t _br_table_size = 0;
-      // Register allocation mapping (vreg → phys_reg, -1 = spilled)
-      int8_t* _vreg_map = nullptr;
+      // Register allocation mapping
+      int8_t* _vreg_map = nullptr;    // vreg → phys_reg (-1 = spilled)
+      int16_t* _spill_map = nullptr;  // vreg → spill_slot (-1 = in register)
       uint32_t _num_vregs = 0;
       uint32_t _num_spill_slots = 0;
       uint32_t _body_locals = 0;
+      bool _use_regalloc = false;
    };
 
 }} // namespace eosio::vm
