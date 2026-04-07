@@ -2362,15 +2362,32 @@ namespace eosio { namespace vm {
       template<class I, class R>
       bool emit_load_reg(const ir_inst& inst, I instr, R reg) {
          uint32_t uoffset = static_cast<uint32_t>(inst.ri.imm);
-         load_vreg_rax(inst.ri.src1); // addr
+         int8_t pr_addr = get_phys(inst.ri.src1);
+         int8_t pr_dest = get_phys(inst.dest);
+
+         // Use addr physical register as SIB index when available (skip mov to rax)
+         general_register64 addr = rax;
+         if (pr_addr >= 0 && phys_to_reg64(pr_addr) != rax) {
+            addr = phys_to_reg64(pr_addr);
+         } else {
+            load_vreg_rax(inst.ri.src1);
+         }
+
+         // Emit the load
          if (uoffset & 0x80000000u) {
             this->emit_mov(uoffset, ecx);
-            this->emit_add(rcx, rax);
-            this->emit(instr, *(rax + rsi + 0), reg);
+            this->emit_add(rcx, addr);
+            this->emit(instr, *(addr + rsi + 0), reg);
          } else {
-            this->emit(instr, *(rax + rsi + uoffset), reg);
+            this->emit(instr, *(addr + rsi + uoffset), reg);
          }
-         store_rax_vreg(inst.dest);
+
+         // Move result from reg (eax/rax) to dest physical register if different
+         if (pr_dest >= 0 && phys_to_reg64(pr_dest) != rax) {
+            this->emit_mov(rax, phys_to_reg64(pr_dest));
+         } else {
+            store_rax_vreg(inst.dest);
+         }
          return true;
       }
 
