@@ -390,13 +390,13 @@ namespace eosio { namespace vm {
          case ir_op::i64_or:  emit_binop_ra(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, false); break;
          case ir_op::i64_xor: emit_binop_ra(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, false); break;
 
-         // ── Shifts (with constant folding) ──
-         case ir_op::i32_shl:   emit_shift_opt(func, inst, 4, true); break;  // /4 = SHL
-         case ir_op::i32_shr_s: emit_shift_opt(func, inst, 7, true); break;  // /7 = SAR
-         case ir_op::i32_shr_u: emit_shift_opt(func, inst, 5, true); break;  // /5 = SHR
-         case ir_op::i64_shl:   emit_shift_opt(func, inst, 4, false); break;
-         case ir_op::i64_shr_s: emit_shift_opt(func, inst, 7, false); break;
-         case ir_op::i64_shr_u: emit_shift_opt(func, inst, 5, false); break;
+         // ── Shifts ──
+         case ir_op::i32_shl:   emit_i32_shift(base::SHL_cl); break;
+         case ir_op::i32_shr_s: emit_i32_shift(base::SAR_cl); break;
+         case ir_op::i32_shr_u: emit_i32_shift(base::SHR_cl); break;
+         case ir_op::i64_shl:   emit_i64_shift(base::SHL_cl); break;
+         case ir_op::i64_shr_s: emit_i64_shift(base::SAR_cl); break;
+         case ir_op::i64_shr_u: emit_i64_shift(base::SHR_cl); break;
 
          // ── Comparisons ──
          case ir_op::i32_eqz:
@@ -767,11 +767,11 @@ namespace eosio { namespace vm {
             this->emit_push_raw(rdx);
             break;
 
-         // ── Rotates (with constant folding) ──
-         case ir_op::i32_rotl: emit_shift_opt(func, inst, 0, true); break;  // /0 = ROL
-         case ir_op::i32_rotr: emit_shift_opt(func, inst, 1, true); break;  // /1 = ROR
-         case ir_op::i64_rotl: emit_shift_opt(func, inst, 0, false); break;
-         case ir_op::i64_rotr: emit_shift_opt(func, inst, 1, false); break;
+         // ── Rotates ──
+         case ir_op::i32_rotl: emit_i32_shift(base::ROL_cl); break;
+         case ir_op::i32_rotr: emit_i32_shift(base::ROR_cl); break;
+         case ir_op::i64_rotl: emit_i64_shift(base::ROL_cl); break;
+         case ir_op::i64_rotr: emit_i64_shift(base::ROR_cl); break;
 
          // ── Unary integer ops ──
          case ir_op::i32_clz:
