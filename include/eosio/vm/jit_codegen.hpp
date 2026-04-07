@@ -60,6 +60,39 @@ namespace eosio { namespace vm {
          _code_segment_base = code_segment_base ? code_segment_base : _allocator.start_code();
       }
 
+      // Offset of _remaining_call_depth in the context (frame_info_holder)
+      static constexpr int32_t call_depth_offset() {
+         if constexpr (Context::async_backtrace()) return 16;
+         else return 0;
+      }
+
+      // Emit: decrement call depth in context memory, branch to overflow if zero.
+      // Uses ecx as temp to avoid clobbering rax (needed for call_indirect target).
+      void emit_call_depth_dec() {
+         if constexpr (!StackLimitIsBytes) {
+            auto off = call_depth_offset();
+            if (off) this->emit_mov(*(rdi + off), ecx);
+            else     this->emit_mov(*rdi, ecx);
+            this->emit(base::DECD, ecx);
+            if (off) this->emit_mov(ecx, *(rdi + off));
+            else     this->emit_mov(ecx, *rdi);
+            this->emit(base::TEST, ecx, ecx);
+            base::fix_branch(this->emit_branchcc32(base::JZ), stack_overflow_handler);
+         }
+      }
+
+      // Emit: increment call depth in context memory
+      void emit_call_depth_inc() {
+         if constexpr (!StackLimitIsBytes) {
+            auto off = call_depth_offset();
+            if (off) this->emit_mov(*(rdi + off), ecx);
+            else     this->emit_mov(*rdi, ecx);
+            this->emit(base::INCD, ecx);
+            if (off) this->emit_mov(ecx, *(rdi + off));
+            else     this->emit_mov(ecx, *rdi);
+         }
+      }
+
       // Emit the SysV ABI entry point (same as machine_code_writer)
       void emit_entry_and_error_handlers() {
          // Allocate generous buffers — no reclaim to avoid LIFO issues.
@@ -217,14 +250,7 @@ namespace eosio { namespace vm {
          base::fix_branch8(this->emit_branch8(base::JNZ), loop);
          base::fix_branch8(loop_end, code);
 
-         // load call depth counter
-         this->emit_mov(rbx, *(rbp - 16));
-         if constexpr (Context::async_backtrace()) {
-            this->emit_mov(*(rdi + 16), ebx);
-         } else {
-            this->emit_mov(*rdi, ebx);
-         }
-
+         // Call depth counter lives in context memory (frees rbx for regalloc)
          if constexpr (Context::async_backtrace()) {
             this->emit_mov(rbp, *(rdi + 8));
          }
@@ -233,8 +259,6 @@ namespace eosio { namespace vm {
             this->emit_xor(edx, edx);
             this->emit_mov(rdx, *(rdi + 8));
          }
-
-         this->emit_mov(*(rbp - 16), rbx);
          this->emit_bytes(0x0f, 0xae, 0x55, 0xfc); // ldmxcsr [rbp-4]
 
          // check vector result
@@ -276,7 +300,11 @@ namespace eosio { namespace vm {
          this->emit_bytes(0x48, 0x83, 0xe4, 0xf0); // andq $-16, %rsp
          this->emit_bytes(0x51);             // push %rcx
          this->emit_bytes(0x51);             // push %rcx
-         this->emit_mov(ebx, ecx);
+         // Load call depth from context memory (rdi) into ecx for call_host_function
+         if constexpr (Context::async_backtrace())
+            this->emit_mov(*(rdi + 16), ecx);
+         else
+            this->emit_mov(*rdi, ecx);
          this->emit_bytes(0x48, 0xb8);
          this->emit_operand_ptr(&call_host_function);
          this->emit_bytes(0xff, 0xd0);       // callq *%rax
@@ -317,10 +345,11 @@ namespace eosio { namespace vm {
          // Save callee-saved registers to the frame (after locals and spill slots)
          if (_use_regalloc) {
             int32_t save_offset = -static_cast<int32_t>((body_locals + _num_spill_slots + 1) * 8);
-            if (_callee_saved_used & 1) { this->emit_mov(r12, *(rbp + save_offset)); save_offset -= 8; }
-            if (_callee_saved_used & 2) { this->emit_mov(r13, *(rbp + save_offset)); save_offset -= 8; }
-            if (_callee_saved_used & 4) { this->emit_mov(r14, *(rbp + save_offset)); save_offset -= 8; }
-            if (_callee_saved_used & 8) { this->emit_mov(r15, *(rbp + save_offset)); save_offset -= 8; }
+            if (_callee_saved_used & 1)  { this->emit_mov(rbx, *(rbp + save_offset)); save_offset -= 8; }
+            if (_callee_saved_used & 2)  { this->emit_mov(r12, *(rbp + save_offset)); save_offset -= 8; }
+            if (_callee_saved_used & 4)  { this->emit_mov(r13, *(rbp + save_offset)); save_offset -= 8; }
+            if (_callee_saved_used & 8)  { this->emit_mov(r14, *(rbp + save_offset)); save_offset -= 8; }
+            if (_callee_saved_used & 16) { this->emit_mov(r15, *(rbp + save_offset)); save_offset -= 8; }
          }
       }
 
@@ -526,20 +555,13 @@ namespace eosio { namespace vm {
          case ir_op::call: {
             uint32_t funcnum = inst.call.index;  // absolute index (includes imports)
             const func_type& ft = _mod.get_function_type(funcnum);
-            // Decrement call depth
-            if constexpr (!StackLimitIsBytes) {
-               this->emit(base::DECD, ebx);
-               base::fix_branch(this->emit_branchcc32(base::JZ), stack_overflow_handler);
-            }
+            emit_call_depth_dec();
             // Emit call (may need relocation)
             void* branch = this->emit_call32();
             register_call(branch, funcnum);
             // Pop params, push result
             emit_call_multipop(ft);
-            // Increment call depth
-            if constexpr (!StackLimitIsBytes) {
-               this->emit(base::INCD, ebx);
-            }
+            emit_call_depth_inc();
             break;
          }
          case ir_op::call_indirect: {
@@ -567,16 +589,11 @@ namespace eosio { namespace vm {
             this->emit_operand32(fti);
             base::fix_branch(this->emit_branchcc32(base::JNE), type_error_handler);
             // Call through function pointer
-            if constexpr (!StackLimitIsBytes) {
-               this->emit(base::DECD, ebx);
-               base::fix_branch(this->emit_branchcc32(base::JZ), stack_overflow_handler);
-            }
+            emit_call_depth_dec();
             // call *8(%rax)
             this->emit_bytes(0xff, 0x50, 0x08);
             emit_call_multipop(ft);
-            if constexpr (!StackLimitIsBytes) {
-               this->emit(base::INCD, ebx);
-            }
+            emit_call_depth_inc();
             break;
          }
 
@@ -1148,10 +1165,11 @@ namespace eosio { namespace vm {
          // Restore callee-saved registers from frame
          if (_use_regalloc && _callee_saved_used) {
             int32_t save_offset = -static_cast<int32_t>((_body_locals + _num_spill_slots + 1) * 8);
-            if (_callee_saved_used & 1) { this->emit_mov(*(rbp + save_offset), r12); save_offset -= 8; }
-            if (_callee_saved_used & 2) { this->emit_mov(*(rbp + save_offset), r13); save_offset -= 8; }
-            if (_callee_saved_used & 4) { this->emit_mov(*(rbp + save_offset), r14); save_offset -= 8; }
-            if (_callee_saved_used & 8) { this->emit_mov(*(rbp + save_offset), r15); save_offset -= 8; }
+            if (_callee_saved_used & 1)  { this->emit_mov(*(rbp + save_offset), rbx); save_offset -= 8; }
+            if (_callee_saved_used & 2)  { this->emit_mov(*(rbp + save_offset), r12); save_offset -= 8; }
+            if (_callee_saved_used & 4)  { this->emit_mov(*(rbp + save_offset), r13); save_offset -= 8; }
+            if (_callee_saved_used & 8)  { this->emit_mov(*(rbp + save_offset), r14); save_offset -= 8; }
+            if (_callee_saved_used & 16) { this->emit_mov(*(rbp + save_offset), r15); save_offset -= 8; }
          }
          // Restore frame
          this->emit_mov(rbp, rsp);
@@ -1361,10 +1379,7 @@ namespace eosio { namespace vm {
          case ir_op::call: {
             uint32_t funcnum = inst.call.index;
             const func_type& ft = _mod.get_function_type(funcnum);
-            if constexpr (!StackLimitIsBytes) {
-               this->emit(base::DECD, ebx);
-               base::fix_branch(this->emit_branchcc32(base::JZ), stack_overflow_handler);
-            }
+            emit_call_depth_dec();
             void* branch = emit_call32();
             register_call(branch, funcnum);
             // Args were pushed by arg instructions — pop them
@@ -1373,9 +1388,7 @@ namespace eosio { namespace vm {
                arg_bytes += (ft.param_types[p] == types::v128) ? 16 : 8;
             if (arg_bytes > 0)
                this->emit_add(arg_bytes, rsp);
-            if constexpr (!StackLimitIsBytes) {
-               this->emit(base::INCD, ebx);
-            }
+            emit_call_depth_inc();
             // Store result to dest vreg (result already in rax)
             if (ft.return_count > 0 && inst.dest != ir_vreg_none) {
                store_rax_vreg(inst.dest);
@@ -1403,19 +1416,14 @@ namespace eosio { namespace vm {
             this->emit_bytes(0x81, 0x38);
             this->emit_operand32(fti);
             base::fix_branch(this->emit_branchcc32(base::JNE), type_error_handler);
-            if constexpr (!StackLimitIsBytes) {
-               this->emit(base::DECD, ebx);
-               base::fix_branch(this->emit_branchcc32(base::JZ), stack_overflow_handler);
-            }
+            emit_call_depth_dec();
             this->emit_bytes(0xff, 0x50, 0x08); // call *8(%rax)
             // Remove args, store result
             uint32_t arg_bytes = 0;
             for (uint32_t p = 0; p < ft.param_types.size(); ++p)
                arg_bytes += (ft.param_types[p] == types::v128) ? 16 : 8;
             if (arg_bytes > 0) this->emit_add(arg_bytes, rsp);
-            if constexpr (!StackLimitIsBytes) {
-               this->emit(base::INCD, ebx);
-            }
+            emit_call_depth_inc();
             if (ft.return_count > 0 && inst.dest != ir_vreg_none) {
                store_rax_vreg(inst.dest);
             }
@@ -2575,12 +2583,13 @@ namespace eosio { namespace vm {
       // Must match phys_reg enum: rdx=0, r8=1, r9=2, r10=3, r11=4
       // rax and rcx are reserved as temporaries for spill loads
       static constexpr general_register64 phys_to_reg64(int8_t pr) {
-         // rax/rcx/rdx reserved as temps. Map: r8=0, r9=1, r10=2, r11=3, r12-r15=4-7
+         // Map: r8=0..r11=3 (caller-saved), rbx=4, r12=5..r15=8 (callee-saved)
          constexpr general_register64 map[] = {
             general_register64(8),  // r8
             general_register64(9),  // r9
             general_register64(10), // r10
             general_register64(11), // r11
+            general_register64(3),  // rbx (callee-saved, freed from call depth duty)
             general_register64(12), // r12 (callee-saved)
             general_register64(13), // r13 (callee-saved)
             general_register64(14), // r14 (callee-saved)
@@ -2594,6 +2603,7 @@ namespace eosio { namespace vm {
             general_register32(9),  // r9d
             general_register32(10), // r10d
             general_register32(11), // r11d
+            general_register32(3),  // ebx (callee-saved)
             general_register32(12), // r12d
             general_register32(13), // r13d
             general_register32(14), // r14d

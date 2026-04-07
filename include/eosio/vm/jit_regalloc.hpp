@@ -20,12 +20,13 @@ namespace eosio { namespace vm {
    enum class phys_reg : int8_t {
       none = -1,
       // rax, rcx, rdx reserved (temps + implicit x86 usage in div/mul)
+      // rsi = linear memory base, rdi = context pointer (both reserved)
       // Caller-saved (free, no save/restore):
       r8 = 0, r9 = 1, r10 = 2, r11 = 3,
-      // Callee-saved (must save/restore in prologue/epilogue):
-      r12 = 4, r13 = 5, r14 = 6, r15 = 7,
       caller_saved_count = 4,
-      count = 8,
+      // Callee-saved (must save/restore in prologue/epilogue):
+      rbx = 4, r12 = 5, r13 = 6, r14 = 7, r15 = 8,
+      count = 9,
    };
 
    class jit_regalloc {
