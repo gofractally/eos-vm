@@ -226,14 +226,13 @@ namespace eosio { namespace vm {
       static uint32_t allocate_registers(ir_function& func) {
          if (func.interval_count == 0) return 0;
 
-         // Find call instruction positions — intervals spanning calls must be spilled
-         // since we use caller-saved registers
-         bool has_calls = false;
-         for (uint32_t i = 0; i < func.inst_count; ++i) {
+         // Precompute call positions for fast crosses_call check
+         uint32_t call_positions[256]; // bounded by reasonable function size
+         uint32_t num_calls = 0;
+         for (uint32_t i = 0; i < func.inst_count && num_calls < 256; ++i) {
             if (func.insts[i].opcode == ir_op::call ||
                 func.insts[i].opcode == ir_op::call_indirect) {
-               has_calls = true;
-               break;
+               call_positions[num_calls++] = i;
             }
          }
 
@@ -253,16 +252,19 @@ namespace eosio { namespace vm {
             auto& interval = func.intervals[i];
             if (interval.start == UINT32_MAX) continue;
 
-            // Check if this interval crosses a call instruction
+            // Check if this interval crosses a call instruction (binary search)
             bool crosses_call = false;
-            if (has_calls) {
-               for (uint32_t j = 0; j < func.inst_count; ++j) {
-                  if ((func.insts[j].opcode == ir_op::call ||
-                       func.insts[j].opcode == ir_op::call_indirect) &&
-                      j > interval.start && j < interval.end) {
-                     crosses_call = true;
-                     break;
-                  }
+            if (num_calls > 0 && interval.end > interval.start + 1) {
+               // Find first call position > interval.start
+               uint32_t lo = 0, hi = num_calls;
+               while (lo < hi) {
+                  uint32_t mid = (lo + hi) / 2;
+                  if (call_positions[mid] <= interval.start) lo = mid + 1;
+                  else hi = mid;
+               }
+               // If that call position is < interval.end, the interval crosses it
+               if (lo < num_calls && call_positions[lo] < interval.end) {
+                  crosses_call = true;
                }
             }
 
@@ -307,18 +309,6 @@ namespace eosio { namespace vm {
          }
 
          func.num_spill_slots = next_spill_slot;
-
-         // Compute max liveness for diagnostics
-         uint32_t max_live = 0;
-         for (uint32_t pos = 0; pos < func.inst_count; ++pos) {
-            uint32_t live = 0;
-            for (uint32_t iv = 0; iv < func.interval_count; ++iv) {
-               if (func.intervals[iv].start != UINT32_MAX &&
-                   func.intervals[iv].start <= pos && pos <= func.intervals[iv].end)
-                  ++live;
-            }
-            if (live > max_live) max_live = live;
-         }
          return next_spill_slot;
       }
    };
