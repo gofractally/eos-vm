@@ -15,6 +15,7 @@
 #include <eosio/vm/allocator.hpp>
 #include <eosio/vm/exceptions.hpp>
 #include <eosio/vm/jit_ir.hpp>
+#include <eosio/vm/jit_regalloc.hpp>
 #include <eosio/vm/softfloat.hpp>
 #include <eosio/vm/x86_64_base.hpp>
 #include <eosio/vm/types.hpp>
@@ -128,9 +129,15 @@ namespace eosio { namespace vm {
                }
             }
             _num_spill_slots = func.num_spill_slots;
-            // Regalloc emission ready but needs debugging for complex WASM
-            // (SHA-256 crashes with memory out-of-bounds — spill slot issue)
-            _use_regalloc = false; // TODO: enable after fixing spill addressing
+            _use_regalloc = true;
+            { uint32_t in_reg = 0, spilled = 0;
+              for (uint32_t v = 0; v < _num_vregs; ++v) {
+                 if (_vreg_map[v] >= 0) in_reg++;
+                 else if (_spill_map[v] >= 0) spilled++;
+              }
+              fprintf(stderr, "jit2 func %u: %u vregs, %u in regs, %u spilled, regalloc=%d\n",
+                      func.func_index, _num_vregs, in_reg, spilled, _use_regalloc);
+            }
          } else {
             _use_regalloc = false;
          }
@@ -301,16 +308,38 @@ namespace eosio { namespace vm {
          this->emit_push_raw(rbp);
          this->emit_mov(rsp, rbp);
 
-         // Allocate space for body locals + spill slots
          uint32_t body_locals = func.num_locals - func.num_params;
          _body_locals = body_locals;
-         // Allocate space for body locals + spill slots
-         uint32_t total_slots = body_locals + _num_spill_slots;
+
+         // Count callee-saved registers used
+         _callee_saved_count = 0;
+         _callee_saved_used = 0;
+         if (_use_regalloc) {
+            for (uint32_t v = 0; v < _num_vregs; ++v) {
+               int8_t pr = _vreg_map[v];
+               if (pr >= static_cast<int8_t>(phys_reg::caller_saved_count)) {
+                  _callee_saved_used |= (1 << (pr - static_cast<int8_t>(phys_reg::caller_saved_count)));
+               }
+            }
+            for (int i = 0; i < 4; ++i) if (_callee_saved_used & (1 << i)) _callee_saved_count++;
+         }
+
+         // Allocate space: body locals + spill slots + callee-saved saves
+         uint32_t total_slots = body_locals + _num_spill_slots + _callee_saved_count;
          if (total_slots > 0) {
             this->emit_xor(eax, eax);
             for (uint32_t i = 0; i < total_slots; ++i) {
                this->emit_push_raw(rax);
             }
+         }
+
+         // Save callee-saved registers to the frame (after locals and spill slots)
+         if (_use_regalloc) {
+            int32_t save_offset = -static_cast<int32_t>((body_locals + _num_spill_slots + 1) * 8);
+            if (_callee_saved_used & 1) { this->emit_mov(r12, *(rbp + save_offset)); save_offset -= 8; }
+            if (_callee_saved_used & 2) { this->emit_mov(r13, *(rbp + save_offset)); save_offset -= 8; }
+            if (_callee_saved_used & 4) { this->emit_mov(r14, *(rbp + save_offset)); save_offset -= 8; }
+            if (_callee_saved_used & 8) { this->emit_mov(r15, *(rbp + save_offset)); save_offset -= 8; }
          }
       }
 
@@ -1069,16 +1098,22 @@ namespace eosio { namespace vm {
 
       void emit_function_epilogue(ir_function& func) {
          if (_use_regalloc) {
-            // Register mode: load last vstack value to rax for return
             if (func.type->return_count != 0 && func.vstack_top > 0) {
                uint32_t result_vreg = func.vstack[func.vstack_top - 1];
                load_vreg_rax(result_vreg);
             }
          } else {
-            // Stack-based: pop return value
             if (func.type->return_count != 0) {
                this->emit_pop_raw(rax);
             }
+         }
+         // Restore callee-saved registers from frame
+         if (_use_regalloc && _callee_saved_used) {
+            int32_t save_offset = -static_cast<int32_t>((_body_locals + _num_spill_slots + 1) * 8);
+            if (_callee_saved_used & 1) { this->emit_mov(*(rbp + save_offset), r12); save_offset -= 8; }
+            if (_callee_saved_used & 2) { this->emit_mov(*(rbp + save_offset), r13); save_offset -= 8; }
+            if (_callee_saved_used & 4) { this->emit_mov(*(rbp + save_offset), r14); save_offset -= 8; }
+            if (_callee_saved_used & 8) { this->emit_mov(*(rbp + save_offset), r15); save_offset -= 8; }
          }
          // Restore frame
          this->emit_mov(rbp, rsp);
@@ -1375,8 +1410,167 @@ namespace eosio { namespace vm {
             return true;
          }
 
+         // Unary integer ops
+         case ir_op::i32_clz:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0xf3, 0x0f, 0xbd, 0xc0); // lzcnt eax, eax
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i32_ctz:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0xf3, 0x0f, 0xbc, 0xc0); // tzcnt eax, eax
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i32_popcnt:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0xf3, 0x0f, 0xb8, 0xc0); // popcnt eax, eax
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_eqz:
+            load_vreg_rax(inst.rr.src1);
+            this->emit(base::TEST, rax, rax);
+            this->emit_setcc(base::JZ, al);
+            this->emit_bytes(0x0f, 0xb6, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_clz:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0xbd, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_ctz:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0xbc, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_popcnt:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0xb8, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+
+         // i64 comparisons
+         case ir_op::i64_eq: return emit_relop_reg(inst, base::JE, false);
+         case ir_op::i64_ne: return emit_relop_reg(inst, base::JNE, false);
+         case ir_op::i64_lt_s: return emit_relop_reg(inst, base::JL, false);
+         case ir_op::i64_lt_u: return emit_relop_reg(inst, base::JB, false);
+         case ir_op::i64_gt_s: return emit_relop_reg(inst, base::JG, false);
+         case ir_op::i64_gt_u: return emit_relop_reg(inst, base::JA, false);
+         case ir_op::i64_le_s: return emit_relop_reg(inst, base::JLE, false);
+         case ir_op::i64_le_u: return emit_relop_reg(inst, base::JBE, false);
+         case ir_op::i64_ge_s: return emit_relop_reg(inst, base::JGE, false);
+         case ir_op::i64_ge_u: return emit_relop_reg(inst, base::JAE, false);
+
+         // Division/remainder
+         case ir_op::i32_div_s:
+            load_vreg_rcx(inst.rr.src2);
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x99); // cdq
+            this->emit_bytes(0xf7, 0xf9); // idiv ecx
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i32_div_u:
+            load_vreg_rcx(inst.rr.src2);
+            load_vreg_rax(inst.rr.src1);
+            this->emit_xor(edx, edx);
+            this->emit_bytes(0xf7, 0xf1); // div ecx
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i32_rem_s:
+            load_vreg_rcx(inst.rr.src2);
+            load_vreg_rax(inst.rr.src1);
+            this->emit_cmp(-1, ecx);
+            { void* skip = this->emit_branch8(base::JE);
+              this->emit_bytes(0x99, 0xf7, 0xf9);
+              void* done = this->emit_branch8(base::JMP_8);
+              base::fix_branch8(skip, code);
+              this->emit_xor(edx, edx);
+              base::fix_branch8(done, code); }
+            this->emit_mov(edx, eax);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i32_rem_u:
+            load_vreg_rcx(inst.rr.src2);
+            load_vreg_rax(inst.rr.src1);
+            this->emit_xor(edx, edx);
+            this->emit_bytes(0xf7, 0xf1);
+            this->emit_mov(edx, eax);
+            store_rax_vreg(inst.dest);
+            return true;
+
+         // Select
+         case ir_op::select: {
+            // select: cond=src2 (in rr union it's stored differently)
+            // Actually in our IR: select has dest, src1=val1, src2=val2
+            // and the condition was a separate vpop... hmm
+            // Fall back for select — it has 3 operands which our IR doesn't capture well
+            return false;
+         }
+
+         // i32 sign extensions
+         case ir_op::i32_extend8_s:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x0f, 0xbe, 0xc0); // movsbl al, eax
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i32_extend16_s:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x0f, 0xbf, 0xc0); // movswl ax, eax
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_extend8_s:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x48, 0x0f, 0xbe, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_extend16_s:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x48, 0x0f, 0xbf, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_extend32_s:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x48, 0x63, 0xc0); // movsxd eax, rax
+            store_rax_vreg(inst.dest);
+            return true;
+
+         // Additional loads
+         case ir_op::f32_load: return emit_load_reg(inst, base::MOV_A, eax);
+         case ir_op::f64_load: return emit_load_reg(inst, base::MOV_A, rax);
+         case ir_op::i64_load8_s: return emit_load_reg(inst, base::MOVSXB, rax);
+         case ir_op::i64_load16_s: return emit_load_reg(inst, base::MOVSXW, rax);
+         case ir_op::i64_load32_s: return emit_load_reg(inst, base::MOVSXD, rax);
+         case ir_op::i64_load8_u: return emit_load_reg(inst, base::MOVZXB, eax);
+         case ir_op::i64_load16_u: return emit_load_reg(inst, base::MOVZXW, eax);
+         case ir_op::i64_load32_u: return emit_load_reg(inst, base::MOV_A, eax);
+
+         // Additional stores
+         case ir_op::f32_store: return emit_store_reg(inst, base::MOV_B, eax);
+         case ir_op::f64_store: return emit_store_reg(inst, base::MOV_B, rax);
+         case ir_op::i64_store8: return emit_store_reg(inst, base::MOVB_B, al);
+         case ir_op::i64_store16: return emit_store_reg(inst, base::MOVW_B, ax);
+         case ir_op::i64_store32: return emit_store_reg(inst, base::MOV_B, eax);
+
+         // Const float (just store bits)
+         case ir_op::const_f32: {
+            uint32_t bits;
+            memcpy(&bits, &inst.immf32, 4);
+            this->emit_mov(bits, eax);
+            store_rax_vreg(inst.dest);
+            return true;
+         }
+         case ir_op::const_f64: {
+            uint64_t bits;
+            memcpy(&bits, &inst.immf64, 8);
+            this->emit_mov(bits, rax);
+            store_rax_vreg(inst.dest);
+            return true;
+         }
+
          default:
-            return false; // fall back to stack-based emission
+            // Unknown op — trap so we know what's missing
+            fprintf(stderr, "REGALLOC: unhandled op %u\n", (unsigned)inst.opcode);
+            return false;
          }
       }
 
@@ -1631,6 +1825,10 @@ namespace eosio { namespace vm {
             general_register64(9),  // r9
             general_register64(10), // r10
             general_register64(11), // r11
+            general_register64(12), // r12 (callee-saved)
+            general_register64(13), // r13 (callee-saved)
+            general_register64(14), // r14 (callee-saved)
+            general_register64(15), // r15 (callee-saved)
          };
          return map[pr];
       }
@@ -1641,6 +1839,10 @@ namespace eosio { namespace vm {
             general_register32(9),  // r9d
             general_register32(10), // r10d
             general_register32(11), // r11d
+            general_register32(12), // r12d
+            general_register32(13), // r13d
+            general_register32(14), // r14d
+            general_register32(15), // r15d
          };
          return map[pr];
       }
@@ -2092,6 +2294,8 @@ namespace eosio { namespace vm {
       uint32_t _num_spill_slots = 0;
       uint32_t _body_locals = 0;
       bool _use_regalloc = false;
+      uint32_t _callee_saved_used = 0;
+      uint32_t _callee_saved_count = 0;
    };
 
 }} // namespace eosio::vm

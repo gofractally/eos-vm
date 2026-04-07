@@ -19,9 +19,13 @@ namespace eosio { namespace vm {
    // Physical register assignment
    enum class phys_reg : int8_t {
       none = -1,
-      // rax(0) and rcx(1) reserved as temporaries for spill loads
+      // rax and rcx reserved as temporaries for spill loads
+      // Caller-saved (free, no save/restore):
       rdx = 0, r8 = 1, r9 = 2, r10 = 3, r11 = 4,
-      count = 5,
+      // Callee-saved (must save/restore in prologue/epilogue):
+      r12 = 5, r13 = 6, r14 = 7, r15 = 8,
+      caller_saved_count = 5,
+      count = 9,
    };
 
    class jit_regalloc {
@@ -130,19 +134,22 @@ namespace eosio { namespace vm {
                }
             }
 
-            // If interval crosses a call, must spill (caller-saved regs clobbered)
-            if (crosses_call) {
-               interval.phys_reg = -1;
-               interval.spill_slot = static_cast<int16_t>(next_spill_slot++);
-               continue;
-            }
-
-            // Try to assign a register
             int assigned = -1;
-            for (int r = 0; r < NUM_REGS; ++r) {
-               if (!reg_used[r]) {
-                  assigned = r;
-                  break;
+            if (crosses_call) {
+               // Must use callee-saved register (survives calls)
+               for (int r = static_cast<int>(phys_reg::caller_saved_count); r < NUM_REGS; ++r) {
+                  if (!reg_used[r]) {
+                     assigned = r;
+                     break;
+                  }
+               }
+            } else {
+               // Prefer caller-saved registers first (no save/restore overhead)
+               for (int r = 0; r < NUM_REGS; ++r) {
+                  if (!reg_used[r]) {
+                     assigned = r;
+                     break;
+                  }
                }
             }
 
@@ -157,6 +164,12 @@ namespace eosio { namespace vm {
          }
 
          func.num_spill_slots = next_spill_slot;
+         uint32_t in_reg = 0;
+         for (uint32_t i = 0; i < func.interval_count; ++i) {
+            if (func.intervals[i].start != UINT32_MAX && func.intervals[i].phys_reg >= 0) in_reg++;
+         }
+         fprintf(stderr, "regalloc func %u: %u vregs, %u in regs, %u spilled\n",
+                 func.func_index, func.interval_count, in_reg, next_spill_slot);
          return next_spill_slot;
       }
    };
