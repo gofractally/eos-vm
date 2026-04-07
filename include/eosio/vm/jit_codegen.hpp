@@ -1470,10 +1470,13 @@ namespace eosio { namespace vm {
             return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, true);
          case ir_op::i32_mul: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, true);
          case ir_op::i32_and:
+            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_and(imm, eax); }, true)) return true;
             return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, true);
          case ir_op::i32_or:
+            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_or(imm, eax); }, true)) return true;
             return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, true);
          case ir_op::i32_xor:
+            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_xor(imm, eax); }, true)) return true;
             return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, true);
 
          case ir_op::i64_add:
@@ -1483,9 +1486,15 @@ namespace eosio { namespace vm {
             if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_sub(imm, rax); }, false)) return true;
             return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, false);
          case ir_op::i64_mul: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, false);
-         case ir_op::i64_and: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, false);
-         case ir_op::i64_or:  return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, false);
-         case ir_op::i64_xor: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, false);
+         case ir_op::i64_and:
+            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_and(imm, rax); }, false)) return true;
+            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, false);
+         case ir_op::i64_or:
+            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_or(imm, rax); }, false)) return true;
+            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, false);
+         case ir_op::i64_xor:
+            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_xor(imm, rax); }, false)) return true;
+            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, false);
 
          // Shifts/rotates with constant folding
          case ir_op::i32_shl:   return emit_shift_reg(func, inst, 4, true);
