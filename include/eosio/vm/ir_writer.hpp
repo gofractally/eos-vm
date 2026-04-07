@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <exception>
 
 namespace eosio { namespace vm {
 
@@ -31,33 +32,37 @@ namespace eosio { namespace vm {
       using label_t  = uint32_t;
 
       ir_writer(growable_allocator& alloc, std::size_t source_bytes, module& mod)
-         : _allocator(alloc), _source_bytes(source_bytes), _mod(mod) {
-         // Allocate per-function IR storage. This is allocated BEFORE the code
-         // region so that _code_base[0] is the SysV ABI entry point (the runtime
-         // uses _code_base as the entry function pointer).
+         : _allocator(alloc), _source_bytes(source_bytes), _mod(mod),
+           _scratch(alloc) {
          _num_functions = mod.code.size();
-         _functions = alloc.alloc<ir_function>(_num_functions);
+         _functions = _scratch.alloc<ir_function>(_num_functions);
          for (uint32_t i = 0; i < _num_functions; ++i) {
             _functions[i] = ir_function{};
          }
       }
 
       ~ir_writer() {
+         // If destructor runs during stack unwinding (parsing threw an exception),
+         // skip compilation — some functions may not have been parsed.
+         if (std::uncaught_exceptions() > 0) {
+            return;
+         }
+
          // Pass 1.5: Register allocation
          for (uint32_t i = 0; i < _num_functions; ++i) {
-            jit_regalloc::compute_live_intervals(_functions[i], _allocator);
+            jit_regalloc::compute_live_intervals(_functions[i], _scratch);
             jit_regalloc::allocate_registers(_functions[i]);
          }
 
-         // Pass 2: Code generation (jit_codegen calls start_code in constructor)
+         // Pass 2: Code generation
          codegen_t codegen(_allocator, _mod);
          codegen.emit_entry_and_error_handlers();
          for (uint32_t i = 0; i < _num_functions; ++i) {
             codegen.compile_function(_functions[i], _mod.code[i]);
          }
          codegen.finalize_code();
-         // Reset allocator offset to 0 so that finalize() releases all memory.
-         // IR data was allocated before the code region and is no longer needed.
+         // Reset code allocator offset to reclaim pre-code memory (module data).
+         // The native code has been copied to the jit_allocator by end_code<true>().
          _allocator.reset();
       }
 
@@ -71,7 +76,7 @@ namespace eosio { namespace vm {
       void emit_prologue(const func_type& ft, const std::vector<local_entry>& locals, uint32_t funcnum) {
          // Initialize IR for this function using the actual function body size
          _func = &_functions[funcnum];
-         _func->init(_allocator, _mod.code[funcnum].size);
+         _func->init(_scratch, _mod.code[funcnum].size);
          _func->func_index = funcnum;
          _func->type = &ft;
          _func->num_params = ft.param_types.size();
@@ -132,6 +137,7 @@ namespace eosio { namespace vm {
             if (entry.merge_vreg != ir_vreg_none) {
                if (!_unreachable && entry.result_type != types::pseudo &&
                    _func->vstack_depth() > entry.stack_depth) {
+                  if (entry.result_type == types::v128) _func->vpop(); // extra v128 slot
                   uint32_t else_result = _func->vpop();
                   ir_inst mov{};
                   mov.opcode = ir_op::mov;
@@ -144,11 +150,19 @@ namespace eosio { namespace vm {
                }
                _func->vstack_resize(entry.stack_depth);
                _func->vpush(entry.merge_vreg);
+               if (entry.result_type == types::v128) {
+                  uint32_t extra = _func->alloc_vreg(types::v128);
+                  _func->vpush(extra);
+               }
             } else if (_unreachable) {
                _func->vstack_resize(entry.stack_depth);
                if (entry.result_type != types::pseudo) {
                   uint32_t dest = _func->alloc_vreg(entry.result_type);
                   _func->vpush(dest);
+                  if (entry.result_type == types::v128) {
+                     uint32_t extra = _func->alloc_vreg(types::v128);
+                     _func->vpush(extra);
+                  }
                }
             }
             _unreachable = false;
@@ -164,6 +178,7 @@ namespace eosio { namespace vm {
             inst.flags = IR_SIDE_EFFECT;
             inst.dest = ir_vreg_none;
             if (rt != types::pseudo && _func->vstack_depth() > 0) {
+               if (rt == types::v128) _func->vpop(); // extra v128 slot
                inst.rr.src1 = _func->vpop();
             } else {
                inst.rr.src1 = ir_vreg_none;
@@ -246,8 +261,8 @@ namespace eosio { namespace vm {
             // emit a mov to the merge vreg so both branches write the same destination.
             if (!_unreachable && entry.merge_vreg != ir_vreg_none &&
                 _func->vstack_depth() > entry.stack_depth) {
+               if (entry.result_type == types::v128) _func->vpop(); // extra v128 slot
                uint32_t then_result = _func->vpop();
-               // Emit mov: merge = then_result
                ir_inst mov{};
                mov.opcode = ir_op::mov;
                mov.type = entry.result_type;
@@ -276,6 +291,11 @@ namespace eosio { namespace vm {
                uint32_t else_block = _func->new_block();
                _func->start_block(else_block);
                _func->insts[if_inst_idx].br.target = else_block;
+            }
+            // Clear is_if: the else handles the if_fixup pop, so the
+            // block_end emitted by emit_end shouldn't pop again.
+            if (entry.block_idx < _func->block_count) {
+               _func->blocks[entry.block_idx].is_if = 0;
             }
             _func->vstack_resize(entry.stack_depth);
          }
@@ -489,7 +509,9 @@ namespace eosio { namespace vm {
       void emit_select(uint8_t type) {
          if (!_unreachable) {
             uint32_t cond = _func->vpop();
+            if (type == types::v128) _func->vpop(); // extra v128 slot for val2
             uint32_t val2 = _func->vpop();
+            if (type == types::v128) _func->vpop(); // extra v128 slot for val1
             uint32_t val1 = _func->vpop();
             uint32_t dest = _func->alloc_vreg(type);
             ir_inst inst{};
@@ -501,6 +523,10 @@ namespace eosio { namespace vm {
             inst.sel.cond = static_cast<uint16_t>(cond);
             _func->emit(inst);
             _func->vpush(dest);
+            if (type == types::v128) {
+               uint32_t dest2 = _func->alloc_vreg(type);
+               _func->vpush(dest2);
+            }
          }
       }
 
@@ -516,11 +542,16 @@ namespace eosio { namespace vm {
             inst.local.src1 = ir_vreg_none;
             _func->emit(inst);
             _func->vpush(dest);
+            if (ty == types::v128) {
+               uint32_t dest2 = _func->alloc_vreg(ty);
+               _func->vpush(dest2);
+            }
          }
       }
 
       void emit_set_local(uint32_t li, uint8_t ty) {
          if (!_unreachable) {
+            if (ty == types::v128) _func->vpop(); // extra v128 slot
             uint32_t src = _func->vpop();
             ir_inst inst{};
             inst.opcode = ir_op::local_set;
@@ -535,7 +566,10 @@ namespace eosio { namespace vm {
 
       void emit_tee_local(uint32_t li, uint8_t ty) {
          if (!_unreachable) {
-            uint32_t src = _func->vstack_back();
+            // For v128, peek the low slot (2nd from top since v128 uses 2 slots)
+            uint32_t src = (ty == types::v128 && _func->vstack_depth() >= 2)
+                           ? _func->vstack[_func->vstack_top - 2]
+                           : _func->vstack_back();
             ir_inst inst{};
             inst.opcode = ir_op::local_tee;
             inst.type = ty;
@@ -1179,9 +1213,10 @@ namespace eosio { namespace vm {
       growable_allocator& _allocator;
       std::size_t _source_bytes;
       module& _mod;
-      ir_function* _functions = nullptr;  // Per-function IR array
+      jit_scratch_allocator _scratch;       // All transient data (IR, regalloc, codegen aux)
+      ir_function* _functions = nullptr;
       uint32_t _num_functions = 0;
-      ir_function* _func = nullptr;       // Current function being built
+      ir_function* _func = nullptr;
       bool _unreachable = false;
    };
 

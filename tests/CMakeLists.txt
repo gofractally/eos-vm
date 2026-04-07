@@ -169,6 +169,12 @@ target_include_directories(jit2_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(jit2_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 target_compile_definitions(jit2_tests PUBLIC -DCATCH_CONFIG_NO_POSIX_SIGNALS)
 
+add_executable(jit2_load_test ${CMAKE_CURRENT_SOURCE_DIR}/../tests/jit2_load_test.cpp)
+target_link_libraries(jit2_load_test eos-vm)
+
+add_executable(compile_time ${CMAKE_CURRENT_SOURCE_DIR}/../tests/compile_time.cpp)
+target_link_libraries(compile_time eos-vm)
+
 # ##############
 # disable catch2 from installing it's own signal handlers
 # ##############

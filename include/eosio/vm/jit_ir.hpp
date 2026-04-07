@@ -3,17 +3,48 @@
 // IR definition for the two-pass optimizing JIT (jit2).
 // Each WASM function is lowered to a flat array of ir_inst with virtual registers.
 //
-// ALL data structures are backed by growable_allocator (mmap).
+// Transient data (IR, regalloc, codegen scratch) uses jit_scratch_allocator.
+// Only native code output goes through growable_allocator.
 // No malloc/free anywhere in the hot path.
-// All buffers are bounded proportionally to WASM input size.
 
 #include <eosio/vm/allocator.hpp>
+#include <eosio/vm/exceptions.hpp>
 #include <eosio/vm/types.hpp>
 #include <eosio/vm/vector.hpp>
 
 #include <cstdint>
+#include <sys/mman.h>
 
 namespace eosio { namespace vm {
+
+   // Bump allocator for JIT scratch data (IR, regalloc, codegen aux).
+   // Wraps a growable_allocator, using a saved/restored watermark so that
+   // scratch allocations are reclaimed in bulk without affecting permanent data.
+   // No extra mmap — reuses the existing allocator's warm pages.
+   class jit_scratch_allocator {
+    public:
+      explicit jit_scratch_allocator(growable_allocator& alloc)
+         : _alloc(alloc), _watermark(alloc._offset) {}
+
+      ~jit_scratch_allocator() {
+         // Reclaim all scratch allocations by resetting to the watermark.
+         _alloc._offset = _watermark;
+      }
+
+      jit_scratch_allocator(const jit_scratch_allocator&) = delete;
+      jit_scratch_allocator& operator=(const jit_scratch_allocator&) = delete;
+
+      template <typename T>
+      T* alloc(std::size_t count) {
+         return _alloc.alloc<T>(count);
+      }
+
+      void reset() { _alloc._offset = _watermark; }
+
+    private:
+      growable_allocator& _alloc;
+      std::size_t _watermark;
+   };
 
    // IR opcodes. These mirror WASM operations but in register-transfer form.
    enum class ir_op : uint16_t {
@@ -86,6 +117,8 @@ namespace eosio { namespace vm {
       // Control flow
       block,
       loop,
+      block_start,  // pseudo: dest = block_idx, marks block entry point for codegen
+      block_end,    // pseudo: dest = block_idx, flags bit 0 = is_if
       br,
       br_if,
       br_table,
@@ -214,10 +247,9 @@ namespace eosio { namespace vm {
       const func_type* type       = nullptr;
       uint32_t        num_spill_slots = 0;
 
-      // Initialize with bounded capacity from growable_allocator.
+      // Initialize with bounded capacity from scratch allocator.
       // source_bytes = size of this function's WASM bytecode.
-      // All allocations come from alloc, none from malloc.
-      void init(growable_allocator& alloc, std::size_t source_bytes) {
+      void init(jit_scratch_allocator& alloc, std::size_t source_bytes) {
          // Each WASM byte produces at most 3 IR instructions (e.g. store = addr+store+arg).
          // Add a minimum to handle tiny functions.
          inst_cap = static_cast<uint32_t>(source_bytes * 3 + 16);
@@ -249,16 +281,7 @@ namespace eosio { namespace vm {
          num_spill_slots = 0;
       }
 
-      // Release all buffers back to the allocator.
-      // Must be called when this function's IR is no longer needed (after codegen).
-      void release(growable_allocator& alloc) {
-         alloc.reclaim(ctrl_stack, ctrl_stack_cap);
-         alloc.reclaim(vstack, vstack_cap);
-         alloc.reclaim(blocks, block_cap);
-         alloc.reclaim(insts, inst_cap);
-         insts = nullptr;
-         inst_count = 0;
-      }
+      // No per-function release needed — scratch allocator frees all in bulk.
 
       uint32_t alloc_vreg(uint8_t /*ty*/) {
          return next_vreg++;
@@ -288,15 +311,25 @@ namespace eosio { namespace vm {
       }
 
       void start_block(uint32_t block_idx) {
-         if (block_idx < block_count) {
-            blocks[block_idx].start = current_inst_index();
-         }
+         ir_inst inst{};
+         inst.opcode = ir_op::block_start;
+         inst.type = 0;
+         inst.flags = IR_NONE;
+         inst.dest = block_idx;
+         inst.rr.src1 = ir_vreg_none;
+         inst.rr.src2 = ir_vreg_none;
+         emit(inst);
       }
 
       void end_block(uint32_t block_idx) {
-         if (block_idx < block_count) {
-            blocks[block_idx].end = current_inst_index();
-         }
+         ir_inst inst{};
+         inst.opcode = ir_op::block_end;
+         inst.type = 0;
+         inst.flags = (block_idx < block_count && blocks[block_idx].is_if) ? 1 : 0;
+         inst.dest = block_idx;
+         inst.rr.src1 = ir_vreg_none;
+         inst.rr.src2 = ir_vreg_none;
+         emit(inst);
       }
 
       // Virtual operand stack operations (bounded, no malloc)

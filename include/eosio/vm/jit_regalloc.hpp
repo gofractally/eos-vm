@@ -32,11 +32,11 @@ namespace eosio { namespace vm {
     public:
       // Compute live intervals for all vregs in a function.
       // intervals array must have space for func.next_vreg entries.
-      static void compute_live_intervals(ir_function& func, growable_allocator& alloc) {
+      static void compute_live_intervals(ir_function& func, jit_scratch_allocator& alloc) {
          uint32_t num_vregs = func.next_vreg;
          if (num_vregs == 0) return;
 
-         // Allocate intervals from growable_allocator
+         // Allocate intervals from scratch allocator
          func.intervals = alloc.alloc<ir_live_interval>(num_vregs);
          func.interval_count = num_vregs;
 
@@ -68,8 +68,10 @@ namespace eosio { namespace vm {
             // Destination vreg: defined at this instruction
             // Exception: for store instructions, dest holds the VALUE vreg (a use, not def)
             // — handled in the switch below instead.
+            // block_start/block_end use dest for block_idx, not a vreg — skip them.
             bool is_store = (inst.opcode >= ir_op::i32_store && inst.opcode <= ir_op::i64_store32);
-            if (!is_store && inst.dest != ir_vreg_none && inst.dest < num_vregs) {
+            bool is_block_marker = (inst.opcode == ir_op::block_start || inst.opcode == ir_op::block_end);
+            if (!is_store && !is_block_marker && inst.dest != ir_vreg_none && inst.dest < num_vregs) {
                auto& iv = func.intervals[inst.dest];
                if (i < iv.start) iv.start = i;
                if (i > iv.end) iv.end = i;
@@ -226,13 +228,17 @@ namespace eosio { namespace vm {
       static uint32_t allocate_registers(ir_function& func) {
          if (func.interval_count == 0) return 0;
 
-         // Precompute call positions for fast crosses_call check
-         uint32_t call_positions[256]; // bounded by reasonable function size
-         uint32_t num_calls = 0;
-         for (uint32_t i = 0; i < func.inst_count && num_calls < 256; ++i) {
+         // Build call bitmap for branchless crosses_call check
+         const uint32_t bmp_words = (func.inst_count + 63) / 64;
+         uint64_t call_bmp_stack[64]; // stack-allocate for small functions
+         uint64_t* call_bmp = (bmp_words <= 64) ? call_bmp_stack : new uint64_t[bmp_words];
+         std::memset(call_bmp, 0, bmp_words * sizeof(uint64_t));
+         bool has_calls = false;
+         for (uint32_t i = 0; i < func.inst_count; ++i) {
             if (func.insts[i].opcode == ir_op::call ||
                 func.insts[i].opcode == ir_op::call_indirect) {
-               call_positions[num_calls++] = i;
+               call_bmp[i / 64] |= uint64_t(1) << (i % 64);
+               has_calls = true;
             }
          }
 
@@ -252,19 +258,24 @@ namespace eosio { namespace vm {
             auto& interval = func.intervals[i];
             if (interval.start == UINT32_MAX) continue;
 
-            // Check if this interval crosses a call instruction (binary search)
+            // Branchless bitmap check: any call in (start, end)?
             bool crosses_call = false;
-            if (num_calls > 0 && interval.end > interval.start + 1) {
-               // Find first call position > interval.start
-               uint32_t lo = 0, hi = num_calls;
-               while (lo < hi) {
-                  uint32_t mid = (lo + hi) / 2;
-                  if (call_positions[mid] <= interval.start) lo = mid + 1;
-                  else hi = mid;
-               }
-               // If that call position is < interval.end, the interval crosses it
-               if (lo < num_calls && call_positions[lo] < interval.end) {
-                  crosses_call = true;
+            if (has_calls && interval.end > interval.start + 1) {
+               uint32_t lo = interval.start + 1;
+               uint32_t hi = interval.end; // exclusive
+               uint32_t lo_word = lo / 64, hi_word = (hi - 1) / 64;
+               if (lo_word == hi_word) {
+                  // Same word: mask bits [lo%64, hi%64)
+                  uint64_t mask = (hi % 64 == 0 ? ~uint64_t(0) : (uint64_t(1) << (hi % 64)) - 1)
+                                & ~((uint64_t(1) << (lo % 64)) - 1);
+                  crosses_call = (call_bmp[lo_word] & mask) != 0;
+               } else {
+                  // Scan words — still minimal branching (typically 1-2 words)
+                  uint64_t acc = call_bmp[lo_word] & ~((uint64_t(1) << (lo % 64)) - 1);
+                  for (uint32_t w = lo_word + 1; w < hi_word; ++w) acc |= call_bmp[w];
+                  uint64_t hi_mask = hi % 64 == 0 ? ~uint64_t(0) : (uint64_t(1) << (hi % 64)) - 1;
+                  acc |= call_bmp[hi_word] & hi_mask;
+                  crosses_call = acc != 0;
                }
             }
 
@@ -308,6 +319,7 @@ namespace eosio { namespace vm {
             }
          }
 
+         if (bmp_words > 64) delete[] call_bmp;
          func.num_spill_slots = next_spill_slot;
          return next_spill_slot;
       }

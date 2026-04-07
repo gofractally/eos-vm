@@ -139,23 +139,12 @@ namespace eosio { namespace vm {
          // Emit function prologue
          emit_function_prologue(func);
 
-         // Emit each IR instruction
+         // Emit each IR instruction.
+         // Block boundaries are encoded as block_start/block_end pseudo-instructions
+         // in the IR stream — no O(blocks) scan needed per instruction.
          for (uint32_t i = 0; i < func.inst_count; ++i) {
-            // Check if any blocks start at this instruction index
-            for (uint32_t b = 0; b < func.block_count; ++b) {
-               if (func.blocks[b].start != UINT32_MAX && func.blocks[b].start == i
-                   && _block_addrs[b] == nullptr) {
-                  mark_block_start(b);
-               }
-            }
             if (!_use_regalloc || !emit_ir_inst_reg(func, func.insts[i], i)) {
                emit_ir_inst(func, func.insts[i], i);
-            }
-            // Check if any blocks end at this instruction index
-            for (uint32_t b = 0; b < func.block_count; ++b) {
-               if (func.blocks[b].end != UINT32_MAX && func.blocks[b].end == i + 1) {
-                  mark_block_end(func, b);
-               }
             }
          }
 
@@ -319,13 +308,16 @@ namespace eosio { namespace vm {
             for (int i = 0; i < 4; ++i) if (_callee_saved_used & (1 << i)) _callee_saved_count++;
          }
 
-         // Allocate space: body locals + spill slots + callee-saved saves
+         // Allocate and zero-initialize: body locals + spill slots + callee-saved saves.
+         // Uses sub+rep stosq instead of a push loop to emit constant-size code
+         // regardless of local count (~20 bytes vs 2*N bytes).
          uint32_t total_slots = body_locals + _num_spill_slots + _callee_saved_count;
          if (total_slots > 0) {
-            this->emit_xor(eax, eax);
-            for (uint32_t i = 0; i < total_slots; ++i) {
-               this->emit_push_raw(rax);
-            }
+            this->emit_sub(static_cast<uint32_t>(total_slots * 8), rsp);  // sub rsp, N*8
+            this->emit_mov(rsp, rdi);                                      // rdi = dest (stosq target)
+            this->emit_xor(eax, eax);                                      // eax = 0 (stosq value)
+            this->emit_mov(static_cast<uint32_t>(total_slots), ecx);       // ecx = count
+            this->emit_bytes(0xF3, 0x48, 0xAB);                            // rep stosq
          }
 
          // Save callee-saved registers to the frame (after locals and spill slots)
@@ -463,15 +455,14 @@ namespace eosio { namespace vm {
             // The src is on top of stack and dest replaces it — no code needed.
             break;
 
-         // The IR doesn't emit explicit block/loop/if/else/end instructions.
-         // Block boundaries are tracked via ir_basic_block structures.
-         // The jit_codegen marks block addresses when it sees the first
-         // instruction of a block (using block.start) and patches forward
-         // references when it sees the block end (using block.end).
-         // We handle this by checking block boundaries before each instruction
-         // in the main loop.
          case ir_op::block:
          case ir_op::loop:
+            break;
+         case ir_op::block_start:
+            mark_block_start(inst.dest);
+            break;
+         case ir_op::block_end:
+            mark_block_end(func, inst.dest, inst.flags & 1);
             break;
 
          case ir_op::if_: {
@@ -493,8 +484,7 @@ namespace eosio { namespace vm {
                fixup->branch = jmp;
                fixup->next = _block_fixups[target_block];
                _block_fixups[target_block] = fixup;
-               // Clear is_if so mark_block_end won't double-pop the if_fixup
-               func.blocks[target_block].is_if = 0;
+               // is_if clearing now happens at IR build time (emit_else in ir_writer)
             }
             // Patch the if_ branch to point HERE (else start)
             pop_if_fixup_to(code);
@@ -1188,6 +1178,12 @@ namespace eosio { namespace vm {
          case ir_op::loop:
          case ir_op::drop:
             return true;
+         case ir_op::block_start:
+            mark_block_start(inst.dest);
+            return true;
+         case ir_op::block_end:
+            mark_block_end(func, inst.dest, inst.flags & 1);
+            return true;
 
          // Mov (phi-node merge): dest = src1
          case ir_op::mov: {
@@ -1229,8 +1225,7 @@ namespace eosio { namespace vm {
                fixup->branch = jmp;
                fixup->next = _block_fixups[target_block];
                _block_fixups[target_block] = fixup;
-               // Clear is_if so mark_block_end won't double-pop the if_fixup
-               func.blocks[target_block].is_if = 0;
+               // is_if clearing now happens at IR build time (emit_else in ir_writer)
             }
             pop_if_fixup_to(code);
             return true;
@@ -1932,7 +1927,7 @@ namespace eosio { namespace vm {
       }
 
       // Record that a block's code ends at current position (for forward branches)
-      void mark_block_end(ir_function& func, uint32_t block_idx) {
+      void mark_block_end(ir_function& /*func*/, uint32_t block_idx, bool is_if) {
          if (block_idx >= _num_blocks) return;
          _block_addrs[block_idx] = code;
          // Patch all pending forward references to this block
@@ -1941,7 +1936,7 @@ namespace eosio { namespace vm {
          }
          _block_fixups[block_idx] = nullptr;
          // For if-blocks without else: patch the if_ conditional branch here
-         if (func.blocks[block_idx].is_if) {
+         if (is_if) {
             pop_if_fixup_to(code);
          }
       }
