@@ -223,12 +223,12 @@ namespace eosio { namespace vm {
          _func->ctrl_push(entry);
       }
 
-      label_t emit_loop() {
+      label_t emit_loop(uint8_t result_type = types::pseudo) {
          ir_control_entry entry{};
          entry.block_idx = _func->new_block();
          _func->blocks[entry.block_idx].is_loop = 1;
          entry.stack_depth = _func->vstack_depth();
-         entry.result_type = types::pseudo;
+         entry.result_type = result_type;
          entry.is_loop = 1;
          entry.is_function = 0;
          entry.entered_unreachable = _unreachable ? 1 : 0;

@@ -289,7 +289,7 @@ namespace eosio { namespace vm {
          return emit_br(depth_change, rt);
       }
       void emit_block(uint8_t = 0x40) {}
-      void* emit_loop() { set_branch_target(); return code; }
+      void* emit_loop(uint8_t = 0x40) { set_branch_target(); return code; }
       void* emit_if(uint8_t = 0x40) {
          if (auto cond = try_pop_recent_op<condition_op>()) {
             COUNT_INSTR_NO_FLAGS();

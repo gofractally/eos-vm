@@ -33,7 +33,7 @@ namespace eosio { namespace vm {
          return emit_br(depth_change, rt);
       }
       void emit_block(uint8_t = 0x40) {}
-      uint32_t emit_loop() { return op_index; }
+      uint32_t emit_loop(uint8_t = 0x40) { return op_index; }
       uint32_t* emit_if(uint8_t = 0x40) { 
          if_t& instr = append_instr(if_t{});
          return &instr.pc;

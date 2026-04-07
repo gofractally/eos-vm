@@ -13,7 +13,7 @@ class null_writer {
    label_t emit_end() { return {}; }
    branch_t emit_return(uint32_t /*depth_change*/, uint8_t /*rt*/) { return {}; }
    void emit_block(uint8_t = 0x40) {}
-   label_t emit_loop() { return {}; }
+   label_t emit_loop(uint8_t = 0x40) { return {}; }
    branch_t emit_if(uint8_t = 0x40) { return {}; }
    branch_t emit_else(branch_t /*if_loc*/) { return {}; }
    branch_t emit_br(uint32_t /*depth_change*/, uint8_t /*rt*/, uint32_t /*label*/ = 0) { return {}; }

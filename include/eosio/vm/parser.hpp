@@ -972,7 +972,7 @@ namespace eosio { namespace vm {
                                 (expected_result == types::v128 && detail::get_enable_simd(_options)) ||
                                 expected_result == types::pseudo, wasm_parse_exception,
                                 "Invalid type code in loop");
-                  auto pos = code_writer.emit_loop();
+                  auto pos = code_writer.emit_loop(expected_result);
                   pc_stack.push_back({op_stack.depth(), expected_result, types::pseudo, false, pos});
                   op_stack.push_scope();
                   _nested_checker.on_control(_options);
