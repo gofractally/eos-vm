@@ -1216,7 +1216,7 @@ namespace eosio { namespace vm {
             }
             void* branch = emit_call32();
             register_call(branch, funcnum);
-            // Remove args from stack (no push — register mode)
+            // Args were pushed by arg instructions — pop them
             uint32_t arg_bytes = 0;
             for (uint32_t p = 0; p < ft.param_types.size(); ++p)
                arg_bytes += (ft.param_types[p] == types::v128) ? 16 : 8;

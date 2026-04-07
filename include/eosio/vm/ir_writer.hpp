@@ -318,7 +318,19 @@ namespace eosio { namespace vm {
       // ──── Calls ────
       void emit_call(const func_type& ft, uint32_t funcnum) {
          if (!_unreachable) {
+            // Emit arg instructions to record which vregs are call arguments.
+            // In stack mode these are no-ops; in register mode they push vregs to stack.
             uint32_t nparams = ft.param_types.size();
+            for (uint32_t i = 0; i < nparams; ++i) {
+               uint32_t arg_vreg = _func->vstack[_func->vstack_top - nparams + i];
+               ir_inst arg_inst{};
+               arg_inst.opcode = ir_op::arg;
+               arg_inst.type = ft.param_types[i];
+               arg_inst.dest = ir_vreg_none;
+               arg_inst.rr.src1 = arg_vreg;
+               arg_inst.rr.src2 = ir_vreg_none;
+               _func->emit(arg_inst);
+            }
             for (uint32_t i = 0; i < nparams; ++i) {
                _func->vpop();
             }
