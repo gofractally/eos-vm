@@ -1276,7 +1276,7 @@ namespace eosio { namespace vm {
             return true;
          }
 
-         // Integer binary ops
+         // Integer binary ops (with constant folding for i32)
          case ir_op::i32_add: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_add(s, d); }, true);
          case ir_op::i32_sub: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, true);
          case ir_op::i32_mul: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, true);
@@ -1328,14 +1328,24 @@ namespace eosio { namespace vm {
          // Local access
          case ir_op::local_get: {
             int32_t offset = get_frame_offset(func, inst.local.index);
-            this->emit_mov(*(rbp + offset), rax);
-            store_rax_vreg(inst.dest);
+            int8_t pr = get_phys(inst.dest);
+            if (pr >= 0) {
+               this->emit_mov(*(rbp + offset), phys_to_reg64(pr));
+            } else {
+               this->emit_mov(*(rbp + offset), rax);
+               store_rax_vreg(inst.dest);
+            }
             return true;
          }
          case ir_op::local_set: {
             int32_t offset = get_frame_offset(func, inst.local.index);
-            load_vreg_rax(inst.local.src1);
-            this->emit_mov(rax, *(rbp + offset));
+            int8_t pr = get_phys(inst.local.src1);
+            if (pr >= 0) {
+               this->emit_mov(phys_to_reg64(pr), *(rbp + offset));
+            } else {
+               load_vreg_rax(inst.local.src1);
+               this->emit_mov(rax, *(rbp + offset));
+            }
             return true;
          }
          case ir_op::local_tee: {
@@ -1907,6 +1917,26 @@ namespace eosio { namespace vm {
          // Linear search — could be optimized with a vreg→spill_slot map
          // but this is only called for spilled vregs (rare path)
          return -1; // TODO: look up from intervals
+      }
+
+      // ──────── Constant folding helpers ────────
+      // Check if a vreg was defined by a const instruction and return its value.
+      // If found, marks the const as dead (won't emit code for it).
+      bool try_get_const_i32(ir_function& func, uint32_t vreg, int32_t& out) {
+         if (vreg == ir_vreg_none) return false;
+         // Search backward for the defining instruction
+         for (uint32_t j = func.inst_count; j > 0; --j) {
+            auto& prev = func.insts[j - 1];
+            if (prev.dest == vreg) {
+               if (prev.opcode == ir_op::const_i32) {
+                  out = static_cast<int32_t>(prev.imm64);
+                  prev.flags |= IR_DEAD;
+                  return true;
+               }
+               return false; // defined by non-const
+            }
+         }
+         return false;
       }
 
       // ──────── SSE float helpers ────────
