@@ -6488,8 +6488,19 @@ namespace eosio { namespace vm {
       bool is_host_function(uint32_t funcnum) { return funcnum < _mod.get_imported_functions_size(); }
 
       static native_value call_host_function(Context* context /*rdi*/, native_value* stack /*rsi*/, uint32_t idx /*edx*/, uint32_t remaining_stack) {
-         // It's currently unsafe to throw through a jit frame, because we don't set up
-         // the exception tables for them.
+         { // DEBUG
+            auto& mod = context->get_module();
+            const auto& ft = mod.get_function_type(idx);
+            static int hc = 0;
+            if (++hc <= 50) {
+               fprintf(stderr, "  HOST[%d] idx=%u params=%u:", hc, idx, (unsigned)ft.param_types.size());
+               for (uint32_t i = 0; i < ft.param_types.size() && i < 6; ++i) {
+                  uint32_t si = ft.param_types.size() - i - 1;
+                  fprintf(stderr, " 0x%lx", stack[si].i64);
+               }
+               fprintf(stderr, "\n");
+            }
+         }
          native_value result;
          vm::longjmp_on_exception([&]() {
             auto saved = context->_remaining_call_depth;

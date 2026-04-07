@@ -64,8 +64,12 @@ namespace eosio { namespace vm {
          codegen.emit_entry_and_error_handlers();
          for (uint32_t i = 0; i < _num_functions; ++i) {
             jit_optimizer::optimize(_functions[i], _scratch);
-            jit_regalloc::compute_live_intervals(_functions[i], _scratch);
-            jit_regalloc::allocate_registers(_functions[i]);
+            // Skip register allocation for functions with SIMD operations.
+            // SIMD functions use the stack-based fallback codegen exclusively.
+            if (!_functions[i].has_simd) {
+               jit_regalloc::compute_live_intervals(_functions[i], _scratch);
+               jit_regalloc::allocate_registers(_functions[i]);
+            }
             codegen.compile_function(_functions[i], _mod.code[i]);
          }
          codegen.finalize_code();
@@ -190,7 +194,7 @@ namespace eosio { namespace vm {
          if (!_unreachable) {
             ir_inst inst{};
             inst.opcode = ir_op::return_;
-            inst.type = types::pseudo;
+            inst.type = rt;  // Store return type so codegen knows v128 vs scalar
             inst.flags = IR_SIDE_EFFECT;
             inst.dest = ir_vreg_none;
             if (rt != types::pseudo && _func->vstack_depth() > 0) {
@@ -474,7 +478,9 @@ namespace eosio { namespace vm {
             // Pop params in reverse to get them in correct stack order
             uint32_t param_vregs[64]; // bounded by max params
             for (uint32_t i = 0; i < nparams; ++i) {
-               param_vregs[nparams - 1 - i] = _func->vpop();
+               uint32_t pi = nparams - 1 - i;
+               if (ft.param_types[pi] == types::v128) _func->vpop(); // extra v128 slot
+               param_vregs[pi] = _func->vpop();
             }
             for (uint32_t i = 0; i < nparams; ++i) {
                ir_inst arg{};
@@ -497,6 +503,10 @@ namespace eosio { namespace vm {
                inst.call.src1 = ir_vreg_none;
                _func->emit(inst);
                _func->vpush(dest);
+               if (ft.return_type == types::v128) {
+                  uint32_t dest2 = _func->alloc_vreg(ft.return_type);
+                  _func->vpush(dest2);
+               }
             } else {
                ir_inst inst{};
                inst.opcode = ir_op::call;
@@ -517,7 +527,9 @@ namespace eosio { namespace vm {
             // Emit arg instructions for each parameter
             uint32_t param_vregs[64];
             for (uint32_t i = 0; i < nparams; ++i) {
-               param_vregs[nparams - 1 - i] = _func->vpop();
+               uint32_t pi = nparams - 1 - i;
+               if (ft.param_types[pi] == types::v128) _func->vpop(); // extra v128 slot
+               param_vregs[pi] = _func->vpop();
             }
             for (uint32_t i = 0; i < nparams; ++i) {
                ir_inst arg{};
@@ -551,6 +563,10 @@ namespace eosio { namespace vm {
                inst.call.src1 = table_idx;
                _func->emit(inst);
                _func->vpush(dest);
+               if (ft.return_type == types::v128) {
+                  uint32_t dest2 = _func->alloc_vreg(ft.return_type);
+                  _func->vpush(dest2);
+               }
             } else {
                ir_inst inst{};
                inst.opcode = ir_op::call_indirect;
@@ -568,7 +584,18 @@ namespace eosio { namespace vm {
       void emit_drop(uint8_t type) {
          if (!_unreachable) {
             _func->vpop();
-            if (type == types::v128) _func->vpop();
+            if (type == types::v128) {
+               _func->vpop();
+               // Emit a drop IR so codegen can pop 16 bytes from x86 stack
+               ir_inst inst{};
+               inst.opcode = ir_op::drop;
+               inst.type = types::v128;
+               inst.flags = IR_NONE;
+               inst.dest = ir_vreg_none;
+               inst.rr.src1 = ir_vreg_none;
+               inst.rr.src2 = ir_vreg_none;
+               _func->emit(inst);
+            }
          }
       }
 
@@ -924,48 +951,281 @@ namespace eosio { namespace vm {
       void emit_i64_extend16_s()     { ir_unop(ir_op::i64_extend16_s, types::i64); }
       void emit_i64_extend32_s()     { ir_unop(ir_op::i64_extend32_s, types::i64); }
 
-      // ──── SIMD (vstack tracking only, no IR instructions) ────
-      void emit_v128_load(uint32_t o, uint32_t a)  { ir_simd_load(o); }
-      void emit_v128_load8x8_s(uint32_t o, uint32_t a)  { ir_simd_load(o); }
-      void emit_v128_load8x8_u(uint32_t o, uint32_t a)  { ir_simd_load(o); }
-      void emit_v128_load16x4_s(uint32_t o, uint32_t a) { ir_simd_load(o); }
-      void emit_v128_load16x4_u(uint32_t o, uint32_t a) { ir_simd_load(o); }
-      void emit_v128_load32x2_s(uint32_t o, uint32_t a) { ir_simd_load(o); }
-      void emit_v128_load32x2_u(uint32_t o, uint32_t a) { ir_simd_load(o); }
-      void emit_v128_load8_splat(uint32_t o, uint32_t a) { ir_simd_load(o); }
-      void emit_v128_load16_splat(uint32_t o, uint32_t a) { ir_simd_load(o); }
-      void emit_v128_load32_splat(uint32_t o, uint32_t a) { ir_simd_load(o); }
-      void emit_v128_load64_splat(uint32_t o, uint32_t a) { ir_simd_load(o); }
-      void emit_v128_load32_zero(uint32_t o, uint32_t a)  { ir_simd_load(o); }
-      void emit_v128_load64_zero(uint32_t o, uint32_t a)  { ir_simd_load(o); }
-      void emit_v128_store(uint32_t o, uint32_t a) { ir_simd_store(o); }
-      void emit_v128_load8_lane(uint32_t o, uint32_t a, uint8_t l)  { ir_simd_load_lane(); }
-      void emit_v128_load16_lane(uint32_t o, uint32_t a, uint8_t l) { ir_simd_load_lane(); }
-      void emit_v128_load32_lane(uint32_t o, uint32_t a, uint8_t l) { ir_simd_load_lane(); }
-      void emit_v128_load64_lane(uint32_t o, uint32_t a, uint8_t l) { ir_simd_load_lane(); }
-      void emit_v128_store8_lane(uint32_t o, uint32_t a, uint8_t l)  { ir_simd_store_lane(); }
-      void emit_v128_store16_lane(uint32_t o, uint32_t a, uint8_t l) { ir_simd_store_lane(); }
-      void emit_v128_store32_lane(uint32_t o, uint32_t a, uint8_t l) { ir_simd_store_lane(); }
-      void emit_v128_store64_lane(uint32_t o, uint32_t a, uint8_t l) { ir_simd_store_lane(); }
+      // ──── SIMD (vstack tracking + v128_op IR emission) ────
+      void emit_v128_load(uint32_t o, uint32_t a)  { ir_simd_load(simd_sub::v128_load, o); }
+      void emit_v128_load8x8_s(uint32_t o, uint32_t a)  { ir_simd_load(simd_sub::v128_load8x8_s, o); }
+      void emit_v128_load8x8_u(uint32_t o, uint32_t a)  { ir_simd_load(simd_sub::v128_load8x8_u, o); }
+      void emit_v128_load16x4_s(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load16x4_s, o); }
+      void emit_v128_load16x4_u(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load16x4_u, o); }
+      void emit_v128_load32x2_s(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load32x2_s, o); }
+      void emit_v128_load32x2_u(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load32x2_u, o); }
+      void emit_v128_load8_splat(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load8_splat, o); }
+      void emit_v128_load16_splat(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load16_splat, o); }
+      void emit_v128_load32_splat(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load32_splat, o); }
+      void emit_v128_load64_splat(uint32_t o, uint32_t a) { ir_simd_load(simd_sub::v128_load64_splat, o); }
+      void emit_v128_load32_zero(uint32_t o, uint32_t a)  { ir_simd_load(simd_sub::v128_load32_zero, o); }
+      void emit_v128_load64_zero(uint32_t o, uint32_t a)  { ir_simd_load(simd_sub::v128_load64_zero, o); }
+      void emit_v128_store(uint32_t o, uint32_t a) { ir_simd_store(simd_sub::v128_store, o); }
+      void emit_v128_load8_lane(uint32_t o, uint32_t a, uint8_t l)  { ir_simd_load_lane(simd_sub::v128_load8_lane, o, l); }
+      void emit_v128_load16_lane(uint32_t o, uint32_t a, uint8_t l) { ir_simd_load_lane(simd_sub::v128_load16_lane, o, l); }
+      void emit_v128_load32_lane(uint32_t o, uint32_t a, uint8_t l) { ir_simd_load_lane(simd_sub::v128_load32_lane, o, l); }
+      void emit_v128_load64_lane(uint32_t o, uint32_t a, uint8_t l) { ir_simd_load_lane(simd_sub::v128_load64_lane, o, l); }
+      void emit_v128_store8_lane(uint32_t o, uint32_t a, uint8_t l)  { ir_simd_store_lane(simd_sub::v128_store8_lane, o, l); }
+      void emit_v128_store16_lane(uint32_t o, uint32_t a, uint8_t l) { ir_simd_store_lane(simd_sub::v128_store16_lane, o, l); }
+      void emit_v128_store32_lane(uint32_t o, uint32_t a, uint8_t l) { ir_simd_store_lane(simd_sub::v128_store32_lane, o, l); }
+      void emit_v128_store64_lane(uint32_t o, uint32_t a, uint8_t l) { ir_simd_store_lane(simd_sub::v128_store64_lane, o, l); }
 
       void emit_v128_const(v128_t v) {
          if (!_unreachable) {
+            _func->has_simd = true;
+            // Emit const_v128 IR instruction with the v128 value in immv128
+            ir_inst inst{};
+            inst.opcode = ir_op::const_v128;
+            inst.type = types::v128;
+            inst.flags = IR_NONE;
+            inst.dest = ir_vreg_none;
+            inst.immv128 = v;
+            _func->emit(inst);
             uint32_t dest = _func->alloc_vreg(types::v128);
             _func->vpush(dest);
             uint32_t dest2 = _func->alloc_vreg(types::v128);
             _func->vpush(dest2);
          }
       }
-      void emit_i8x16_shuffle(const uint8_t* l) { ir_simd_binop(); }
+      void emit_i8x16_shuffle(const uint8_t* l) {
+         if (!_unreachable) {
+            _func->has_simd = true;
+            // Pop two v128 operands (4 vregs)
+            _func->vpop(); _func->vpop();
+            _func->vpop(); _func->vpop();
+            // Emit v128_op with shuffle sub-opcode, lanes stored in immv128
+            ir_inst inst{};
+            inst.opcode = ir_op::v128_op;
+            inst.type = types::v128;
+            inst.flags = IR_SIDE_EFFECT;
+            inst.dest = static_cast<uint32_t>(simd_sub::i8x16_shuffle);
+            std::memcpy(&inst.immv128, l, 16);
+            _func->emit(inst);
+            uint32_t d1 = _func->alloc_vreg(types::v128); _func->vpush(d1);
+            uint32_t d2 = _func->alloc_vreg(types::v128); _func->vpush(d2);
+         }
+      }
 
-// SIMD ops: track vstack (2 slots per v128) but don't build IR instructions.
-#define SIMD_UNOP(name)  void name() { ir_simd_unop(); }
-#define SIMD_BINOP(name) void name() { ir_simd_binop(); }
-#define SIMD_SHIFT(name) void name() { ir_simd_shift(); }
-#define SIMD_EXTRACT(name) void name(uint8_t a) { ir_simd_extract(); }
-#define SIMD_REPLACE(name) void name(uint8_t a) { ir_simd_replace(); }
-#define SIMD_SPLAT(name)   void name() { ir_simd_splat(); }
-#define SIMD_RELOP(name)   void name() { ir_simd_binop(); }
+// SIMD ops: track vstack (2 slots per v128) AND emit v128_op IR instructions.
+// The sub-opcode is derived from the function name suffix matching simd_sub enum.
+#define SIMD_UNOP(name)  void name() { ir_simd_unop(name##_sub); }
+#define SIMD_BINOP(name) void name() { ir_simd_binop(name##_sub); }
+#define SIMD_SHIFT(name) void name() { ir_simd_shift(name##_sub); }
+#define SIMD_EXTRACT(name) void name(uint8_t a) { ir_simd_extract(name##_sub, a); }
+#define SIMD_REPLACE(name) void name(uint8_t a) { ir_simd_replace(name##_sub, a); }
+#define SIMD_SPLAT(name)   void name() { ir_simd_splat(name##_sub); }
+#define SIMD_RELOP(name)   void name() { ir_simd_binop(name##_sub); }
+
+// Map emit_xxx function names to simd_sub::xxx enum values.
+// The _sub suffix is appended by the macro to form the enum name.
+// We define bridging constants to handle the emit_ prefix stripping.
+      static constexpr auto emit_i8x16_extract_lane_s_sub = simd_sub::i8x16_extract_lane_s;
+      static constexpr auto emit_i8x16_extract_lane_u_sub = simd_sub::i8x16_extract_lane_u;
+      static constexpr auto emit_i8x16_replace_lane_sub = simd_sub::i8x16_replace_lane;
+      static constexpr auto emit_i16x8_extract_lane_s_sub = simd_sub::i16x8_extract_lane_s;
+      static constexpr auto emit_i16x8_extract_lane_u_sub = simd_sub::i16x8_extract_lane_u;
+      static constexpr auto emit_i16x8_replace_lane_sub = simd_sub::i16x8_replace_lane;
+      static constexpr auto emit_i32x4_extract_lane_sub = simd_sub::i32x4_extract_lane;
+      static constexpr auto emit_i32x4_replace_lane_sub = simd_sub::i32x4_replace_lane;
+      static constexpr auto emit_i64x2_extract_lane_sub = simd_sub::i64x2_extract_lane;
+      static constexpr auto emit_i64x2_replace_lane_sub = simd_sub::i64x2_replace_lane;
+      static constexpr auto emit_f32x4_extract_lane_sub = simd_sub::f32x4_extract_lane;
+      static constexpr auto emit_f32x4_replace_lane_sub = simd_sub::f32x4_replace_lane;
+      static constexpr auto emit_f64x2_extract_lane_sub = simd_sub::f64x2_extract_lane;
+      static constexpr auto emit_f64x2_replace_lane_sub = simd_sub::f64x2_replace_lane;
+      static constexpr auto emit_i8x16_swizzle_sub = simd_sub::i8x16_swizzle;
+      static constexpr auto emit_i8x16_splat_sub = simd_sub::i8x16_splat;
+      static constexpr auto emit_i16x8_splat_sub = simd_sub::i16x8_splat;
+      static constexpr auto emit_i32x4_splat_sub = simd_sub::i32x4_splat;
+      static constexpr auto emit_i64x2_splat_sub = simd_sub::i64x2_splat;
+      static constexpr auto emit_f32x4_splat_sub = simd_sub::f32x4_splat;
+      static constexpr auto emit_f64x2_splat_sub = simd_sub::f64x2_splat;
+      static constexpr auto emit_i8x16_eq_sub = simd_sub::i8x16_eq;
+      static constexpr auto emit_i8x16_ne_sub = simd_sub::i8x16_ne;
+      static constexpr auto emit_i8x16_lt_s_sub = simd_sub::i8x16_lt_s;
+      static constexpr auto emit_i8x16_lt_u_sub = simd_sub::i8x16_lt_u;
+      static constexpr auto emit_i8x16_gt_s_sub = simd_sub::i8x16_gt_s;
+      static constexpr auto emit_i8x16_gt_u_sub = simd_sub::i8x16_gt_u;
+      static constexpr auto emit_i8x16_le_s_sub = simd_sub::i8x16_le_s;
+      static constexpr auto emit_i8x16_le_u_sub = simd_sub::i8x16_le_u;
+      static constexpr auto emit_i8x16_ge_s_sub = simd_sub::i8x16_ge_s;
+      static constexpr auto emit_i8x16_ge_u_sub = simd_sub::i8x16_ge_u;
+      static constexpr auto emit_i16x8_eq_sub = simd_sub::i16x8_eq;
+      static constexpr auto emit_i16x8_ne_sub = simd_sub::i16x8_ne;
+      static constexpr auto emit_i16x8_lt_s_sub = simd_sub::i16x8_lt_s;
+      static constexpr auto emit_i16x8_lt_u_sub = simd_sub::i16x8_lt_u;
+      static constexpr auto emit_i16x8_gt_s_sub = simd_sub::i16x8_gt_s;
+      static constexpr auto emit_i16x8_gt_u_sub = simd_sub::i16x8_gt_u;
+      static constexpr auto emit_i16x8_le_s_sub = simd_sub::i16x8_le_s;
+      static constexpr auto emit_i16x8_le_u_sub = simd_sub::i16x8_le_u;
+      static constexpr auto emit_i16x8_ge_s_sub = simd_sub::i16x8_ge_s;
+      static constexpr auto emit_i16x8_ge_u_sub = simd_sub::i16x8_ge_u;
+      static constexpr auto emit_i32x4_eq_sub = simd_sub::i32x4_eq;
+      static constexpr auto emit_i32x4_ne_sub = simd_sub::i32x4_ne;
+      static constexpr auto emit_i32x4_lt_s_sub = simd_sub::i32x4_lt_s;
+      static constexpr auto emit_i32x4_lt_u_sub = simd_sub::i32x4_lt_u;
+      static constexpr auto emit_i32x4_gt_s_sub = simd_sub::i32x4_gt_s;
+      static constexpr auto emit_i32x4_gt_u_sub = simd_sub::i32x4_gt_u;
+      static constexpr auto emit_i32x4_le_s_sub = simd_sub::i32x4_le_s;
+      static constexpr auto emit_i32x4_le_u_sub = simd_sub::i32x4_le_u;
+      static constexpr auto emit_i32x4_ge_s_sub = simd_sub::i32x4_ge_s;
+      static constexpr auto emit_i32x4_ge_u_sub = simd_sub::i32x4_ge_u;
+      static constexpr auto emit_i64x2_eq_sub = simd_sub::i64x2_eq;
+      static constexpr auto emit_i64x2_ne_sub = simd_sub::i64x2_ne;
+      static constexpr auto emit_i64x2_lt_s_sub = simd_sub::i64x2_lt_s;
+      static constexpr auto emit_i64x2_gt_s_sub = simd_sub::i64x2_gt_s;
+      static constexpr auto emit_i64x2_le_s_sub = simd_sub::i64x2_le_s;
+      static constexpr auto emit_i64x2_ge_s_sub = simd_sub::i64x2_ge_s;
+      static constexpr auto emit_f32x4_eq_sub = simd_sub::f32x4_eq;
+      static constexpr auto emit_f32x4_ne_sub = simd_sub::f32x4_ne;
+      static constexpr auto emit_f32x4_lt_sub = simd_sub::f32x4_lt;
+      static constexpr auto emit_f32x4_gt_sub = simd_sub::f32x4_gt;
+      static constexpr auto emit_f32x4_le_sub = simd_sub::f32x4_le;
+      static constexpr auto emit_f32x4_ge_sub = simd_sub::f32x4_ge;
+      static constexpr auto emit_f64x2_eq_sub = simd_sub::f64x2_eq;
+      static constexpr auto emit_f64x2_ne_sub = simd_sub::f64x2_ne;
+      static constexpr auto emit_f64x2_lt_sub = simd_sub::f64x2_lt;
+      static constexpr auto emit_f64x2_gt_sub = simd_sub::f64x2_gt;
+      static constexpr auto emit_f64x2_le_sub = simd_sub::f64x2_le;
+      static constexpr auto emit_f64x2_ge_sub = simd_sub::f64x2_ge;
+      static constexpr auto emit_v128_not_sub = simd_sub::v128_not;
+      static constexpr auto emit_v128_and_sub = simd_sub::v128_and;
+      static constexpr auto emit_v128_andnot_sub = simd_sub::v128_andnot;
+      static constexpr auto emit_v128_or_sub = simd_sub::v128_or;
+      static constexpr auto emit_v128_xor_sub = simd_sub::v128_xor;
+      static constexpr auto emit_i8x16_abs_sub = simd_sub::i8x16_abs;
+      static constexpr auto emit_i8x16_neg_sub = simd_sub::i8x16_neg;
+      static constexpr auto emit_i8x16_popcnt_sub = simd_sub::i8x16_popcnt;
+      static constexpr auto emit_i8x16_narrow_i16x8_s_sub = simd_sub::i8x16_narrow_i16x8_s;
+      static constexpr auto emit_i8x16_narrow_i16x8_u_sub = simd_sub::i8x16_narrow_i16x8_u;
+      static constexpr auto emit_i8x16_shl_sub = simd_sub::i8x16_shl;
+      static constexpr auto emit_i8x16_shr_s_sub = simd_sub::i8x16_shr_s;
+      static constexpr auto emit_i8x16_shr_u_sub = simd_sub::i8x16_shr_u;
+      static constexpr auto emit_i8x16_add_sub = simd_sub::i8x16_add;
+      static constexpr auto emit_i8x16_add_sat_s_sub = simd_sub::i8x16_add_sat_s;
+      static constexpr auto emit_i8x16_add_sat_u_sub = simd_sub::i8x16_add_sat_u;
+      static constexpr auto emit_i8x16_sub_sub = simd_sub::i8x16_sub;
+      static constexpr auto emit_i8x16_sub_sat_s_sub = simd_sub::i8x16_sub_sat_s;
+      static constexpr auto emit_i8x16_sub_sat_u_sub = simd_sub::i8x16_sub_sat_u;
+      static constexpr auto emit_i8x16_min_s_sub = simd_sub::i8x16_min_s;
+      static constexpr auto emit_i8x16_min_u_sub = simd_sub::i8x16_min_u;
+      static constexpr auto emit_i8x16_max_s_sub = simd_sub::i8x16_max_s;
+      static constexpr auto emit_i8x16_max_u_sub = simd_sub::i8x16_max_u;
+      static constexpr auto emit_i8x16_avgr_u_sub = simd_sub::i8x16_avgr_u;
+      static constexpr auto emit_i16x8_extadd_pairwise_i8x16_s_sub = simd_sub::i16x8_extadd_pairwise_i8x16_s;
+      static constexpr auto emit_i16x8_extadd_pairwise_i8x16_u_sub = simd_sub::i16x8_extadd_pairwise_i8x16_u;
+      static constexpr auto emit_i16x8_abs_sub = simd_sub::i16x8_abs;
+      static constexpr auto emit_i16x8_neg_sub = simd_sub::i16x8_neg;
+      static constexpr auto emit_i16x8_q15mulr_sat_s_sub = simd_sub::i16x8_q15mulr_sat_s;
+      static constexpr auto emit_i16x8_narrow_i32x4_s_sub = simd_sub::i16x8_narrow_i32x4_s;
+      static constexpr auto emit_i16x8_narrow_i32x4_u_sub = simd_sub::i16x8_narrow_i32x4_u;
+      static constexpr auto emit_i16x8_extend_low_i8x16_s_sub = simd_sub::i16x8_extend_low_i8x16_s;
+      static constexpr auto emit_i16x8_extend_high_i8x16_s_sub = simd_sub::i16x8_extend_high_i8x16_s;
+      static constexpr auto emit_i16x8_extend_low_i8x16_u_sub = simd_sub::i16x8_extend_low_i8x16_u;
+      static constexpr auto emit_i16x8_extend_high_i8x16_u_sub = simd_sub::i16x8_extend_high_i8x16_u;
+      static constexpr auto emit_i16x8_shl_sub = simd_sub::i16x8_shl;
+      static constexpr auto emit_i16x8_shr_s_sub = simd_sub::i16x8_shr_s;
+      static constexpr auto emit_i16x8_shr_u_sub = simd_sub::i16x8_shr_u;
+      static constexpr auto emit_i16x8_add_sub = simd_sub::i16x8_add;
+      static constexpr auto emit_i16x8_add_sat_s_sub = simd_sub::i16x8_add_sat_s;
+      static constexpr auto emit_i16x8_add_sat_u_sub = simd_sub::i16x8_add_sat_u;
+      static constexpr auto emit_i16x8_sub_sub = simd_sub::i16x8_sub;
+      static constexpr auto emit_i16x8_sub_sat_s_sub = simd_sub::i16x8_sub_sat_s;
+      static constexpr auto emit_i16x8_sub_sat_u_sub = simd_sub::i16x8_sub_sat_u;
+      static constexpr auto emit_i16x8_mul_sub = simd_sub::i16x8_mul;
+      static constexpr auto emit_i16x8_min_s_sub = simd_sub::i16x8_min_s;
+      static constexpr auto emit_i16x8_min_u_sub = simd_sub::i16x8_min_u;
+      static constexpr auto emit_i16x8_max_s_sub = simd_sub::i16x8_max_s;
+      static constexpr auto emit_i16x8_max_u_sub = simd_sub::i16x8_max_u;
+      static constexpr auto emit_i16x8_avgr_u_sub = simd_sub::i16x8_avgr_u;
+      static constexpr auto emit_i16x8_extmul_low_i8x16_s_sub = simd_sub::i16x8_extmul_low_i8x16_s;
+      static constexpr auto emit_i16x8_extmul_high_i8x16_s_sub = simd_sub::i16x8_extmul_high_i8x16_s;
+      static constexpr auto emit_i16x8_extmul_low_i8x16_u_sub = simd_sub::i16x8_extmul_low_i8x16_u;
+      static constexpr auto emit_i16x8_extmul_high_i8x16_u_sub = simd_sub::i16x8_extmul_high_i8x16_u;
+      static constexpr auto emit_i32x4_extadd_pairwise_i16x8_s_sub = simd_sub::i32x4_extadd_pairwise_i16x8_s;
+      static constexpr auto emit_i32x4_extadd_pairwise_i16x8_u_sub = simd_sub::i32x4_extadd_pairwise_i16x8_u;
+      static constexpr auto emit_i32x4_abs_sub = simd_sub::i32x4_abs;
+      static constexpr auto emit_i32x4_neg_sub = simd_sub::i32x4_neg;
+      static constexpr auto emit_i32x4_extend_low_i16x8_s_sub = simd_sub::i32x4_extend_low_i16x8_s;
+      static constexpr auto emit_i32x4_extend_high_i16x8_s_sub = simd_sub::i32x4_extend_high_i16x8_s;
+      static constexpr auto emit_i32x4_extend_low_i16x8_u_sub = simd_sub::i32x4_extend_low_i16x8_u;
+      static constexpr auto emit_i32x4_extend_high_i16x8_u_sub = simd_sub::i32x4_extend_high_i16x8_u;
+      static constexpr auto emit_i32x4_shl_sub = simd_sub::i32x4_shl;
+      static constexpr auto emit_i32x4_shr_s_sub = simd_sub::i32x4_shr_s;
+      static constexpr auto emit_i32x4_shr_u_sub = simd_sub::i32x4_shr_u;
+      static constexpr auto emit_i32x4_add_sub = simd_sub::i32x4_add;
+      static constexpr auto emit_i32x4_sub_sub = simd_sub::i32x4_sub;
+      static constexpr auto emit_i32x4_mul_sub = simd_sub::i32x4_mul;
+      static constexpr auto emit_i32x4_min_s_sub = simd_sub::i32x4_min_s;
+      static constexpr auto emit_i32x4_min_u_sub = simd_sub::i32x4_min_u;
+      static constexpr auto emit_i32x4_max_s_sub = simd_sub::i32x4_max_s;
+      static constexpr auto emit_i32x4_max_u_sub = simd_sub::i32x4_max_u;
+      static constexpr auto emit_i32x4_dot_i16x8_s_sub = simd_sub::i32x4_dot_i16x8_s;
+      static constexpr auto emit_i32x4_extmul_low_i16x8_s_sub = simd_sub::i32x4_extmul_low_i16x8_s;
+      static constexpr auto emit_i32x4_extmul_high_i16x8_s_sub = simd_sub::i32x4_extmul_high_i16x8_s;
+      static constexpr auto emit_i32x4_extmul_low_i16x8_u_sub = simd_sub::i32x4_extmul_low_i16x8_u;
+      static constexpr auto emit_i32x4_extmul_high_i16x8_u_sub = simd_sub::i32x4_extmul_high_i16x8_u;
+      static constexpr auto emit_i64x2_abs_sub = simd_sub::i64x2_abs;
+      static constexpr auto emit_i64x2_neg_sub = simd_sub::i64x2_neg;
+      static constexpr auto emit_i64x2_extend_low_i32x4_s_sub = simd_sub::i64x2_extend_low_i32x4_s;
+      static constexpr auto emit_i64x2_extend_high_i32x4_s_sub = simd_sub::i64x2_extend_high_i32x4_s;
+      static constexpr auto emit_i64x2_extend_low_i32x4_u_sub = simd_sub::i64x2_extend_low_i32x4_u;
+      static constexpr auto emit_i64x2_extend_high_i32x4_u_sub = simd_sub::i64x2_extend_high_i32x4_u;
+      static constexpr auto emit_i64x2_shl_sub = simd_sub::i64x2_shl;
+      static constexpr auto emit_i64x2_shr_s_sub = simd_sub::i64x2_shr_s;
+      static constexpr auto emit_i64x2_shr_u_sub = simd_sub::i64x2_shr_u;
+      static constexpr auto emit_i64x2_add_sub = simd_sub::i64x2_add;
+      static constexpr auto emit_i64x2_sub_sub = simd_sub::i64x2_sub;
+      static constexpr auto emit_i64x2_mul_sub = simd_sub::i64x2_mul;
+      static constexpr auto emit_i64x2_extmul_low_i32x4_s_sub = simd_sub::i64x2_extmul_low_i32x4_s;
+      static constexpr auto emit_i64x2_extmul_high_i32x4_s_sub = simd_sub::i64x2_extmul_high_i32x4_s;
+      static constexpr auto emit_i64x2_extmul_low_i32x4_u_sub = simd_sub::i64x2_extmul_low_i32x4_u;
+      static constexpr auto emit_i64x2_extmul_high_i32x4_u_sub = simd_sub::i64x2_extmul_high_i32x4_u;
+      static constexpr auto emit_f32x4_ceil_sub = simd_sub::f32x4_ceil;
+      static constexpr auto emit_f32x4_floor_sub = simd_sub::f32x4_floor;
+      static constexpr auto emit_f32x4_trunc_sub = simd_sub::f32x4_trunc;
+      static constexpr auto emit_f32x4_nearest_sub = simd_sub::f32x4_nearest;
+      static constexpr auto emit_f32x4_abs_sub = simd_sub::f32x4_abs;
+      static constexpr auto emit_f32x4_neg_sub = simd_sub::f32x4_neg;
+      static constexpr auto emit_f32x4_sqrt_sub = simd_sub::f32x4_sqrt;
+      static constexpr auto emit_f32x4_add_sub = simd_sub::f32x4_add;
+      static constexpr auto emit_f32x4_sub_sub = simd_sub::f32x4_sub;
+      static constexpr auto emit_f32x4_mul_sub = simd_sub::f32x4_mul;
+      static constexpr auto emit_f32x4_div_sub = simd_sub::f32x4_div;
+      static constexpr auto emit_f32x4_min_sub = simd_sub::f32x4_min;
+      static constexpr auto emit_f32x4_max_sub = simd_sub::f32x4_max;
+      static constexpr auto emit_f32x4_pmin_sub = simd_sub::f32x4_pmin;
+      static constexpr auto emit_f32x4_pmax_sub = simd_sub::f32x4_pmax;
+      static constexpr auto emit_f64x2_ceil_sub = simd_sub::f64x2_ceil;
+      static constexpr auto emit_f64x2_floor_sub = simd_sub::f64x2_floor;
+      static constexpr auto emit_f64x2_trunc_sub = simd_sub::f64x2_trunc;
+      static constexpr auto emit_f64x2_nearest_sub = simd_sub::f64x2_nearest;
+      static constexpr auto emit_f64x2_abs_sub = simd_sub::f64x2_abs;
+      static constexpr auto emit_f64x2_neg_sub = simd_sub::f64x2_neg;
+      static constexpr auto emit_f64x2_sqrt_sub = simd_sub::f64x2_sqrt;
+      static constexpr auto emit_f64x2_add_sub = simd_sub::f64x2_add;
+      static constexpr auto emit_f64x2_sub_sub = simd_sub::f64x2_sub;
+      static constexpr auto emit_f64x2_mul_sub = simd_sub::f64x2_mul;
+      static constexpr auto emit_f64x2_div_sub = simd_sub::f64x2_div;
+      static constexpr auto emit_f64x2_min_sub = simd_sub::f64x2_min;
+      static constexpr auto emit_f64x2_max_sub = simd_sub::f64x2_max;
+      static constexpr auto emit_f64x2_pmin_sub = simd_sub::f64x2_pmin;
+      static constexpr auto emit_f64x2_pmax_sub = simd_sub::f64x2_pmax;
+      static constexpr auto emit_i32x4_trunc_sat_f32x4_s_sub = simd_sub::i32x4_trunc_sat_f32x4_s;
+      static constexpr auto emit_i32x4_trunc_sat_f32x4_u_sub = simd_sub::i32x4_trunc_sat_f32x4_u;
+      static constexpr auto emit_f32x4_convert_i32x4_s_sub = simd_sub::f32x4_convert_i32x4_s;
+      static constexpr auto emit_f32x4_convert_i32x4_u_sub = simd_sub::f32x4_convert_i32x4_u;
+      static constexpr auto emit_i32x4_trunc_sat_f64x2_s_zero_sub = simd_sub::i32x4_trunc_sat_f64x2_s_zero;
+      static constexpr auto emit_i32x4_trunc_sat_f64x2_u_zero_sub = simd_sub::i32x4_trunc_sat_f64x2_u_zero;
+      static constexpr auto emit_f64x2_convert_low_i32x4_s_sub = simd_sub::f64x2_convert_low_i32x4_s;
+      static constexpr auto emit_f64x2_convert_low_i32x4_u_sub = simd_sub::f64x2_convert_low_i32x4_u;
+      static constexpr auto emit_f32x4_demote_f64x2_zero_sub = simd_sub::f32x4_demote_f64x2_zero;
+      static constexpr auto emit_f64x2_promote_low_f32x4_sub = simd_sub::f64x2_promote_low_f32x4;
 
       SIMD_EXTRACT(emit_i8x16_extract_lane_s) SIMD_EXTRACT(emit_i8x16_extract_lane_u) SIMD_REPLACE(emit_i8x16_replace_lane)
       SIMD_EXTRACT(emit_i16x8_extract_lane_s) SIMD_EXTRACT(emit_i16x8_extract_lane_u) SIMD_REPLACE(emit_i16x8_replace_lane)
@@ -998,22 +1258,36 @@ namespace eosio { namespace vm {
       SIMD_BINOP(emit_v128_xor)
       void emit_v128_bitselect() {
          if (!_unreachable) {
+            _func->has_simd = true;
             _func->vpop(); _func->vpop(); // mask
             _func->vpop(); _func->vpop(); // val2
             _func->vpop(); _func->vpop(); // val1
+            ir_inst inst{};
+            inst.opcode = ir_op::v128_op;
+            inst.type = types::v128;
+            inst.flags = IR_SIDE_EFFECT;
+            inst.dest = static_cast<uint32_t>(simd_sub::v128_bitselect);
+            _func->emit(inst);
             uint32_t d1 = _func->alloc_vreg(types::v128); _func->vpush(d1);
             uint32_t d2 = _func->alloc_vreg(types::v128); _func->vpush(d2);
          }
       }
       void emit_v128_any_true() {
          if (!_unreachable) {
+            _func->has_simd = true;
             _func->vpop(); _func->vpop();
+            ir_inst inst{};
+            inst.opcode = ir_op::v128_op;
+            inst.type = types::i32;
+            inst.flags = IR_SIDE_EFFECT;
+            inst.dest = static_cast<uint32_t>(simd_sub::v128_any_true);
+            _func->emit(inst);
             uint32_t d = _func->alloc_vreg(types::i32); _func->vpush(d);
          }
       }
       SIMD_UNOP(emit_i8x16_abs) SIMD_UNOP(emit_i8x16_neg) SIMD_UNOP(emit_i8x16_popcnt)
-      void emit_i8x16_all_true() { ir_simd_test(); }
-      void emit_i8x16_bitmask() { ir_simd_test(); }
+      void emit_i8x16_all_true() { ir_simd_test(simd_sub::i8x16_all_true); }
+      void emit_i8x16_bitmask() { ir_simd_test(simd_sub::i8x16_bitmask); }
       SIMD_BINOP(emit_i8x16_narrow_i16x8_s) SIMD_BINOP(emit_i8x16_narrow_i16x8_u)
       SIMD_SHIFT(emit_i8x16_shl) SIMD_SHIFT(emit_i8x16_shr_s) SIMD_SHIFT(emit_i8x16_shr_u)
       SIMD_BINOP(emit_i8x16_add) SIMD_BINOP(emit_i8x16_add_sat_s) SIMD_BINOP(emit_i8x16_add_sat_u)
@@ -1022,8 +1296,8 @@ namespace eosio { namespace vm {
       SIMD_BINOP(emit_i8x16_max_u) SIMD_BINOP(emit_i8x16_avgr_u)
       SIMD_UNOP(emit_i16x8_extadd_pairwise_i8x16_s) SIMD_UNOP(emit_i16x8_extadd_pairwise_i8x16_u)
       SIMD_UNOP(emit_i16x8_abs) SIMD_UNOP(emit_i16x8_neg) SIMD_BINOP(emit_i16x8_q15mulr_sat_s)
-      void emit_i16x8_all_true() { ir_simd_test(); }
-      void emit_i16x8_bitmask() { ir_simd_test(); }
+      void emit_i16x8_all_true() { ir_simd_test(simd_sub::i16x8_all_true); }
+      void emit_i16x8_bitmask() { ir_simd_test(simd_sub::i16x8_bitmask); }
       SIMD_BINOP(emit_i16x8_narrow_i32x4_s) SIMD_BINOP(emit_i16x8_narrow_i32x4_u)
       SIMD_UNOP(emit_i16x8_extend_low_i8x16_s) SIMD_UNOP(emit_i16x8_extend_high_i8x16_s)
       SIMD_UNOP(emit_i16x8_extend_low_i8x16_u) SIMD_UNOP(emit_i16x8_extend_high_i8x16_u)
@@ -1036,8 +1310,8 @@ namespace eosio { namespace vm {
       SIMD_BINOP(emit_i16x8_extmul_low_i8x16_u) SIMD_BINOP(emit_i16x8_extmul_high_i8x16_u)
       SIMD_UNOP(emit_i32x4_extadd_pairwise_i16x8_s) SIMD_UNOP(emit_i32x4_extadd_pairwise_i16x8_u)
       SIMD_UNOP(emit_i32x4_abs) SIMD_UNOP(emit_i32x4_neg)
-      void emit_i32x4_all_true() { ir_simd_test(); }
-      void emit_i32x4_bitmask() { ir_simd_test(); }
+      void emit_i32x4_all_true() { ir_simd_test(simd_sub::i32x4_all_true); }
+      void emit_i32x4_bitmask() { ir_simd_test(simd_sub::i32x4_bitmask); }
       SIMD_UNOP(emit_i32x4_extend_low_i16x8_s) SIMD_UNOP(emit_i32x4_extend_high_i16x8_s)
       SIMD_UNOP(emit_i32x4_extend_low_i16x8_u) SIMD_UNOP(emit_i32x4_extend_high_i16x8_u)
       SIMD_SHIFT(emit_i32x4_shl) SIMD_SHIFT(emit_i32x4_shr_s) SIMD_SHIFT(emit_i32x4_shr_u)
@@ -1047,8 +1321,8 @@ namespace eosio { namespace vm {
       SIMD_BINOP(emit_i32x4_extmul_low_i16x8_s) SIMD_BINOP(emit_i32x4_extmul_high_i16x8_s)
       SIMD_BINOP(emit_i32x4_extmul_low_i16x8_u) SIMD_BINOP(emit_i32x4_extmul_high_i16x8_u)
       SIMD_UNOP(emit_i64x2_abs) SIMD_UNOP(emit_i64x2_neg)
-      void emit_i64x2_all_true() { ir_simd_test(); }
-      void emit_i64x2_bitmask() { ir_simd_test(); }
+      void emit_i64x2_all_true() { ir_simd_test(simd_sub::i64x2_all_true); }
+      void emit_i64x2_bitmask() { ir_simd_test(simd_sub::i64x2_bitmask); }
       SIMD_UNOP(emit_i64x2_extend_low_i32x4_s) SIMD_UNOP(emit_i64x2_extend_high_i32x4_s)
       SIMD_UNOP(emit_i64x2_extend_low_i32x4_u) SIMD_UNOP(emit_i64x2_extend_high_i32x4_u)
       SIMD_SHIFT(emit_i64x2_shl) SIMD_SHIFT(emit_i64x2_shr_s) SIMD_SHIFT(emit_i64x2_shr_u)
@@ -1188,71 +1462,129 @@ namespace eosio { namespace vm {
          _func->emit(inst);
       }
 
-      // ──── SIMD vstack tracking ────
-      void ir_simd_load(uint32_t) {
+      // ──── SIMD vstack tracking + IR emission ────
+      void ir_simd_emit(simd_sub sub) {
+         ir_inst inst{};
+         inst.opcode = ir_op::v128_op;
+         inst.type = types::v128;
+         inst.flags = IR_SIDE_EFFECT;
+         inst.dest = static_cast<uint32_t>(sub);
+         _func->emit(inst);
+      }
+      void ir_simd_emit_with_offset(simd_sub sub, uint32_t offset) {
+         ir_inst inst{};
+         inst.opcode = ir_op::v128_op;
+         inst.type = types::v128;
+         inst.flags = IR_SIDE_EFFECT;
+         inst.dest = static_cast<uint32_t>(sub);
+         inst.simd.offset = offset;
+         _func->emit(inst);
+      }
+      void ir_simd_emit_with_offset_lane(simd_sub sub, uint32_t offset, uint8_t lane) {
+         ir_inst inst{};
+         inst.opcode = ir_op::v128_op;
+         inst.type = types::v128;
+         inst.flags = IR_SIDE_EFFECT;
+         inst.dest = static_cast<uint32_t>(sub);
+         inst.simd.offset = offset;
+         inst.simd.lane = lane;
+         _func->emit(inst);
+      }
+      void ir_simd_emit_with_lane(simd_sub sub, uint8_t lane) {
+         ir_inst inst{};
+         inst.opcode = ir_op::v128_op;
+         inst.type = types::v128;
+         inst.flags = IR_SIDE_EFFECT;
+         inst.dest = static_cast<uint32_t>(sub);
+         inst.simd.lane = lane;
+         _func->emit(inst);
+      }
+      void ir_simd_load(simd_sub sub, uint32_t offset) {
          if (_unreachable) return;
+         _func->has_simd = true;
          _func->vpop();
+         ir_simd_emit_with_offset(sub, offset);
          uint32_t d1 = _func->alloc_vreg(types::v128); _func->vpush(d1);
          uint32_t d2 = _func->alloc_vreg(types::v128); _func->vpush(d2);
       }
-      void ir_simd_store(uint32_t) {
+      void ir_simd_store(simd_sub sub, uint32_t offset) {
          if (_unreachable) return;
+         _func->has_simd = true;
          _func->vpop(); _func->vpop();
          _func->vpop();
+         ir_simd_emit_with_offset(sub, offset);
       }
-      void ir_simd_load_lane() {
+      void ir_simd_load_lane(simd_sub sub, uint32_t offset, uint8_t lane) {
          if (_unreachable) return;
+         _func->has_simd = true;
          _func->vpop(); _func->vpop();
          _func->vpop();
+         ir_simd_emit_with_offset_lane(sub, offset, lane);
          uint32_t d1 = _func->alloc_vreg(types::v128); _func->vpush(d1);
          uint32_t d2 = _func->alloc_vreg(types::v128); _func->vpush(d2);
       }
-      void ir_simd_store_lane() {
+      void ir_simd_store_lane(simd_sub sub, uint32_t offset, uint8_t lane) {
          if (_unreachable) return;
+         _func->has_simd = true;
          _func->vpop(); _func->vpop();
          _func->vpop();
+         ir_simd_emit_with_offset_lane(sub, offset, lane);
       }
-      void ir_simd_unop() {
+      void ir_simd_unop(simd_sub sub) {
          if (_unreachable) return;
+         _func->has_simd = true;
          _func->vpop(); _func->vpop();
+         ir_simd_emit(sub);
          uint32_t d1 = _func->alloc_vreg(types::v128); _func->vpush(d1);
          uint32_t d2 = _func->alloc_vreg(types::v128); _func->vpush(d2);
       }
-      void ir_simd_binop() {
+      void ir_simd_binop(simd_sub sub) {
          if (_unreachable) return;
+         _func->has_simd = true;
          _func->vpop(); _func->vpop();
          _func->vpop(); _func->vpop();
+         ir_simd_emit(sub);
          uint32_t d1 = _func->alloc_vreg(types::v128); _func->vpush(d1);
          uint32_t d2 = _func->alloc_vreg(types::v128); _func->vpush(d2);
       }
-      void ir_simd_shift() {
+      void ir_simd_shift(simd_sub sub) {
          if (_unreachable) return;
+         _func->has_simd = true;
          _func->vpop();
          _func->vpop(); _func->vpop();
+         ir_simd_emit(sub);
          uint32_t d1 = _func->alloc_vreg(types::v128); _func->vpush(d1);
          uint32_t d2 = _func->alloc_vreg(types::v128); _func->vpush(d2);
       }
-      void ir_simd_extract() {
+      void ir_simd_extract(simd_sub sub, uint8_t lane) {
          if (_unreachable) return;
+         _func->has_simd = true;
          _func->vpop(); _func->vpop();
+         ir_simd_emit_with_lane(sub, lane);
          uint32_t d = _func->alloc_vreg(types::i64); _func->vpush(d);
       }
-      void ir_simd_replace() {
+      void ir_simd_replace(simd_sub sub, uint8_t lane) {
          if (_unreachable) return;
+         _func->has_simd = true;
          _func->vpop();
          _func->vpop(); _func->vpop();
+         ir_simd_emit_with_lane(sub, lane);
          uint32_t d1 = _func->alloc_vreg(types::v128); _func->vpush(d1);
          uint32_t d2 = _func->alloc_vreg(types::v128); _func->vpush(d2);
       }
-      void ir_simd_splat() {
+      void ir_simd_splat(simd_sub sub) {
          if (_unreachable) return;
+         _func->has_simd = true;
          _func->vpop();
+         ir_simd_emit(sub);
          uint32_t d1 = _func->alloc_vreg(types::v128); _func->vpush(d1);
          uint32_t d2 = _func->alloc_vreg(types::v128); _func->vpush(d2);
       }
-      void ir_simd_test() {
+      void ir_simd_test(simd_sub sub) {
          if (_unreachable) return;
+         _func->has_simd = true;
          _func->vpop(); _func->vpop();
+         ir_simd_emit(sub);
          uint32_t d = _func->alloc_vreg(types::i32); _func->vpush(d);
       }
       void ir_bulk_mem3() {

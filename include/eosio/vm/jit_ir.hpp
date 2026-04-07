@@ -151,6 +151,105 @@ namespace eosio { namespace vm {
 
    static constexpr uint32_t ir_vreg_none = UINT32_MAX;
 
+   // SIMD sub-opcodes carried in v128_op's ri.imm field.
+   // These identify the specific SIMD operation for the codegen.
+   enum class simd_sub : int32_t {
+      // Constants
+      v128_const = 0,
+      // Memory operations
+      v128_load, v128_store,
+      v128_load8x8_s, v128_load8x8_u,
+      v128_load16x4_s, v128_load16x4_u,
+      v128_load32x2_s, v128_load32x2_u,
+      v128_load8_splat, v128_load16_splat, v128_load32_splat, v128_load64_splat,
+      v128_load32_zero, v128_load64_zero,
+      v128_load8_lane, v128_load16_lane, v128_load32_lane, v128_load64_lane,
+      v128_store8_lane, v128_store16_lane, v128_store32_lane, v128_store64_lane,
+      // Shuffle/Swizzle
+      i8x16_shuffle, i8x16_swizzle,
+      // Extract/Replace lane
+      i8x16_extract_lane_s, i8x16_extract_lane_u, i8x16_replace_lane,
+      i16x8_extract_lane_s, i16x8_extract_lane_u, i16x8_replace_lane,
+      i32x4_extract_lane, i32x4_replace_lane,
+      i64x2_extract_lane, i64x2_replace_lane,
+      f32x4_extract_lane, f32x4_replace_lane,
+      f64x2_extract_lane, f64x2_replace_lane,
+      // Splat
+      i8x16_splat, i16x8_splat, i32x4_splat, i64x2_splat, f32x4_splat, f64x2_splat,
+      // Comparisons
+      i8x16_eq, i8x16_ne, i8x16_lt_s, i8x16_lt_u, i8x16_gt_s, i8x16_gt_u,
+      i8x16_le_s, i8x16_le_u, i8x16_ge_s, i8x16_ge_u,
+      i16x8_eq, i16x8_ne, i16x8_lt_s, i16x8_lt_u, i16x8_gt_s, i16x8_gt_u,
+      i16x8_le_s, i16x8_le_u, i16x8_ge_s, i16x8_ge_u,
+      i32x4_eq, i32x4_ne, i32x4_lt_s, i32x4_lt_u, i32x4_gt_s, i32x4_gt_u,
+      i32x4_le_s, i32x4_le_u, i32x4_ge_s, i32x4_ge_u,
+      i64x2_eq, i64x2_ne, i64x2_lt_s, i64x2_gt_s, i64x2_le_s, i64x2_ge_s,
+      f32x4_eq, f32x4_ne, f32x4_lt, f32x4_gt, f32x4_le, f32x4_ge,
+      f64x2_eq, f64x2_ne, f64x2_lt, f64x2_gt, f64x2_le, f64x2_ge,
+      // Logical
+      v128_not, v128_and, v128_andnot, v128_or, v128_xor,
+      v128_bitselect, v128_any_true,
+      // i8x16 arithmetic
+      i8x16_abs, i8x16_neg, i8x16_popcnt,
+      i8x16_all_true, i8x16_bitmask,
+      i8x16_narrow_i16x8_s, i8x16_narrow_i16x8_u,
+      i8x16_shl, i8x16_shr_s, i8x16_shr_u,
+      i8x16_add, i8x16_add_sat_s, i8x16_add_sat_u,
+      i8x16_sub, i8x16_sub_sat_s, i8x16_sub_sat_u,
+      i8x16_min_s, i8x16_min_u, i8x16_max_s, i8x16_max_u, i8x16_avgr_u,
+      // i16x8 arithmetic
+      i16x8_extadd_pairwise_i8x16_s, i16x8_extadd_pairwise_i8x16_u,
+      i16x8_abs, i16x8_neg, i16x8_q15mulr_sat_s,
+      i16x8_all_true, i16x8_bitmask,
+      i16x8_narrow_i32x4_s, i16x8_narrow_i32x4_u,
+      i16x8_extend_low_i8x16_s, i16x8_extend_high_i8x16_s,
+      i16x8_extend_low_i8x16_u, i16x8_extend_high_i8x16_u,
+      i16x8_shl, i16x8_shr_s, i16x8_shr_u,
+      i16x8_add, i16x8_add_sat_s, i16x8_add_sat_u,
+      i16x8_sub, i16x8_sub_sat_s, i16x8_sub_sat_u,
+      i16x8_mul,
+      i16x8_min_s, i16x8_min_u, i16x8_max_s, i16x8_max_u, i16x8_avgr_u,
+      i16x8_extmul_low_i8x16_s, i16x8_extmul_high_i8x16_s,
+      i16x8_extmul_low_i8x16_u, i16x8_extmul_high_i8x16_u,
+      // i32x4 arithmetic
+      i32x4_extadd_pairwise_i16x8_s, i32x4_extadd_pairwise_i16x8_u,
+      i32x4_abs, i32x4_neg,
+      i32x4_all_true, i32x4_bitmask,
+      i32x4_extend_low_i16x8_s, i32x4_extend_high_i16x8_s,
+      i32x4_extend_low_i16x8_u, i32x4_extend_high_i16x8_u,
+      i32x4_shl, i32x4_shr_s, i32x4_shr_u,
+      i32x4_add, i32x4_sub, i32x4_mul,
+      i32x4_min_s, i32x4_min_u, i32x4_max_s, i32x4_max_u,
+      i32x4_dot_i16x8_s,
+      i32x4_extmul_low_i16x8_s, i32x4_extmul_high_i16x8_s,
+      i32x4_extmul_low_i16x8_u, i32x4_extmul_high_i16x8_u,
+      // i64x2 arithmetic
+      i64x2_abs, i64x2_neg,
+      i64x2_all_true, i64x2_bitmask,
+      i64x2_extend_low_i32x4_s, i64x2_extend_high_i32x4_s,
+      i64x2_extend_low_i32x4_u, i64x2_extend_high_i32x4_u,
+      i64x2_shl, i64x2_shr_s, i64x2_shr_u,
+      i64x2_add, i64x2_sub, i64x2_mul,
+      i64x2_extmul_low_i32x4_s, i64x2_extmul_high_i32x4_s,
+      i64x2_extmul_low_i32x4_u, i64x2_extmul_high_i32x4_u,
+      // f32x4
+      f32x4_ceil, f32x4_floor, f32x4_trunc, f32x4_nearest,
+      f32x4_abs, f32x4_neg, f32x4_sqrt,
+      f32x4_add, f32x4_sub, f32x4_mul, f32x4_div,
+      f32x4_min, f32x4_max, f32x4_pmin, f32x4_pmax,
+      // f64x2
+      f64x2_ceil, f64x2_floor, f64x2_trunc, f64x2_nearest,
+      f64x2_abs, f64x2_neg, f64x2_sqrt,
+      f64x2_add, f64x2_sub, f64x2_mul, f64x2_div,
+      f64x2_min, f64x2_max, f64x2_pmin, f64x2_pmax,
+      // Conversions
+      i32x4_trunc_sat_f32x4_s, i32x4_trunc_sat_f32x4_u,
+      f32x4_convert_i32x4_s, f32x4_convert_i32x4_u,
+      i32x4_trunc_sat_f64x2_s_zero, i32x4_trunc_sat_f64x2_u_zero,
+      f64x2_convert_low_i32x4_s, f64x2_convert_low_i32x4_u,
+      f32x4_demote_f64x2_zero, f64x2_promote_low_f32x4,
+   };
+
    enum ir_flags : uint8_t {
       IR_NONE         = 0,
       IR_SIDE_EFFECT  = 1 << 0,
@@ -176,6 +275,9 @@ namespace eosio { namespace vm {
          struct { uint32_t index; uint32_t src1; }  local;
          struct { uint16_t val1; uint16_t val2; uint16_t cond; uint16_t _pad; } sel;
          v128_t   immv128;
+         // For v128_op: sub-opcode goes in dest field (cast from simd_sub).
+         // This struct carries load/store offset and lane index.
+         struct { uint32_t offset; uint8_t lane; uint8_t _pad2[11]; } simd;
       };
    };
    static_assert(std::is_trivially_copyable_v<ir_inst>);
@@ -258,6 +360,7 @@ namespace eosio { namespace vm {
       const func_type* type       = nullptr;
       uint32_t        num_spill_slots = 0;
       uint32_t        callee_saved_used = 0;  // bitmask of callee-saved regs assigned by regalloc
+      bool            has_simd = false;       // true if function contains v128_op instructions
 
       // Initialize with bounded capacity from scratch allocator.
       // source_bytes = size of this function's WASM bytecode.

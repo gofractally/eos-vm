@@ -41,7 +41,7 @@ namespace eosio { namespace vm {
       using base::r8d; using base::r9d;
       using base::al; using base::cl; using base::dl;
       using base::ax;
-      using base::xmm0; using base::xmm1;
+      using base::xmm0; using base::xmm1; using base::xmm2; using base::xmm3;
       using typename base::general_register64;
       using typename base::general_register32;
       using typename base::disp_memory_ref;
@@ -128,7 +128,9 @@ namespace eosio { namespace vm {
       // Compile one function from IR to x86_64
       void compile_function(ir_function& func, function_body& body) {
          // Estimate output size: each IR instruction emits at most ~64 bytes
-         const std::size_t est_size = static_cast<std::size_t>(func.inst_count) * 64 + 256;
+         // SIMD ops can emit up to ~128 bytes each (softfloat calls, shuffle, etc.)
+         const std::size_t bytes_per_inst = func.has_simd ? 128 : 64;
+         const std::size_t est_size = static_cast<std::size_t>(func.inst_count) * bytes_per_inst + 256;
          auto* buf = _allocator.alloc<unsigned char>(est_size);
          auto* code_start = buf;
          code = buf;
@@ -326,15 +328,24 @@ namespace eosio { namespace vm {
          this->emit_push_raw(rbp);
          this->emit_mov(rsp, rbp);
 
-         uint32_t body_locals = func.num_locals - func.num_params;
-         _body_locals = body_locals;
+         // Count body local slots, accounting for v128 locals using 2 slots (16 bytes)
+         uint32_t body_local_slots = 0;
+         {
+            uint32_t param_count = func.type->param_types.size();
+            const auto& locals = _mod.code[func.func_index].locals;
+            for (uint32_t g = 0; g < locals.size(); ++g) {
+               uint32_t slots_per = (locals[g].type == types::v128) ? 2 : 1;
+               body_local_slots += locals[g].count * slots_per;
+            }
+         }
+         _body_locals = body_local_slots;
 
          // Callee-saved register usage was computed during regalloc
          _callee_saved_used = func.callee_saved_used;
          _callee_saved_count = __builtin_popcount(_callee_saved_used);
 
          // Allocate and zero-initialize: body locals + spill slots + callee-saved saves
-         uint32_t total_slots = body_locals + _num_spill_slots + _callee_saved_count;
+         uint32_t total_slots = body_local_slots + _num_spill_slots + _callee_saved_count;
          if (total_slots > 0) {
             this->emit_xor(eax, eax);
             for (uint32_t i = 0; i < total_slots; ++i) {
@@ -344,7 +355,7 @@ namespace eosio { namespace vm {
 
          // Save callee-saved registers to the frame (after locals and spill slots)
          if (_use_regalloc) {
-            int32_t save_offset = -static_cast<int32_t>((body_locals + _num_spill_slots + 1) * 8);
+            int32_t save_offset = -static_cast<int32_t>((body_local_slots + _num_spill_slots + 1) * 8);
             if (_callee_saved_used & 1)  { this->emit_mov(rbx, *(rbp + save_offset)); save_offset -= 8; }
             if (_callee_saved_used & 2)  { this->emit_mov(r12, *(rbp + save_offset)); save_offset -= 8; }
             if (_callee_saved_used & 4)  { this->emit_mov(r13, *(rbp + save_offset)); save_offset -= 8; }
@@ -389,6 +400,22 @@ namespace eosio { namespace vm {
             this->emit_push_raw(rax);
             break;
          }
+
+         case ir_op::const_v128: {
+            // Push 16-byte constant: high qword first, then low qword
+            uint64_t low, high;
+            memcpy(&low, &inst.immv128, 8);
+            memcpy(&high, reinterpret_cast<const char*>(&inst.immv128) + 8, 8);
+            this->emit_mov(high, rax);
+            this->emit_push_raw(rax);
+            this->emit_mov(low, rax);
+            this->emit_push_raw(rax);
+            break;
+         }
+
+         case ir_op::v128_op:
+            emit_simd_op(inst);
+            break;
 
          // ── Integer arithmetic (binary) ──
          case ir_op::i32_add: emit_binop_ra(inst, [this](auto d, auto s){ this->emit_add(s, d); }, true); break;
@@ -455,7 +482,12 @@ namespace eosio { namespace vm {
          // ── Return ──
          case ir_op::return_:
             if (inst.rr.src1 != ir_vreg_none) {
-               this->emit_pop_raw(rax);
+               if (inst.type == types::v128) {
+                  // v128 return: load into xmm0 for caller
+                  this->emit_vmovdqu(*rsp, xmm0);
+               } else {
+                  this->emit_pop_raw(rax);
+               }
             }
             this->emit_mov(rbp, rsp);
             this->emit_pop_raw(rbp);
@@ -600,21 +632,44 @@ namespace eosio { namespace vm {
          // ── Local/global access ──
          case ir_op::local_get: {
             int32_t offset = get_frame_offset(func, inst.local.index);
-            this->emit_mov(*(rbp + offset), rax);
-            this->emit_push_raw(rax);
+            if (inst.type == types::v128) {
+               // Load 16-byte v128 from frame and push to x86 stack
+               auto addr = *(rbp + offset);
+               this->emit_vmovdqu(addr, xmm0);
+               this->emit_sub(16, rsp);
+               this->emit_vmovdqu(xmm0, *rsp);
+            } else {
+               this->emit_mov(*(rbp + offset), rax);
+               this->emit_push_raw(rax);
+            }
             break;
          }
          case ir_op::local_set: {
             int32_t offset = get_frame_offset(func, inst.local.index);
-            this->emit_pop_raw(rax);
-            this->emit_mov(rax, *(rbp + offset));
+            if (inst.type == types::v128) {
+               // Pop 16-byte v128 from x86 stack and store to frame
+               this->emit_vmovdqu(*rsp, xmm0);
+               this->emit_add(16, rsp);
+               auto addr = *(rbp + offset);
+               this->emit_vmovdqu(xmm0, addr);
+            } else {
+               this->emit_pop_raw(rax);
+               this->emit_mov(rax, *(rbp + offset));
+            }
             break;
          }
          case ir_op::local_tee: {
             int32_t offset = get_frame_offset(func, inst.local.index);
-            this->emit_pop_raw(rax);
-            this->emit_mov(rax, *(rbp + offset));
-            this->emit_push_raw(rax);
+            if (inst.type == types::v128) {
+               // Copy TOS v128 (16 bytes) to frame without popping
+               this->emit_vmovdqu(*rsp, xmm0);
+               auto addr = *(rbp + offset);
+               this->emit_vmovdqu(xmm0, addr);
+            } else {
+               this->emit_pop_raw(rax);
+               this->emit_mov(rax, *(rbp + offset));
+               this->emit_push_raw(rax);
+            }
             break;
          }
          case ir_op::global_get: {
@@ -686,16 +741,34 @@ namespace eosio { namespace vm {
 
          // ── Select/drop ──
          case ir_op::drop:
-            this->emit_pop_raw(rax);
+            if (inst.type == types::v128) {
+               this->emit_add(16, rsp);
+            } else {
+               this->emit_pop_raw(rax);
+            }
             break;
 
          case ir_op::select:
-            this->emit_pop_raw(rax);  // condition
-            this->emit_pop_raw(rcx);  // val2
-            this->emit_pop_raw(rdx);  // val1
-            this->emit(base::TEST, eax, eax);
-            this->emit_bytes(0x48, 0x0f, 0x44, 0xd1); // cmovz %rcx, %rdx (64-bit)
-            this->emit_push_raw(rdx);
+            if (inst.type == types::v128) {
+               // select for v128: condition (8), val2 (16), val1 (16) on stack
+               this->emit_pop_raw(rax);  // condition
+               this->emit(base::TEST, eax, eax);
+               // If zero, copy val2 over val1. val2 is at rsp+0 (16 bytes), val1 at rsp+16 (16 bytes).
+               void* skip = this->emit_branch8(base::JNZ);
+               // condition is zero: keep val2, copy it to val1 position
+               this->emit_vmovdqu(*rsp, xmm0);
+               this->emit_vmovdqu(xmm0, *(rsp + 16));
+               base::fix_branch8(skip, code);
+               // Remove val2, keep val1 (which may have been overwritten with val2)
+               this->emit_add(16, rsp);
+            } else {
+               this->emit_pop_raw(rax);  // condition
+               this->emit_pop_raw(rcx);  // val2
+               this->emit_pop_raw(rdx);  // val1
+               this->emit(base::TEST, eax, eax);
+               this->emit_bytes(0x48, 0x0f, 0x44, 0xd1); // cmovz %rcx, %rdx (64-bit)
+               this->emit_push_raw(rdx);
+            }
             break;
 
          // ── Division/remainder ──
@@ -1159,7 +1232,12 @@ namespace eosio { namespace vm {
             }
          } else {
             if (func.type->return_count != 0) {
-               this->emit_pop_raw(rax);
+               if (func.type->return_type == types::v128) {
+                  // v128 return: load 16 bytes into xmm0
+                  this->emit_vmovdqu(*rsp, xmm0);
+               } else {
+                  this->emit_pop_raw(rax);
+               }
             }
          }
          // Restore callee-saved registers from frame
@@ -2608,7 +2686,13 @@ namespace eosio { namespace vm {
 
       void emit_branch_multipop(uint32_t depth_change, uint8_t rt) {
          if (depth_change == 0) return;
-         if (rt != types::pseudo) {
+         if (rt == types::v128) {
+            // v128 return: save 16-byte value, pop depth_change * 8 bytes, push it back
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(static_cast<uint32_t>(depth_change * 8), rsp);
+            this->emit_sub(16, rsp);
+            this->emit_vmovdqu(xmm0, *rsp);
+         } else if (rt != types::pseudo) {
             this->emit_mov(*rsp, rax);  // Save return value
             this->emit_add(static_cast<uint32_t>(depth_change * 8), rsp);
             this->emit_push_raw(rax);
@@ -2990,6 +3074,942 @@ namespace eosio { namespace vm {
          this->emit(instr, *(rcx + rsi + 0), reg);
       }
 
+      // ──────── SIMD helpers ────────
+      // Pop a WASM address from the x86 stack, add offset, compute native address.
+      // Result: *(rax + rsi + 0) is the effective memory address.
+      // Uses ecx as temp for large offsets.
+      void simd_pop_address(uint32_t offset) {
+         this->emit_pop_raw(rax);  // WASM address (i32)
+         if (offset != 0) {
+            this->emit_add(static_cast<int32_t>(offset), eax);  // 32-bit wrapping add
+         }
+         // rsi holds linear memory base; effective address is rax + rsi
+      }
+
+      // v128 load: pop address, load 16 bytes into xmm0, push 16 bytes
+      template<typename Op>
+      void simd_loadop(Op op, uint32_t offset) {
+         simd_pop_address(offset);
+         this->emit(op, *(rax + rsi + 0), xmm0);
+         this->emit_sub(16, rsp);
+         this->emit_vmovdqu(xmm0, *rsp);
+      }
+
+      // v128 store: pop 16 bytes into xmm0, pop address, store 16 bytes
+      void simd_storeop(uint32_t offset) {
+         this->emit_vmovups(*rsp, xmm0);
+         this->emit_add(16, rsp);
+         this->emit_pop_raw(rax);  // WASM address
+         if (offset != 0) {
+            this->emit_add(static_cast<int32_t>(offset), eax);
+         }
+         this->emit_add(rsi, rax);  // native address = wasm_addr + memory_base
+         this->emit_vmovups(xmm0, *rax);
+      }
+
+      // v128 load lane: pop v128 into xmm0, pop address, insert lane
+      template<typename Op>
+      void simd_load_laneop(Op op, uint32_t offset, uint8_t lane) {
+         this->emit_vmovdqu(*rsp, xmm0);
+         this->emit_add(16, rsp);
+         this->emit_pop_raw(rax);  // WASM address
+         if (offset != 0) {
+            this->emit_add(static_cast<int32_t>(offset), eax);
+         }
+         this->emit_add(rsi, rax);
+         this->emit(op, typename base::imm8{lane}, *rax, xmm0, xmm0);
+         this->emit_sub(16, rsp);
+         this->emit_vmovdqu(xmm0, *rsp);
+      }
+
+      // v128 store lane: pop v128, pop address, extract lane to memory
+      template<typename Op>
+      void simd_store_laneop(Op op, uint32_t offset, uint8_t lane) {
+         this->emit_vmovdqu(*rsp, xmm0);
+         this->emit_add(16, rsp);
+         this->emit_pop_raw(rax);  // WASM address
+         if (offset != 0) {
+            this->emit_add(static_cast<int32_t>(offset), eax);
+         }
+         this->emit_add(rsi, rax);
+         this->emit(op, typename base::imm8{lane}, *rax, xmm0);
+      }
+
+      // v128 extract lane: pop v128, extract scalar lane, push scalar
+      template<typename Op>
+      void simd_extract_laneop(Op op, uint8_t lane) {
+         this->emit_vmovdqu(*rsp, xmm0);
+         this->emit_add(16, rsp);
+         this->emit(op, typename base::imm8{lane}, rax, xmm0);
+         this->emit_push_raw(rax);
+      }
+
+      // v128 replace lane: pop scalar, load v128 from TOS, insert, store back
+      template<typename Op>
+      void simd_replace_laneop(Op op, uint8_t lane) {
+         this->emit_pop_raw(rax);
+         this->emit_vmovdqu(*rsp, xmm0);
+         this->emit(op, typename base::imm8{lane}, rax, xmm0, xmm0);
+         this->emit_vmovdqu(xmm0, *rsp);
+      }
+
+      // v128 splat: pop scalar, broadcast to v128, push v128
+      template<typename Op>
+      void simd_splatop(Op op) {
+         this->emit(op, *rsp, xmm0);
+         this->emit_sub(8, rsp);
+         this->emit_vmovdqu(xmm0, *rsp);
+      }
+
+      // v128 unary: load TOS v128 into xmm0, apply op, store back
+      template<typename Op>
+      void simd_v128_unop(Op op) {
+         this->emit(op, *rsp, xmm0);
+         this->emit_vmovdqu(xmm0, *rsp);
+      }
+
+      // v128 binary (non-commutative): pop top v128 (xmm0), operate with NOS v128, store to NOS
+      template<typename Op>
+      void simd_v128_binop(Op op) {
+         this->emit_vmovdqu(*rsp, xmm0);
+         this->emit_add(16, rsp);
+         this->emit_vmovdqu(*rsp, xmm1);
+         this->emit(op, xmm0, xmm1, xmm0);
+         this->emit_vmovdqu(xmm0, *rsp);
+      }
+
+      // v128 binary (commutative or right-operand form): pop top v128, operate with NOS from memory
+      template<typename Op>
+      void simd_v128_binop_r(Op op) {
+         this->emit_vmovdqu(*rsp, xmm0);
+         this->emit_add(16, rsp);
+         this->emit(op, *rsp, xmm0, xmm0);
+         this->emit_vmovdqu(xmm0, *rsp);
+      }
+
+      // v128 shift: pop i32 shift count, load v128 from TOS, shift, store back
+      template<typename Op>
+      void simd_v128_shiftop(Op op, uint8_t mask) {
+         this->emit_pop_raw(rax);
+         this->emit_bytes(0x83, 0xe0, mask);  // and $mask, %eax
+         this->emit_vmovdqu(*rsp, xmm0);
+         this->emit_vmovd(eax, xmm1);
+         this->emit(op, xmm1, xmm0, xmm0);
+         this->emit_vmovdqu(xmm0, *rsp);
+      }
+
+      // v128 comparison with cmp opcode
+      template<typename Op>
+      void simd_v128_irelop_cmp(Op op, bool switch_params, bool flip_result) {
+         this->emit_vmovdqu(*rsp, xmm0);
+         this->emit_add(16, rsp);
+         if (!switch_params) {
+            this->emit_vmovdqu(*rsp, xmm1);
+            this->emit(op, xmm0, xmm1, xmm0);
+         } else {
+            this->emit(op, *rsp, xmm0, xmm0);
+         }
+         if (flip_result) {
+            this->emit_const_ones(xmm1);
+            this->emit(base::VPXOR, xmm1, xmm0, xmm0);
+         }
+         this->emit_vmovdqu(xmm0, *rsp);
+      }
+
+      // v128 comparison via min/max
+      template<typename Op, typename Eq>
+      void simd_v128_irelop_minmax(Op op, Eq eq, bool flip_result) {
+         this->emit_vmovdqu(*rsp, xmm0);
+         this->emit_add(16, rsp);
+         this->emit(op, *rsp, xmm0, xmm1);
+         this->emit(eq, xmm0, xmm1, xmm0);
+         if (!flip_result) {
+            this->emit_const_zero(xmm1);
+            this->emit(base::VPCMPEQB, xmm1, xmm0, xmm0);
+         }
+         this->emit_vmovdqu(xmm0, *rsp);
+      }
+
+      // v128 test ops (all_true, bitmask) that produce an i32 result
+      void simd_v128_test_all_true(auto eq_op) {
+         this->emit_const_zero(xmm0);
+         this->emit(eq_op, *rsp, xmm0, xmm0);
+         this->emit_add(16, rsp);
+         this->emit_xor(eax, eax);
+         this->emit(base::VPTEST, xmm0, xmm0);
+         this->emit(base::SETZ, al);
+         this->emit_push_raw(rax);
+      }
+
+      void simd_v128_bitmask(auto pmovmskb_op) {
+         this->emit_vmovdqu(*rsp, xmm0);
+         this->emit_add(16, rsp);
+         this->emit(pmovmskb_op, xmm0, rax);
+         this->emit_push_raw(rax);
+      }
+
+      // Softfloat unary: call a v128_t -> v128_t function
+      void simd_v128_unop_softfloat(v128_t (*fn)(v128_t)) {
+         // The v128 argument is on the x86 stack as 16 bytes.
+         // SysV ABI: v128_t is returned in rax:rdx (two uint64_t fields).
+         // v128_t argument: passed as two uint64_t in rdi, rsi.
+         // But rsi is the linear memory base! We must save/restore it.
+         this->emit_push_raw(rdi);
+         this->emit_push_raw(rsi);
+         // Load v128 argument from stack (offset by the two pushes = +16)
+         this->emit_mov(*(rsp + 16), rdi);
+         this->emit_mov(*(rsp + 24), rsi);
+         // Align stack
+         this->emit_mov(rsp, rcx);
+         this->emit_bytes(0x48, 0x83, 0xe4, 0xf0);  // and $-16, %rsp
+         this->emit_push_raw(rcx);
+         // Call
+         this->emit_bytes(0x48, 0xb8);
+         this->emit_operand_ptr(fn);
+         this->emit_bytes(0xff, 0xd0);  // call *%rax
+         // Restore stack
+         this->emit_pop_raw(rsp);
+         this->emit_pop_raw(rsi);
+         this->emit_pop_raw(rdi);
+         // Store result back to TOS v128
+         this->emit_mov(rax, *rsp);
+         this->emit_mov(rdx, *(rsp + 8));
+      }
+
+      // Softfloat binary: call a (v128_t, v128_t) -> v128_t function
+      void simd_v128_binop_softfloat(v128_t (*fn)(v128_t, v128_t)) {
+         // Two v128 args on stack: TOS = arg2 (16 bytes), NOS = arg1 (16 bytes)
+         // SysV ABI: first arg in rdi:rsi, second in rdx:rcx
+         // But rsi is linear memory base, so save/restore.
+         this->emit_push_raw(rdi);
+         this->emit_push_raw(rsi);
+         // arg2 (TOS) at rsp+16, arg1 (NOS) at rsp+32
+         this->emit_mov(*(rsp + 16), rdx);   // arg2.low
+         this->emit_mov(*(rsp + 24), rcx);   // arg2.high
+         this->emit_mov(*(rsp + 32), rdi);   // arg1.low
+         this->emit_mov(*(rsp + 40), rsi);   // arg1.high
+         // Align stack
+         this->emit_mov(rsp, r8);
+         this->emit_bytes(0x48, 0x83, 0xe4, 0xf0);  // and $-16, %rsp
+         this->emit_push_raw(r8);
+         // Call
+         this->emit_bytes(0x48, 0xb8);
+         this->emit_operand_ptr(fn);
+         this->emit_bytes(0xff, 0xd0);
+         // Restore stack
+         this->emit_pop_raw(rsp);
+         this->emit_pop_raw(rsi);
+         this->emit_pop_raw(rdi);
+         // Remove arg2 (16 bytes), store result to NOS (which becomes TOS)
+         this->emit_add(16, rsp);
+         this->emit_mov(rax, *rsp);
+         this->emit_mov(rdx, *(rsp + 8));
+      }
+
+      // Main SIMD dispatch
+      void emit_simd_op(const ir_inst& inst) {
+         auto sub = static_cast<simd_sub>(inst.dest);
+         switch (sub) {
+         // ── Memory operations ──
+         case simd_sub::v128_load: simd_loadop(base::VMOVDQU_A, inst.simd.offset); break;
+         case simd_sub::v128_load8x8_s: simd_loadop(base::VPMOVSXBW, inst.simd.offset); break;
+         case simd_sub::v128_load8x8_u: simd_loadop(base::VPMOVZXBW, inst.simd.offset); break;
+         case simd_sub::v128_load16x4_s: simd_loadop(base::VPMOVSXWD, inst.simd.offset); break;
+         case simd_sub::v128_load16x4_u: simd_loadop(base::VPMOVZXWD, inst.simd.offset); break;
+         case simd_sub::v128_load32x2_s: simd_loadop(base::VPMOVSXDQ, inst.simd.offset); break;
+         case simd_sub::v128_load32x2_u: simd_loadop(base::VPMOVZXDQ, inst.simd.offset); break;
+         case simd_sub::v128_load8_splat: simd_loadop(base::VPBROADCASTB, inst.simd.offset); break;
+         case simd_sub::v128_load16_splat: simd_loadop(base::VPBROADCASTW, inst.simd.offset); break;
+         case simd_sub::v128_load32_splat: simd_loadop(base::VPBROADCASTD, inst.simd.offset); break;
+         case simd_sub::v128_load64_splat: simd_loadop(base::VPBROADCASTQ, inst.simd.offset); break;
+         case simd_sub::v128_load32_zero: simd_loadop(base::VMOVD_A, inst.simd.offset); break;
+         case simd_sub::v128_load64_zero: simd_loadop(base::VMOVQ_A, inst.simd.offset); break;
+         case simd_sub::v128_store: simd_storeop(inst.simd.offset); break;
+
+         case simd_sub::v128_load8_lane: simd_load_laneop(base::VPINSRB, inst.simd.offset, inst.simd.lane); break;
+         case simd_sub::v128_load16_lane: simd_load_laneop(base::VPINSRW, inst.simd.offset, inst.simd.lane); break;
+         case simd_sub::v128_load32_lane: simd_load_laneop(base::VPINSRD, inst.simd.offset, inst.simd.lane); break;
+         case simd_sub::v128_load64_lane: simd_load_laneop(base::VPINSRQ, inst.simd.offset, inst.simd.lane); break;
+         case simd_sub::v128_store8_lane: simd_store_laneop(base::VPEXTRB, inst.simd.offset, inst.simd.lane); break;
+         case simd_sub::v128_store16_lane: simd_store_laneop(base::VPEXTRW, inst.simd.offset, inst.simd.lane); break;
+         case simd_sub::v128_store32_lane: simd_store_laneop(base::VPEXTRD, inst.simd.offset, inst.simd.lane); break;
+         case simd_sub::v128_store64_lane: simd_store_laneop(base::VPEXTRQ, inst.simd.offset, inst.simd.lane); break;
+
+         // ── Shuffle ──
+         case simd_sub::i8x16_shuffle: {
+            const uint8_t* lanes = reinterpret_cast<const uint8_t*>(&inst.immv128);
+            auto emit_shuffle_operand = [this](const uint8_t* l) {
+               for (int i = 0; i < 8; ++i)
+                  this->emit_bytes(l[i] < 16 ? ~l[i] : l[i]);
+            };
+            // movabsq $lanes[0-7], %rax
+            this->emit_bytes(0x48, 0xb8);
+            emit_shuffle_operand(lanes);
+            this->emit_vmovq(rax, xmm2);
+            // movabsq $lanes[8-15], %rax
+            this->emit_bytes(0x48, 0xb8);
+            emit_shuffle_operand(lanes + 8);
+            this->emit(base::VPINSRQ, typename base::imm8{1}, rax, xmm2, xmm2);
+
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::VPSHUFB, xmm2, xmm0, xmm1);
+            this->emit_const_ones(xmm0);
+            this->emit(base::VPXOR, xmm0, xmm2, xmm2);
+            this->emit_add(16, rsp);
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::VPSHUFB, xmm2, xmm0, xmm0);
+            this->emit(base::VPOR, xmm1, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+
+         case simd_sub::i8x16_swizzle: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit_mov(0x70707070u, eax);
+            this->emit_vmovd(eax, xmm1);
+            this->emit(base::VPSHUFD, typename base::imm8{0}, xmm1, xmm1);
+            this->emit(base::VPADDUSB, xmm1, xmm0, xmm1);
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::VPSHUFB, xmm1, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+
+         // ── Extract/Replace lane ──
+         case simd_sub::i8x16_extract_lane_s: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit_vpextrb(inst.simd.lane, xmm0, rax);
+            this->emit(base::MOVSXB, al, eax);
+            this->emit_push_raw(rax);
+            break;
+         }
+         case simd_sub::i8x16_extract_lane_u: simd_extract_laneop(base::VPEXTRB, inst.simd.lane); break;
+         case simd_sub::i8x16_replace_lane: simd_replace_laneop(base::VPINSRB, inst.simd.lane); break;
+         case simd_sub::i16x8_extract_lane_s: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit_vpextrw(inst.simd.lane, xmm0, rax);
+            this->emit(base::MOVSXW, this->ax, eax);
+            this->emit_push_raw(rax);
+            break;
+         }
+         case simd_sub::i16x8_extract_lane_u: simd_extract_laneop(base::VPEXTRW, inst.simd.lane); break;
+         case simd_sub::i16x8_replace_lane: simd_replace_laneop(base::VPINSRW, inst.simd.lane); break;
+         case simd_sub::i32x4_extract_lane: simd_extract_laneop(base::VPEXTRD, inst.simd.lane); break;
+         case simd_sub::i32x4_replace_lane: simd_replace_laneop(base::VPINSRD, inst.simd.lane); break;
+         case simd_sub::i64x2_extract_lane: simd_extract_laneop(base::VPEXTRQ, inst.simd.lane); break;
+         case simd_sub::i64x2_replace_lane: simd_replace_laneop(base::VPINSRQ, inst.simd.lane); break;
+         case simd_sub::f32x4_extract_lane: simd_extract_laneop(base::VPEXTRD, inst.simd.lane); break;
+         case simd_sub::f32x4_replace_lane: simd_replace_laneop(base::VPINSRD, inst.simd.lane); break;
+         case simd_sub::f64x2_extract_lane: simd_extract_laneop(base::VPEXTRQ, inst.simd.lane); break;
+         case simd_sub::f64x2_replace_lane: simd_replace_laneop(base::VPINSRQ, inst.simd.lane); break;
+
+         // ── Splat ──
+         case simd_sub::i8x16_splat: simd_splatop(base::VPBROADCASTB); break;
+         case simd_sub::i16x8_splat: simd_splatop(base::VPBROADCASTW); break;
+         case simd_sub::i32x4_splat: simd_splatop(base::VPBROADCASTD); break;
+         case simd_sub::i64x2_splat: simd_splatop(base::VPBROADCASTQ); break;
+         case simd_sub::f32x4_splat: simd_splatop(base::VPBROADCASTD); break;
+         case simd_sub::f64x2_splat: simd_splatop(base::VPBROADCASTQ); break;
+
+         // ── i8x16 comparisons ──
+         case simd_sub::i8x16_eq: simd_v128_irelop_cmp(base::VPCMPEQB, true, false); break;
+         case simd_sub::i8x16_ne: simd_v128_irelop_cmp(base::VPCMPEQB, true, true); break;
+         case simd_sub::i8x16_lt_s: simd_v128_irelop_cmp(base::VPCMPGTB, true, false); break;
+         case simd_sub::i8x16_lt_u: simd_v128_irelop_minmax(base::VPMINUB, base::VPCMPEQB, false); break;
+         case simd_sub::i8x16_gt_s: simd_v128_irelop_cmp(base::VPCMPGTB, false, false); break;
+         case simd_sub::i8x16_gt_u: simd_v128_irelop_minmax(base::VPMAXUB, base::VPCMPEQB, false); break;
+         case simd_sub::i8x16_le_s: simd_v128_irelop_cmp(base::VPCMPGTB, false, true); break;
+         case simd_sub::i8x16_le_u: simd_v128_irelop_minmax(base::VPMAXUB, base::VPCMPEQB, true); break;
+         case simd_sub::i8x16_ge_s: simd_v128_irelop_cmp(base::VPCMPGTB, true, true); break;
+         case simd_sub::i8x16_ge_u: simd_v128_irelop_minmax(base::VPMINUB, base::VPCMPEQB, true); break;
+
+         // ── i16x8 comparisons ──
+         case simd_sub::i16x8_eq: simd_v128_irelop_cmp(base::VPCMPEQW, true, false); break;
+         case simd_sub::i16x8_ne: simd_v128_irelop_cmp(base::VPCMPEQW, true, true); break;
+         case simd_sub::i16x8_lt_s: simd_v128_irelop_cmp(base::VPCMPGTW, true, false); break;
+         case simd_sub::i16x8_lt_u: simd_v128_irelop_minmax(base::VPMINUW, base::VPCMPEQW, false); break;
+         case simd_sub::i16x8_gt_s: simd_v128_irelop_cmp(base::VPCMPGTW, false, false); break;
+         case simd_sub::i16x8_gt_u: simd_v128_irelop_minmax(base::VPMAXUW, base::VPCMPEQW, false); break;
+         case simd_sub::i16x8_le_s: simd_v128_irelop_cmp(base::VPCMPGTW, false, true); break;
+         case simd_sub::i16x8_le_u: simd_v128_irelop_minmax(base::VPMAXUW, base::VPCMPEQW, true); break;
+         case simd_sub::i16x8_ge_s: simd_v128_irelop_cmp(base::VPCMPGTW, true, true); break;
+         case simd_sub::i16x8_ge_u: simd_v128_irelop_minmax(base::VPMINUW, base::VPCMPEQW, true); break;
+
+         // ── i32x4 comparisons ──
+         case simd_sub::i32x4_eq: simd_v128_irelop_cmp(base::VPCMPEQD, true, false); break;
+         case simd_sub::i32x4_ne: simd_v128_irelop_cmp(base::VPCMPEQD, true, true); break;
+         case simd_sub::i32x4_lt_s: simd_v128_irelop_cmp(base::VPCMPGTD, true, false); break;
+         case simd_sub::i32x4_lt_u: simd_v128_irelop_minmax(base::VPMINUD, base::VPCMPEQD, false); break;
+         case simd_sub::i32x4_gt_s: simd_v128_irelop_cmp(base::VPCMPGTD, false, false); break;
+         case simd_sub::i32x4_gt_u: simd_v128_irelop_minmax(base::VPMAXUD, base::VPCMPEQD, false); break;
+         case simd_sub::i32x4_le_s: simd_v128_irelop_cmp(base::VPCMPGTD, false, true); break;
+         case simd_sub::i32x4_le_u: simd_v128_irelop_minmax(base::VPMAXUD, base::VPCMPEQD, true); break;
+         case simd_sub::i32x4_ge_s: simd_v128_irelop_cmp(base::VPCMPGTD, true, true); break;
+         case simd_sub::i32x4_ge_u: simd_v128_irelop_minmax(base::VPMINUD, base::VPCMPEQD, true); break;
+
+         // ── i64x2 comparisons ──
+         case simd_sub::i64x2_eq: simd_v128_irelop_cmp(base::VPCMPEQQ, true, false); break;
+         case simd_sub::i64x2_ne: simd_v128_irelop_cmp(base::VPCMPEQQ, true, true); break;
+         case simd_sub::i64x2_lt_s: simd_v128_irelop_cmp(base::VPCMPGTQ, true, false); break;
+         case simd_sub::i64x2_gt_s: simd_v128_irelop_cmp(base::VPCMPGTQ, false, false); break;
+         case simd_sub::i64x2_le_s: simd_v128_irelop_cmp(base::VPCMPGTQ, false, true); break;
+         case simd_sub::i64x2_ge_s: simd_v128_irelop_cmp(base::VPCMPGTQ, true, true); break;
+
+         // ── f32x4 comparisons (softfloat) ──
+         case simd_sub::f32x4_eq: simd_v128_binop_softfloat(&_eosio_f32x4_eq); break;
+         case simd_sub::f32x4_ne: simd_v128_binop_softfloat(&_eosio_f32x4_ne); break;
+         case simd_sub::f32x4_lt: simd_v128_binop_softfloat(&_eosio_f32x4_lt); break;
+         case simd_sub::f32x4_gt: simd_v128_binop_softfloat(&_eosio_f32x4_gt); break;
+         case simd_sub::f32x4_le: simd_v128_binop_softfloat(&_eosio_f32x4_le); break;
+         case simd_sub::f32x4_ge: simd_v128_binop_softfloat(&_eosio_f32x4_ge); break;
+
+         // ── f64x2 comparisons (softfloat) ──
+         case simd_sub::f64x2_eq: simd_v128_binop_softfloat(&_eosio_f64x2_eq); break;
+         case simd_sub::f64x2_ne: simd_v128_binop_softfloat(&_eosio_f64x2_ne); break;
+         case simd_sub::f64x2_lt: simd_v128_binop_softfloat(&_eosio_f64x2_lt); break;
+         case simd_sub::f64x2_gt: simd_v128_binop_softfloat(&_eosio_f64x2_gt); break;
+         case simd_sub::f64x2_le: simd_v128_binop_softfloat(&_eosio_f64x2_le); break;
+         case simd_sub::f64x2_ge: simd_v128_binop_softfloat(&_eosio_f64x2_ge); break;
+
+         // ── Logical ──
+         case simd_sub::v128_not: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_const_ones(xmm1);
+            this->emit(base::VPXOR, xmm1, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::v128_and: simd_v128_binop_r(base::VPAND); break;
+         case simd_sub::v128_andnot: simd_v128_binop_r(base::VPANDN); break;
+         case simd_sub::v128_or: simd_v128_binop_r(base::VPOR); break;
+         case simd_sub::v128_xor: simd_v128_binop_r(base::VPXOR); break;
+
+         case simd_sub::v128_bitselect: {
+            // Stack: val1 (NOS+16), val2 (NOS), mask (TOS)
+            this->emit_vmovdqu(*rsp, xmm2);          // mask
+            this->emit_vmovdqu(*(rsp + 16), xmm1);   // val2
+            this->emit_add(32, rsp);
+            this->emit_vmovdqu(*rsp, xmm0);           // val1
+            this->emit(base::VPAND, xmm0, xmm2, xmm0);
+            this->emit(base::VPANDN, xmm1, xmm2, xmm1);
+            this->emit(base::VPOR, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+
+         case simd_sub::v128_any_true: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit_xor(eax, eax);
+            this->emit(base::VPTEST, xmm0, xmm0);
+            this->emit(base::SETNZ, al);
+            this->emit_push_raw(rax);
+            break;
+         }
+
+         // ── i8x16 arithmetic ──
+         case simd_sub::i8x16_abs: simd_v128_unop(base::VPABSB); break;
+         case simd_sub::i8x16_neg: {
+            this->emit_const_zero(xmm0);
+            this->emit(base::VPSUBB, *rsp, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i8x16_popcnt: {
+            static const uint8_t popcnt4[] = {0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4};
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&popcnt4);
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_vmovdqu(*rax, xmm3);
+            this->emit_mov(0x0fu, eax);
+            this->emit_vmovd(eax, xmm2);
+            this->emit(base::VPBROADCASTB, xmm2, xmm2);
+            this->emit(base::VPSRLQ_c, typename base::imm8{4}, xmm0, xmm1);
+            this->emit(base::VPAND, xmm2, xmm0, xmm0);
+            this->emit(base::VPAND, xmm2, xmm1, xmm1);
+            this->emit(base::VPSHUFB, xmm0, xmm3, xmm0);
+            this->emit(base::VPSHUFB, xmm1, xmm3, xmm1);
+            this->emit(base::VPADDB, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i8x16_all_true: simd_v128_test_all_true(base::VPCMPEQB); break;
+         case simd_sub::i8x16_bitmask: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit(base::VPMOVMSKB, xmm0, rax);
+            this->emit_push_raw(rax);
+            break;
+         }
+         case simd_sub::i8x16_narrow_i16x8_s: simd_v128_binop(base::VPACKSSWB); break;
+         case simd_sub::i8x16_narrow_i16x8_u: simd_v128_binop(base::VPACKUSWB); break;
+         case simd_sub::i8x16_shl: {
+            this->emit_pop_raw(rax);
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::AND_A, 7, eax);
+            this->emit_vmovd(eax, xmm2);
+            this->emit_const_ones(xmm1);
+            this->emit(base::VPSLLD, xmm2, xmm1, xmm1);
+            this->emit(base::VPBROADCASTB, xmm1, xmm1);
+            this->emit(base::VPSLLW, xmm2, xmm0, xmm0);
+            this->emit(base::VPAND, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i8x16_shr_s: {
+            this->emit_pop_raw(rax);
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::AND_A, 7, eax);
+            this->emit_vmovd(eax, xmm2);
+            this->emit_const_ones(xmm3);
+            this->emit(base::VPSLLW_c, typename base::imm8{8}, xmm3, xmm3);
+            this->emit(base::VPSLLW_c, typename base::imm8{8}, xmm0, xmm1);
+            this->emit(base::VPSRAW_c, typename base::imm8{8}, xmm1, xmm1);
+            this->emit(base::VPSLLW, xmm2, xmm3, xmm3);
+            this->emit(base::VPANDN, xmm1, xmm3, xmm1);
+            this->emit(base::VPAND, xmm3, xmm0, xmm0);
+            this->emit(base::VPOR, xmm1, xmm0, xmm0);
+            this->emit(base::VPSRAW, xmm2, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i8x16_shr_u: {
+            this->emit_pop_raw(rax);
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::AND_A, 7, eax);
+            this->emit_vmovd(eax, xmm2);
+            this->emit_const_ones(xmm1);
+            this->emit(base::VPSLLW_c, typename base::imm8{8}, xmm1, xmm1);
+            this->emit(base::VPSRLW, xmm2, xmm1, xmm1);
+            this->emit(base::VPBROADCASTB, xmm1, xmm1);
+            this->emit(base::VPSRLW, xmm2, xmm0, xmm0);
+            this->emit(base::VPANDN, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i8x16_add: simd_v128_binop_r(base::VPADDB); break;
+         case simd_sub::i8x16_add_sat_s: simd_v128_binop_r(base::VPADDSB); break;
+         case simd_sub::i8x16_add_sat_u: simd_v128_binop_r(base::VPADDUSB); break;
+         case simd_sub::i8x16_sub: simd_v128_binop(base::VPSUBB); break;
+         case simd_sub::i8x16_sub_sat_s: simd_v128_binop(base::VPSUBSB); break;
+         case simd_sub::i8x16_sub_sat_u: simd_v128_binop(base::VPSUBUSB); break;
+         case simd_sub::i8x16_min_s: simd_v128_binop_r(base::VPMINSB); break;
+         case simd_sub::i8x16_min_u: simd_v128_binop_r(base::VPMINUB); break;
+         case simd_sub::i8x16_max_s: simd_v128_binop_r(base::VPMAXSB); break;
+         case simd_sub::i8x16_max_u: simd_v128_binop_r(base::VPMAXUB); break;
+         case simd_sub::i8x16_avgr_u: simd_v128_binop_r(base::VPAVGB); break;
+
+         // ── i16x8 arithmetic ──
+         case simd_sub::i16x8_extadd_pairwise_i8x16_s: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm1);
+            this->emit(base::VPMOVSXBW, xmm0, xmm0);
+            this->emit(base::VPMOVSXBW, xmm1, xmm1);
+            this->emit(base::VPHADDW, xmm1, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i16x8_extadd_pairwise_i8x16_u: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm1);
+            this->emit(base::VPMOVZXBW, xmm0, xmm0);
+            this->emit(base::VPMOVZXBW, xmm1, xmm1);
+            this->emit(base::VPHADDW, xmm1, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i16x8_abs: simd_v128_unop(base::VPABSW); break;
+         case simd_sub::i16x8_neg: {
+            this->emit_const_zero(xmm0);
+            this->emit(base::VPSUBW, *rsp, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i16x8_q15mulr_sat_s: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit(base::VPMULHRSW, *rsp, xmm0, xmm0);
+            this->emit_const_ones(xmm1);
+            this->emit(base::VPSLLW_c, typename base::imm8{15}, xmm1, xmm1);
+            this->emit(base::VPCMPEQW, xmm1, xmm0, xmm1);
+            this->emit(base::VPXOR, xmm1, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i16x8_all_true: simd_v128_test_all_true(base::VPCMPEQW); break;
+         case simd_sub::i16x8_bitmask: {
+            this->emit_const_zero(xmm0);
+            this->emit(base::VPCMPGTW, *rsp, xmm0, xmm1);
+            this->emit(base::VPACKSSWB, xmm0, xmm1, xmm0);
+            this->emit_add(16, rsp);
+            this->emit(base::VPMOVMSKB, xmm0, rax);
+            this->emit_push_raw(rax);
+            break;
+         }
+         case simd_sub::i16x8_narrow_i32x4_s: simd_v128_binop(base::VPACKSSDW); break;
+         case simd_sub::i16x8_narrow_i32x4_u: simd_v128_binop(base::VPACKUSDW); break;
+         case simd_sub::i16x8_extend_low_i8x16_s: simd_v128_unop(base::VPMOVSXBW); break;
+         case simd_sub::i16x8_extend_high_i8x16_s: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPMOVSXBW, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i16x8_extend_low_i8x16_u: simd_v128_unop(base::VPMOVZXBW); break;
+         case simd_sub::i16x8_extend_high_i8x16_u: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPMOVZXBW, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i16x8_shl: simd_v128_shiftop(base::VPSLLW, 0x0f); break;
+         case simd_sub::i16x8_shr_s: simd_v128_shiftop(base::VPSRAW, 0x0f); break;
+         case simd_sub::i16x8_shr_u: simd_v128_shiftop(base::VPSRLW, 0x0f); break;
+         case simd_sub::i16x8_add: simd_v128_binop_r(base::VPADDW); break;
+         case simd_sub::i16x8_add_sat_s: simd_v128_binop_r(base::VPADDSW); break;
+         case simd_sub::i16x8_add_sat_u: simd_v128_binop_r(base::VPADDUSW); break;
+         case simd_sub::i16x8_sub: simd_v128_binop(base::VPSUBW); break;
+         case simd_sub::i16x8_sub_sat_s: simd_v128_binop(base::VPSUBSW); break;
+         case simd_sub::i16x8_sub_sat_u: simd_v128_binop(base::VPSUBUSW); break;
+         case simd_sub::i16x8_mul: simd_v128_binop_r(base::VPMULLW); break;
+         case simd_sub::i16x8_min_s: simd_v128_binop_r(base::VPMINSW); break;
+         case simd_sub::i16x8_min_u: simd_v128_binop_r(base::VPMINUW); break;
+         case simd_sub::i16x8_max_s: simd_v128_binop_r(base::VPMAXSW); break;
+         case simd_sub::i16x8_max_u: simd_v128_binop_r(base::VPMAXUW); break;
+         case simd_sub::i16x8_avgr_u: simd_v128_binop_r(base::VPAVGW); break;
+         case simd_sub::i16x8_extmul_low_i8x16_s: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit_vmovdqu(*rsp, xmm1);
+            this->emit(base::VPMOVSXBW, xmm0, xmm0);
+            this->emit(base::VPMOVSXBW, xmm1, xmm1);
+            this->emit(base::VPMULLW, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i16x8_extmul_high_i8x16_s: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit_vmovdqu(*rsp, xmm1);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm1, xmm1);
+            this->emit(base::VPMOVSXBW, xmm0, xmm0);
+            this->emit(base::VPMOVSXBW, xmm1, xmm1);
+            this->emit(base::VPMULLW, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i16x8_extmul_low_i8x16_u: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit_vmovdqu(*rsp, xmm1);
+            this->emit(base::VPMOVZXBW, xmm0, xmm0);
+            this->emit(base::VPMOVZXBW, xmm1, xmm1);
+            this->emit(base::VPMULLW, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i16x8_extmul_high_i8x16_u: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit_vmovdqu(*rsp, xmm1);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm1, xmm1);
+            this->emit(base::VPMOVZXBW, xmm0, xmm0);
+            this->emit(base::VPMOVZXBW, xmm1, xmm1);
+            this->emit(base::VPMULLW, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+
+         // ── i32x4 arithmetic ──
+         case simd_sub::i32x4_extadd_pairwise_i16x8_s: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm1);
+            this->emit(base::VPMOVSXWD, xmm0, xmm0);
+            this->emit(base::VPMOVSXWD, xmm1, xmm1);
+            this->emit(base::VPHADDD, xmm1, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i32x4_extadd_pairwise_i16x8_u: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm1);
+            this->emit(base::VPMOVZXWD, xmm0, xmm0);
+            this->emit(base::VPMOVZXWD, xmm1, xmm1);
+            this->emit(base::VPHADDD, xmm1, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i32x4_abs: simd_v128_unop(base::VPABSD); break;
+         case simd_sub::i32x4_neg: {
+            this->emit_const_zero(xmm0);
+            this->emit(base::VPSUBD, *rsp, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i32x4_all_true: {
+            this->emit_const_zero(xmm0);
+            this->emit(base::VPCMPEQD, *rsp, xmm0, xmm0);
+            this->emit_add(16, rsp);
+            this->emit_xor(eax, eax);
+            this->emit(base::VPTEST, xmm0, xmm0);
+            this->emit(base::SETZ, al);
+            this->emit_push_raw(rax);
+            break;
+         }
+         case simd_sub::i32x4_bitmask: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit(base::VMOVMSKPS, xmm0, rax);
+            this->emit_push_raw(rax);
+            break;
+         }
+         case simd_sub::i32x4_extend_low_i16x8_s: simd_v128_unop(base::VPMOVSXWD); break;
+         case simd_sub::i32x4_extend_high_i16x8_s: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPMOVSXWD, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i32x4_extend_low_i16x8_u: simd_v128_unop(base::VPMOVZXWD); break;
+         case simd_sub::i32x4_extend_high_i16x8_u: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPMOVZXWD, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i32x4_shl: simd_v128_shiftop(base::VPSLLD, 0x1f); break;
+         case simd_sub::i32x4_shr_s: simd_v128_shiftop(base::VPSRAD, 0x1f); break;
+         case simd_sub::i32x4_shr_u: simd_v128_shiftop(base::VPSRLD, 0x1f); break;
+         case simd_sub::i32x4_add: simd_v128_binop_r(base::VPADDD); break;
+         case simd_sub::i32x4_sub: simd_v128_binop(base::VPSUBD); break;
+         case simd_sub::i32x4_mul: simd_v128_binop_r(base::VPMULLD); break;
+         case simd_sub::i32x4_min_s: simd_v128_binop_r(base::VPMINSD); break;
+         case simd_sub::i32x4_min_u: simd_v128_binop_r(base::VPMINUD); break;
+         case simd_sub::i32x4_max_s: simd_v128_binop_r(base::VPMAXSD); break;
+         case simd_sub::i32x4_max_u: simd_v128_binop_r(base::VPMAXUD); break;
+         case simd_sub::i32x4_dot_i16x8_s: simd_v128_binop_r(base::VPMADDWD); break;
+         case simd_sub::i32x4_extmul_low_i16x8_s: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit_vmovdqu(*rsp, xmm1);
+            this->emit(base::VPMOVSXWD, xmm0, xmm0);
+            this->emit(base::VPMOVSXWD, xmm1, xmm1);
+            this->emit(base::VPMULLD, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i32x4_extmul_high_i16x8_s: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit_vmovdqu(*rsp, xmm1);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm1, xmm1);
+            this->emit(base::VPMOVSXWD, xmm0, xmm0);
+            this->emit(base::VPMOVSXWD, xmm1, xmm1);
+            this->emit(base::VPMULLD, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i32x4_extmul_low_i16x8_u: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit_vmovdqu(*rsp, xmm1);
+            this->emit(base::VPMOVZXWD, xmm0, xmm0);
+            this->emit(base::VPMOVZXWD, xmm1, xmm1);
+            this->emit(base::VPMULLD, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i32x4_extmul_high_i16x8_u: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit_vmovdqu(*rsp, xmm1);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm1, xmm1);
+            this->emit(base::VPMOVZXWD, xmm0, xmm0);
+            this->emit(base::VPMOVZXWD, xmm1, xmm1);
+            this->emit(base::VPMULLD, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+
+         // ── i64x2 arithmetic ──
+         case simd_sub::i64x2_abs: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_const_zero(xmm1);
+            this->emit(base::VPCMPGTQ, xmm0, xmm1, xmm1);  // xmm1 = 0 > x ? -1 : 0
+            this->emit(base::VPXOR, xmm0, xmm1, xmm0);
+            this->emit(base::VPSUBQ, xmm1, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i64x2_neg: {
+            this->emit_const_zero(xmm0);
+            this->emit(base::VPSUBQ, *rsp, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i64x2_all_true: {
+            this->emit_const_zero(xmm0);
+            this->emit(base::VPCMPEQQ, *rsp, xmm0, xmm0);
+            this->emit_add(16, rsp);
+            this->emit_xor(eax, eax);
+            this->emit(base::VPTEST, xmm0, xmm0);
+            this->emit(base::SETZ, al);
+            this->emit_push_raw(rax);
+            break;
+         }
+         case simd_sub::i64x2_bitmask: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit(base::VMOVMSKPD, xmm0, rax);
+            this->emit_push_raw(rax);
+            break;
+         }
+         case simd_sub::i64x2_extend_low_i32x4_s: simd_v128_unop(base::VPMOVSXDQ); break;
+         case simd_sub::i64x2_extend_high_i32x4_s: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPMOVSXDQ, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i64x2_extend_low_i32x4_u: simd_v128_unop(base::VPMOVZXDQ); break;
+         case simd_sub::i64x2_extend_high_i32x4_u: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPMOVZXDQ, xmm0, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i64x2_shl: simd_v128_shiftop(base::VPSLLQ, 0x3f); break;
+         case simd_sub::i64x2_shr_s: {
+            // (x >> n) | ((0 > x) << (64 - n))
+            this->emit_pop_raw(rax);
+            this->emit(base::AND_A, 0x3f, eax);
+            this->emit_mov(64, ecx);
+            this->emit_sub(eax, ecx);
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_vmovd(eax, xmm1);
+            this->emit_vmovd(ecx, xmm3);
+            this->emit_const_zero(xmm2);
+            this->emit(base::VPCMPGTQ, xmm0, xmm2, xmm2);
+            this->emit(base::VPSLLQ, xmm3, xmm2, xmm2);
+            this->emit(base::VPSRLQ, xmm1, xmm0, xmm0);
+            this->emit(base::VPOR, xmm0, xmm2, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i64x2_shr_u: simd_v128_shiftop(base::VPSRLQ, 0x3f); break;
+         case simd_sub::i64x2_add: simd_v128_binop_r(base::VPADDQ); break;
+         case simd_sub::i64x2_sub: simd_v128_binop(base::VPSUBQ); break;
+         case simd_sub::i64x2_mul: {
+            this->emit_vmovdqu(*rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit_vmovdqu(*rsp, xmm1);
+            this->emit(base::VPMULUDQ, xmm0, xmm1, xmm2);
+            this->emit(base::VPSHUFD, typename base::imm8{0xb1}, xmm0, xmm0);
+            this->emit(base::VPMULLD, xmm0, xmm1, xmm0);
+            this->emit(base::VPHADDD, xmm0, xmm0, xmm0);
+            this->emit_const_zero(xmm1);
+            this->emit(base::VPUNPCKLDQ, xmm0, xmm1, xmm0);
+            this->emit(base::VPADDQ, xmm0, xmm2, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i64x2_extmul_low_i32x4_s: {
+            this->emit(base::VPSHUFD, typename base::imm8{0x10}, *rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit(base::VPSHUFD, typename base::imm8{0x10}, *rsp, xmm1);
+            this->emit(base::VPMULDQ, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i64x2_extmul_high_i32x4_s: {
+            this->emit(base::VPSHUFD, typename base::imm8{0x32}, *rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit(base::VPSHUFD, typename base::imm8{0x32}, *rsp, xmm1);
+            this->emit(base::VPMULDQ, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i64x2_extmul_low_i32x4_u: {
+            this->emit(base::VPSHUFD, typename base::imm8{0x10}, *rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit(base::VPSHUFD, typename base::imm8{0x10}, *rsp, xmm1);
+            this->emit(base::VPMULUDQ, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+         case simd_sub::i64x2_extmul_high_i32x4_u: {
+            this->emit(base::VPSHUFD, typename base::imm8{0x32}, *rsp, xmm0);
+            this->emit_add(16, rsp);
+            this->emit(base::VPSHUFD, typename base::imm8{0x32}, *rsp, xmm1);
+            this->emit(base::VPMULUDQ, xmm0, xmm1, xmm0);
+            this->emit_vmovdqu(xmm0, *rsp);
+            break;
+         }
+
+         // ── f32x4 arithmetic (softfloat) ──
+         case simd_sub::f32x4_ceil: simd_v128_unop_softfloat(&_eosio_f32x4_ceil); break;
+         case simd_sub::f32x4_floor: simd_v128_unop_softfloat(&_eosio_f32x4_floor); break;
+         case simd_sub::f32x4_trunc: simd_v128_unop_softfloat(&_eosio_f32x4_trunc); break;
+         case simd_sub::f32x4_nearest: simd_v128_unop_softfloat(&_eosio_f32x4_nearest); break;
+         case simd_sub::f32x4_abs: simd_v128_unop_softfloat(&_eosio_f32x4_abs); break;
+         case simd_sub::f32x4_neg: simd_v128_unop_softfloat(&_eosio_f32x4_neg); break;
+         case simd_sub::f32x4_sqrt: simd_v128_unop_softfloat(&_eosio_f32x4_sqrt); break;
+         case simd_sub::f32x4_add: simd_v128_binop_softfloat(&_eosio_f32x4_add); break;
+         case simd_sub::f32x4_sub: simd_v128_binop_softfloat(&_eosio_f32x4_sub); break;
+         case simd_sub::f32x4_mul: simd_v128_binop_softfloat(&_eosio_f32x4_mul); break;
+         case simd_sub::f32x4_div: simd_v128_binop_softfloat(&_eosio_f32x4_div); break;
+         case simd_sub::f32x4_min: simd_v128_binop_softfloat(&_eosio_f32x4_min); break;
+         case simd_sub::f32x4_max: simd_v128_binop_softfloat(&_eosio_f32x4_max); break;
+         case simd_sub::f32x4_pmin: simd_v128_binop_softfloat(&_eosio_f32x4_pmin); break;
+         case simd_sub::f32x4_pmax: simd_v128_binop_softfloat(&_eosio_f32x4_pmax); break;
+
+         // ── f64x2 arithmetic (softfloat) ──
+         case simd_sub::f64x2_ceil: simd_v128_unop_softfloat(&_eosio_f64x2_ceil); break;
+         case simd_sub::f64x2_floor: simd_v128_unop_softfloat(&_eosio_f64x2_floor); break;
+         case simd_sub::f64x2_trunc: simd_v128_unop_softfloat(&_eosio_f64x2_trunc); break;
+         case simd_sub::f64x2_nearest: simd_v128_unop_softfloat(&_eosio_f64x2_nearest); break;
+         case simd_sub::f64x2_abs: simd_v128_unop_softfloat(&_eosio_f64x2_abs); break;
+         case simd_sub::f64x2_neg: simd_v128_unop_softfloat(&_eosio_f64x2_neg); break;
+         case simd_sub::f64x2_sqrt: simd_v128_unop_softfloat(&_eosio_f64x2_sqrt); break;
+         case simd_sub::f64x2_add: simd_v128_binop_softfloat(&_eosio_f64x2_add); break;
+         case simd_sub::f64x2_sub: simd_v128_binop_softfloat(&_eosio_f64x2_sub); break;
+         case simd_sub::f64x2_mul: simd_v128_binop_softfloat(&_eosio_f64x2_mul); break;
+         case simd_sub::f64x2_div: simd_v128_binop_softfloat(&_eosio_f64x2_div); break;
+         case simd_sub::f64x2_min: simd_v128_binop_softfloat(&_eosio_f64x2_min); break;
+         case simd_sub::f64x2_max: simd_v128_binop_softfloat(&_eosio_f64x2_max); break;
+         case simd_sub::f64x2_pmin: simd_v128_binop_softfloat(&_eosio_f64x2_pmin); break;
+         case simd_sub::f64x2_pmax: simd_v128_binop_softfloat(&_eosio_f64x2_pmax); break;
+
+         // ── Conversions (softfloat) ──
+         case simd_sub::i32x4_trunc_sat_f32x4_s: simd_v128_unop_softfloat(&_eosio_i32x4_trunc_sat_f32x4_s); break;
+         case simd_sub::i32x4_trunc_sat_f32x4_u: simd_v128_unop_softfloat(&_eosio_i32x4_trunc_sat_f32x4_u); break;
+         case simd_sub::f32x4_convert_i32x4_s: simd_v128_unop_softfloat(&_eosio_f32x4_convert_i32x4_s); break;
+         case simd_sub::f32x4_convert_i32x4_u: simd_v128_unop_softfloat(&_eosio_f32x4_convert_i32x4_u); break;
+         case simd_sub::i32x4_trunc_sat_f64x2_s_zero: simd_v128_unop_softfloat(&_eosio_i32x4_trunc_sat_f64x2_s_zero); break;
+         case simd_sub::i32x4_trunc_sat_f64x2_u_zero: simd_v128_unop_softfloat(&_eosio_i32x4_trunc_sat_f64x2_u_zero); break;
+         case simd_sub::f64x2_convert_low_i32x4_s: simd_v128_unop_softfloat(&_eosio_f64x2_convert_low_i32x4_s); break;
+         case simd_sub::f64x2_convert_low_i32x4_u: simd_v128_unop_softfloat(&_eosio_f64x2_convert_low_i32x4_u); break;
+         case simd_sub::f32x4_demote_f64x2_zero: simd_v128_unop_softfloat(&_eosio_f32x4_demote_f64x2_zero); break;
+         case simd_sub::f64x2_promote_low_f32x4: simd_v128_unop_softfloat(&_eosio_f64x2_promote_low_f32x4); break;
+
+         default:
+            break;
+         }
+      }
+
       // ──────── Call helpers ────────
       // Emit a 32-bit relative call instruction, returns the address to patch
       void* emit_call32() {
@@ -3009,7 +4029,13 @@ namespace eosio { namespace vm {
             this->emit_add(total_size, rsp);
          }
          if (ft.return_count != 0) {
-            this->emit_push_raw(rax);
+            if (ft.return_type == types::v128) {
+               // v128 return: callee put result in xmm0, push 16 bytes
+               this->emit_sub(16, rsp);
+               this->emit_vmovdqu(xmm0, *rsp);
+            } else {
+               this->emit_push_raw(rax);
+            }
          }
       }
 
@@ -3183,6 +4209,19 @@ namespace eosio { namespace vm {
 
       // ──────── Static callbacks (same as machine_code_writer) ────────
       static native_value call_host_function(Context* context, native_value* stack, uint32_t idx, uint32_t remaining_stack) {
+         { // DEBUG: log host call args
+            auto& mod = context->get_module();
+            const auto& ft = mod.get_function_type(idx);
+            static int hc = 0;
+            if (++hc <= 50) {
+               fprintf(stderr, "  HOST[%d] idx=%u params=%u:", hc, idx, (unsigned)ft.param_types.size());
+               for (uint32_t i = 0; i < ft.param_types.size() && i < 6; ++i) {
+                  uint32_t si = ft.param_types.size() - i - 1;
+                  fprintf(stderr, " 0x%lx", stack[si].i64);
+               }
+               fprintf(stderr, "\n");
+            }
+         }
          native_value result;
          vm::longjmp_on_exception([&]() {
             auto saved = context->_remaining_call_depth;
