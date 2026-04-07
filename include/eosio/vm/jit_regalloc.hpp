@@ -22,9 +22,10 @@ namespace eosio { namespace vm {
       // rax, rcx, rdx reserved (temps + implicit x86 usage in div/mul)
       // Caller-saved (free, no save/restore):
       r8 = 0, r9 = 1, r10 = 2, r11 = 3,
-      // Callee-saved disabled for correctness testing
+      // Callee-saved (must save/restore in prologue/epilogue):
+      r12 = 4, r13 = 5, r14 = 6, r15 = 7,
       caller_saved_count = 4,
-      count = 4,
+      count = 8,
    };
 
    class jit_regalloc {
@@ -48,6 +49,16 @@ namespace eosio { namespace vm {
             func.intervals[i].phys_xmm = -1;
             func.intervals[i].spill_slot = -1;
             func.intervals[i].type = 0;
+         }
+
+         // Extend the return value vreg's interval to the end of the function.
+         // The vstack's last entry holds the return value, which is read by
+         // the epilogue but not by any IR instruction.
+         if (func.vstack_top > 0) {
+            uint32_t ret_vreg = func.vstack[func.vstack_top - 1];
+            if (ret_vreg < num_vregs) {
+               func.intervals[ret_vreg].end = func.inst_count;
+            }
          }
 
          // Scan instructions to find first def and last use of each vreg
