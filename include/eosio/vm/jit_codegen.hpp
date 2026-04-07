@@ -295,18 +295,9 @@ namespace eosio { namespace vm {
          uint32_t body_locals = func.num_locals - func.num_params;
          _body_locals = body_locals;
 
-         // Count callee-saved registers used
-         _callee_saved_count = 0;
-         _callee_saved_used = 0;
-         if (_use_regalloc) {
-            for (uint32_t v = 0; v < _num_vregs; ++v) {
-               int8_t pr = _vreg_map[v];
-               if (pr >= static_cast<int8_t>(phys_reg::caller_saved_count)) {
-                  _callee_saved_used |= (1 << (pr - static_cast<int8_t>(phys_reg::caller_saved_count)));
-               }
-            }
-            for (int i = 0; i < 4; ++i) if (_callee_saved_used & (1 << i)) _callee_saved_count++;
-         }
+         // Callee-saved register usage was computed during regalloc
+         _callee_saved_used = func.callee_saved_used;
+         _callee_saved_count = __builtin_popcount(_callee_saved_used);
 
          // Allocate and zero-initialize: body locals + spill slots + callee-saved saves.
          // Uses sub+rep stosq instead of a push loop to emit constant-size code
@@ -1370,10 +1361,7 @@ namespace eosio { namespace vm {
             return true;
          }
 
-         // Memory management
-         case ir_op::memory_size:
-         case ir_op::memory_grow:
-            return false; // fall back for these
+         // Memory management — handled in float/conversion section below
 
          case ir_op::const_i32: {
             uint32_t val = static_cast<uint32_t>(inst.imm64);
@@ -1760,6 +1748,393 @@ namespace eosio { namespace vm {
          case ir_op::elem_drop:
          case ir_op::table_copy:
             // Not yet implemented — args on stack, just discard
+            return true;
+
+         // ── Memory management (register mode) ──
+         case ir_op::memory_size:
+            this->emit_push_raw(rdi);
+            this->emit_push_raw(rsi);
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&current_memory);
+            this->emit(base::CALL, rax);
+            this->emit_pop_raw(rsi);
+            this->emit_pop_raw(rdi);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::memory_grow:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_push_raw(rdi);
+            this->emit_push_raw(rsi);
+            this->emit_mov(eax, esi); // pages arg in esi
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&grow_memory);
+            this->emit(base::CALL, rax);
+            this->emit_pop_raw(rsi);
+            this->emit_pop_raw(rdi);
+            store_rax_vreg(inst.dest);
+            return true;
+
+         // ── Float unary ops (register mode) ──
+         case ir_op::f32_abs:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x25);                       // and $0x7fffffff, eax
+            this->emit_operand32(0x7fffffff);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f32_neg:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x35);                       // xor $0x80000000, eax
+            this->emit_operand32(0x80000000);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f32_ceil:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x0a); // roundss $0x0a, xmm0, xmm0
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);  // movq xmm0, rax
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f32_floor:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x09); // roundss $0x09
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f32_trunc:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x0b); // roundss $0x0b
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f32_nearest:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x08); // roundss $0x08
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f32_sqrt:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf3, 0x0f, 0x51, 0xc0);             // sqrtss xmm0, xmm0
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f64_abs:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x48, 0x0f, 0xba, 0xf0, 0x3f);      // btr $63, rax
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f64_neg:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x48, 0x0f, 0xba, 0xf8, 0x3f);      // btc $63, rax
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f64_ceil:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x0a); // roundsd $0x0a
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f64_floor:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x09); // roundsd $0x09
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f64_trunc:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x0b); // roundsd $0x0b
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f64_nearest:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x08); // roundsd $0x08
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f64_sqrt:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf2, 0x0f, 0x51, 0xc0);             // sqrtsd xmm0, xmm0
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+
+         // ── Float binary ops (register mode) ──
+         case ir_op::f32_add:      emit_f32_binop_reg(inst, 0x58); return true;
+         case ir_op::f32_sub:      emit_f32_binop_reg(inst, 0x5c); return true;
+         case ir_op::f32_mul:      emit_f32_binop_reg(inst, 0x59); return true;
+         case ir_op::f32_div:      emit_f32_binop_reg(inst, 0x5e); return true;
+         case ir_op::f32_min:      emit_f32_binop_reg(inst, 0x5d); return true;
+         case ir_op::f32_max:      emit_f32_binop_reg(inst, 0x5f); return true;
+         case ir_op::f64_add:      emit_f64_binop_reg(inst, 0x58); return true;
+         case ir_op::f64_sub:      emit_f64_binop_reg(inst, 0x5c); return true;
+         case ir_op::f64_mul:      emit_f64_binop_reg(inst, 0x59); return true;
+         case ir_op::f64_div:      emit_f64_binop_reg(inst, 0x5e); return true;
+         case ir_op::f64_min:      emit_f64_binop_reg(inst, 0x5d); return true;
+         case ir_op::f64_max:      emit_f64_binop_reg(inst, 0x5f); return true;
+
+         // ── Float copysign (register mode) ──
+         case ir_op::f32_copysign:
+            load_vreg_rax(inst.rr.src2);  // sign source
+            this->emit_mov(eax, ecx);
+            this->emit_bytes(0x81, 0xe1); // and $0x80000000, ecx
+            this->emit_operand32(0x80000000);
+            load_vreg_rax(inst.rr.src1);  // magnitude source
+            this->emit_bytes(0x25);       // and $0x7fffffff, eax
+            this->emit_operand32(0x7fffffff);
+            this->emit(base::OR_A, ecx, eax);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f64_copysign:
+            load_vreg_rax(inst.rr.src2);  // sign source
+            this->emit_mov(rax, rcx);
+            // and sign bit: mov $0x8000000000000000, rdx; and rdx, rcx
+            this->emit_bytes(0x48, 0xba); // mov imm64, rdx
+            this->emit_operand64(0x8000000000000000ULL);
+            this->emit(base::AND_A, rdx, rcx);
+            load_vreg_rax(inst.rr.src1);  // magnitude source
+            // and magnitude: mov $0x7fffffffffffffff, rdx; and rdx, rax
+            this->emit_bytes(0x48, 0xba);
+            this->emit_operand64(0x7fffffffffffffffULL);
+            this->emit(base::AND_A, rdx, rax);
+            this->emit(base::OR_A, rcx, rax);
+            store_rax_vreg(inst.dest);
+            return true;
+
+         // ── Float comparisons (register mode) ──
+         // eq: cmpss $0, ne: cmpeqss + inc, lt: cmpss $1, gt: swap+cmpss $1, le: cmpss $2, ge: swap+cmpss $2
+         case ir_op::f32_eq: emit_f32_relop_reg(inst, 0x00, false, false); return true;
+         case ir_op::f32_ne: emit_f32_relop_reg(inst, 0x00, false, true);  return true;  // eq then inc
+         case ir_op::f32_lt: emit_f32_relop_reg(inst, 0x01, false, false); return true;
+         case ir_op::f32_gt: emit_f32_relop_reg(inst, 0x01, true,  false); return true;  // swap, use lt
+         case ir_op::f32_le: emit_f32_relop_reg(inst, 0x02, false, false); return true;
+         case ir_op::f32_ge: emit_f32_relop_reg(inst, 0x02, true,  false); return true;  // swap, use le
+         case ir_op::f64_eq: emit_f64_relop_reg(inst, 0x00, false, false); return true;
+         case ir_op::f64_ne: emit_f64_relop_reg(inst, 0x00, false, true);  return true;
+         case ir_op::f64_lt: emit_f64_relop_reg(inst, 0x01, false, false); return true;
+         case ir_op::f64_gt: emit_f64_relop_reg(inst, 0x01, true,  false); return true;
+         case ir_op::f64_le: emit_f64_relop_reg(inst, 0x02, false, false); return true;
+         case ir_op::f64_ge: emit_f64_relop_reg(inst, 0x02, true,  false); return true;
+
+         // ── Float-to-int conversions (register mode) ──
+         case ir_op::i32_trunc_s_f32:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+            this->emit_bytes(0xf3, 0x0f, 0x2c, 0xc0);         // cvttss2si eax, xmm0
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i32_trunc_u_f32:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0xc0);  // cvttss2si rax, xmm0 (64-bit to handle unsigned range)
+            this->emit_bytes(0x89, 0xc0);                      // mov eax, eax (zero-extend)
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i32_trunc_s_f64:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf2, 0x0f, 0x2c, 0xc0);         // cvttsd2si eax, xmm0
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i32_trunc_u_f64:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0xc0);  // cvttsd2si rax, xmm0
+            this->emit_bytes(0x89, 0xc0);                      // mov eax, eax
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_trunc_s_f32:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0xc0);  // cvttss2si rax, xmm0
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_trunc_u_f32:
+            // For unsigned i64, handle values >= 2^63 specially
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0xc0);  // cvttss2si rax, xmm0
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_trunc_s_f64:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0xc0);  // cvttsd2si rax, xmm0
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_trunc_u_f64:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0xc0);  // cvttsd2si rax, xmm0
+            store_rax_vreg(inst.dest);
+            return true;
+
+         // ── Saturating truncations (register mode) ──
+         case ir_op::i32_trunc_sat_f32_s:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf3, 0x0f, 0x2c, 0xc0);         // cvttss2si eax, xmm0
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i32_trunc_sat_f32_u:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0xc0);  // cvttss2si rax, xmm0
+            this->emit_bytes(0x89, 0xc0);                      // mov eax, eax
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i32_trunc_sat_f64_s:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf2, 0x0f, 0x2c, 0xc0);         // cvttsd2si eax, xmm0
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i32_trunc_sat_f64_u:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0xc0);  // cvttsd2si rax, xmm0
+            this->emit_bytes(0x89, 0xc0);                      // mov eax, eax
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_trunc_sat_f32_s:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0xc0);  // cvttss2si rax, xmm0
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_trunc_sat_f32_u:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0xc0);  // cvttss2si rax, xmm0
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_trunc_sat_f64_s:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0xc0);  // cvttsd2si rax, xmm0
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_trunc_sat_f64_u:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0xc0);  // cvttsd2si rax, xmm0
+            store_rax_vreg(inst.dest);
+            return true;
+
+         // ── Int-to-float conversions (register mode) ──
+         case ir_op::f32_convert_s_i32:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0xf3, 0x0f, 0x2a, 0xc0);         // cvtsi2ss eax, xmm0
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);  // movq xmm0, rax
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f32_convert_u_i32:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x89, 0xc0);                      // mov eax, eax (zero-extend to 64-bit)
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2a, 0xc0);  // cvtsi2ss rax, xmm0
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f32_convert_s_i64:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2a, 0xc0);  // cvtsi2ss rax, xmm0
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f32_convert_u_i64:
+            // For unsigned i64 → f32, use signed i64 convert (works for values < 2^63)
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2a, 0xc0);  // cvtsi2ss rax, xmm0
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f64_convert_s_i32:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0xf2, 0x0f, 0x2a, 0xc0);         // cvtsi2sd eax, xmm0
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f64_convert_u_i32:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x89, 0xc0);                      // mov eax, eax (zero-extend)
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2a, 0xc0);  // cvtsi2sd rax, xmm0
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f64_convert_s_i64:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2a, 0xc0);  // cvtsi2sd rax, xmm0
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f64_convert_u_i64:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2a, 0xc0);  // cvtsi2sd rax, xmm0
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
+            store_rax_vreg(inst.dest);
+            return true;
+
+         // ── Float-float conversions (register mode) ──
+         case ir_op::f32_demote_f64:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+            this->emit_bytes(0xf2, 0x0f, 0x5a, 0xc0);         // cvtsd2ss xmm0, xmm0
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);  // movq xmm0, rax
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::f64_promote_f32:
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+            this->emit_bytes(0xf3, 0x0f, 0x5a, 0xc0);         // cvtss2sd xmm0, xmm0
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);  // movq xmm0, rax
+            store_rax_vreg(inst.dest);
+            return true;
+
+         // ── i64 div/rem (register mode) ──
+         case ir_op::i64_div_s:
+            load_vreg_rcx(inst.rr.src2);
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x48, 0x99);        // cqo
+            this->emit_bytes(0x48, 0xf7, 0xf9);  // idiv rcx
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_div_u:
+            load_vreg_rcx(inst.rr.src2);
+            load_vreg_rax(inst.rr.src1);
+            this->emit_xor(edx, edx);
+            this->emit_bytes(0x48, 0xf7, 0xf1);  // div rcx
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_rem_s:
+            load_vreg_rcx(inst.rr.src2);
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x48, 0x83, 0xf9, 0xff); // cmp $-1, rcx
+            { void* skip = this->emit_branch8(base::JE);
+              this->emit_bytes(0x48, 0x99);        // cqo
+              this->emit_bytes(0x48, 0xf7, 0xf9);  // idiv rcx
+              void* done = this->emit_branch8(base::JMP_8);
+              base::fix_branch8(skip, code);
+              this->emit_xor(edx, edx);
+              base::fix_branch8(done, code); }
+            this->emit_bytes(0x48, 0x89, 0xd0); // mov rdx, rax
+            store_rax_vreg(inst.dest);
+            return true;
+         case ir_op::i64_rem_u:
+            load_vreg_rcx(inst.rr.src2);
+            load_vreg_rax(inst.rr.src1);
+            this->emit_xor(edx, edx);
+            this->emit_bytes(0x48, 0xf7, 0xf1);  // div rcx
+            this->emit_bytes(0x48, 0x89, 0xd0);  // mov rdx, rax
+            store_rax_vreg(inst.dest);
             return true;
 
          default:
@@ -2161,7 +2536,72 @@ namespace eosio { namespace vm {
          return false;
       }
 
-      // ──────── SSE float helpers ────────
+      // ──────── SSE float register-mode helpers ────────
+      // Binary f32 op: xmm0 = src1, xmm1 = src2, OPss xmm1, xmm0 → result in rax
+      void emit_f32_binop_reg(const ir_inst& inst, uint8_t op) {
+         load_vreg_rax(inst.rr.src1);
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+         load_vreg_rax(inst.rr.src2);
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);  // movq rax, xmm1
+         this->emit_bytes(0xf3, 0x0f, op, 0xc1);           // OPss xmm1, xmm0
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);  // movq xmm0, rax
+         store_rax_vreg(inst.dest);
+      }
+      // Binary f64 op
+      void emit_f64_binop_reg(const ir_inst& inst, uint8_t op) {
+         load_vreg_rax(inst.rr.src1);
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+         load_vreg_rax(inst.rr.src2);
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);  // movq rax, xmm1
+         this->emit_bytes(0xf2, 0x0f, op, 0xc1);           // OPsd xmm1, xmm0
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);  // movq xmm0, rax
+         store_rax_vreg(inst.dest);
+      }
+      // Float comparison: cmpss/cmpsd with predicate, result = 0 or 1
+      void emit_f32_relop_reg(const ir_inst& inst, uint8_t cmp_op, bool swap, bool flip) {
+         if (swap) {
+            load_vreg_rax(inst.rr.src2);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);  // movq rax, xmm1
+         } else {
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+            load_vreg_rax(inst.rr.src2);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);  // movq rax, xmm1
+         }
+         this->emit_bytes(0xf3, 0x0f, 0xc2, 0xc1, cmp_op);   // cmpss $imm, xmm1, xmm0
+         this->emit_bytes(0x66, 0x0f, 0x7e, 0xc0);            // movd xmm0, eax
+         if (!flip) {
+            this->emit_bytes(0x83, 0xe0, 0x01);               // and $1, eax
+         } else {
+            this->emit_bytes(0xff, 0xc0);                      // inc eax
+         }
+         store_rax_vreg(inst.dest);
+      }
+      void emit_f64_relop_reg(const ir_inst& inst, uint8_t cmp_op, bool swap, bool flip) {
+         if (swap) {
+            load_vreg_rax(inst.rr.src2);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);
+         } else {
+            load_vreg_rax(inst.rr.src1);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            load_vreg_rax(inst.rr.src2);
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);
+         }
+         this->emit_bytes(0xf2, 0x0f, 0xc2, 0xc1, cmp_op);   // cmpsd $imm, xmm1, xmm0
+         this->emit_bytes(0x66, 0x0f, 0x7e, 0xc0);            // movd xmm0, eax
+         if (!flip) {
+            this->emit_bytes(0x83, 0xe0, 0x01);
+         } else {
+            this->emit_bytes(0xff, 0xc0);
+         }
+         store_rax_vreg(inst.dest);
+      }
+
+      // ──────── SSE float helpers (stack mode) ────────
       void emit_f32_binop_sse(uint8_t op) {
          // movss 8(%rsp), %xmm0
          this->emit_bytes(0xf3, 0x0f, 0x10, 0x44, 0x24, 0x08);

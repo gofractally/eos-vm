@@ -48,16 +48,14 @@ namespace eosio { namespace vm {
             return;
          }
 
-         // Pass 1.5: Register allocation
-         for (uint32_t i = 0; i < _num_functions; ++i) {
-            jit_regalloc::compute_live_intervals(_functions[i], _scratch);
-            jit_regalloc::allocate_registers(_functions[i]);
-         }
-
-         // Pass 2: Code generation
+         // Pass 2: Register allocation + code generation (fused per-function).
+         // Processing each function's regalloc immediately before codegen keeps
+         // the IR data hot in cache.
          codegen_t codegen(_allocator, _mod);
          codegen.emit_entry_and_error_handlers();
          for (uint32_t i = 0; i < _num_functions; ++i) {
+            jit_regalloc::compute_live_intervals(_functions[i], _scratch);
+            jit_regalloc::allocate_registers(_functions[i]);
             codegen.compile_function(_functions[i], _mod.code[i]);
          }
          codegen.finalize_code();

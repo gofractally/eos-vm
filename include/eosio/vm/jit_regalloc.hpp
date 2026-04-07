@@ -313,6 +313,9 @@ namespace eosio { namespace vm {
                interval.phys_reg = static_cast<int8_t>(assigned);
                reg_used[assigned] = true;
                active[num_active++] = i;
+               if (assigned >= static_cast<int>(phys_reg::caller_saved_count)) {
+                  func.callee_saved_used |= (1 << (assigned - static_cast<int>(phys_reg::caller_saved_count)));
+               }
             } else {
                interval.phys_reg = -1;
                interval.spill_slot = static_cast<int16_t>(next_spill_slot++);

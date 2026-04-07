@@ -246,6 +246,7 @@ namespace eosio { namespace vm {
       uint32_t        func_index  = 0;
       const func_type* type       = nullptr;
       uint32_t        num_spill_slots = 0;
+      uint32_t        callee_saved_used = 0;  // bitmask of callee-saved regs assigned by regalloc
 
       // Initialize with bounded capacity from scratch allocator.
       // source_bytes = size of this function's WASM bytecode.
