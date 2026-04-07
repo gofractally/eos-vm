@@ -21,17 +21,31 @@ namespace eosio { namespace vm {
          const uint32_t num_vregs = func.next_vreg;
          const uint32_t n = func.inst_count;
 
-         // Allocate scratch arrays
+         // Allocate SSA use-chain arrays (persisted on ir_function for codegen)
+         func.use_count = scratch.alloc<uint16_t>(num_vregs);
+         func.def_inst  = scratch.alloc<uint32_t>(num_vregs);
+         std::memset(func.use_count, 0, num_vregs * sizeof(uint16_t));
+         for (uint32_t v = 0; v < num_vregs; ++v) func.def_inst[v] = UINT32_MAX;
+
+         auto* use_count = func.use_count;
+         auto* def_inst  = func.def_inst;
+
+         // Allocate scratch-only arrays
          auto* const_val = scratch.alloc<int64_t>(num_vregs);
          auto* is_const  = scratch.alloc<uint8_t>(num_vregs);
-         auto* use_count = scratch.alloc<uint16_t>(num_vregs);
          std::memset(is_const, 0, num_vregs);
-         std::memset(use_count, 0, num_vregs * sizeof(uint16_t));
 
          // ── Phase 1: Constant propagation + folding ──
          for (uint32_t i = 0; i < n; ++i) {
             auto& inst = func.insts[i];
             if (inst.flags & IR_DEAD) continue;
+
+            // Track definitions
+            bool is_store_op = (inst.opcode >= ir_op::i32_store && inst.opcode <= ir_op::i64_store32);
+            bool is_block_mk = (inst.opcode == ir_op::block_start || inst.opcode == ir_op::block_end);
+            if (!is_store_op && !is_block_mk && inst.dest != ir_vreg_none && inst.dest < num_vregs) {
+               def_inst[inst.dest] = i;
+            }
 
             // Track constants
             if (inst.opcode == ir_op::const_i32 || inst.opcode == ir_op::const_i64) {
@@ -259,7 +273,9 @@ namespace eosio { namespace vm {
          }
 
          // ── Phase 3: Dead code elimination ──
+         // Disabled until use-count covers all opcodes (default bridge uses).
          // Mark instructions whose results are never used (and have no side effects)
+         if (false)
          for (uint32_t i = 0; i < n; ++i) {
             auto& inst = func.insts[i];
             if (inst.flags & IR_DEAD) continue;
@@ -273,9 +289,38 @@ namespace eosio { namespace vm {
                inst.flags |= IR_DEAD;
             }
          }
+
+         // ── Phase 4: Instruction fusion (cmp + branch) ──
+         // When a comparison/eqz has exactly one use and that use is the
+         // immediately next if_/br_if, mark the comparison for fusion.
+         // Codegen will emit cmp+jcc directly, skipping setcc+store.
+         for (uint32_t i = 0; i + 1 < n; ++i) {
+            auto& inst = func.insts[i];
+            if (inst.flags & IR_DEAD) continue;
+            if (!is_comparison(inst.opcode)) continue;
+            if (inst.dest == ir_vreg_none || inst.dest >= num_vregs) continue;
+            if (use_count[inst.dest] != 1) continue;
+
+            auto& next = func.insts[i + 1];
+            if (next.flags & IR_DEAD) continue;
+            // Only fuse with if_ (not br_if — br_if needs multipop handling)
+            if (next.opcode != ir_op::if_) continue;
+            if (next.br.src1 != inst.dest) continue;
+
+            inst.flags |= IR_FUSE_NEXT;
+            next.flags |= IR_DEAD;
+         }
       }
 
    private:
+      static bool is_comparison(ir_op op) {
+         return op == ir_op::i32_eqz || op == ir_op::i64_eqz
+             || (op >= ir_op::i32_eq && op <= ir_op::i32_ge_u)
+             || (op >= ir_op::i64_eq && op <= ir_op::i64_ge_u)
+             || (op >= ir_op::f32_eq && op <= ir_op::f32_ge)
+             || (op >= ir_op::f64_eq && op <= ir_op::f64_ge);
+      }
+
       // Evaluate a binary integer op at compile time.
       static bool fold_binop(ir_op op, int64_t a, int64_t b, int64_t& result) {
          uint32_t a32 = static_cast<uint32_t>(a);

@@ -1157,8 +1157,25 @@ namespace eosio { namespace vm {
       // Check if the next instruction is if_/br_if consuming dest_vreg.
       // If so, fuse the comparison with the branch: emit cmp+jcc directly,
       // mark the next instruction as dead, and return the fused branch info.
-      bool try_fuse_branch(ir_function& /*func*/, uint32_t /*idx*/, uint32_t /*dest_vreg*/, Jcc /*cc*/) {
-         return false; // Disabled — needs more careful implementation
+      // Called when a comparison has IR_FUSE_NEXT set.
+      // The next instruction (if_/br_if) is already IR_DEAD.
+      // Emit the branch directly from the flags set by the comparison.
+      bool emit_fused_branch(ir_function& func, uint32_t idx, Jcc cc) {
+         auto& next = func.insts[idx + 1];
+         if (next.opcode == ir_op::if_) {
+            // if_ branches to else when condition is FALSE → invert cc
+            void* branch = this->emit_branchcc32(invert_cc(cc));
+            push_if_fixup(branch);
+            return true;
+         }
+         if (next.opcode == ir_op::br_if) {
+            // br_if branches when condition is TRUE → use cc directly
+            // Note: br_if with depth_change > 0 can't be fused (needs multipop)
+            // but the optimizer already checked use_count == 1 and adjacency
+            emit_branch_cc_to_block(func, next.br.target, next.dest, next.type, cc);
+            return true;
+         }
+         return false;
       }
 
       // Invert a condition code (for if_ which branches on FALSE)
@@ -1194,6 +1211,7 @@ namespace eosio { namespace vm {
       //
       // Returns true if handled, false to fall back to stack-based emission.
       bool emit_ir_inst_reg(ir_function& func, const ir_inst& inst, uint32_t idx) {
+         if (inst.flags & IR_DEAD) return true;  // skip dead instructions
          switch (inst.opcode) {
          case ir_op::nop:
          case ir_op::block:
@@ -1448,8 +1466,7 @@ namespace eosio { namespace vm {
          case ir_op::i32_eqz: {
             load_vreg_rax(inst.rr.src1);
             this->emit(base::TEST, eax, eax);
-            // eqz produces 1 when zero → JZ condition
-            if (try_fuse_branch(func, idx, inst.dest, base::JZ)) return true;
+            if ((inst.flags & IR_FUSE_NEXT) && emit_fused_branch(func, idx, base::JZ)) return true;
             this->emit_setcc(base::JZ, al);
             this->emit_bytes(0x0f, 0xb6, 0xc0); // movzbl
             store_rax_vreg(inst.dest);
@@ -1582,7 +1599,7 @@ namespace eosio { namespace vm {
          case ir_op::i64_eqz:
             load_vreg_rax(inst.rr.src1);
             this->emit(base::TEST, rax, rax);
-            if (try_fuse_branch(func, idx, inst.dest, base::JZ)) return true;
+            if ((inst.flags & IR_FUSE_NEXT) && emit_fused_branch(func, idx, base::JZ)) return true;
             this->emit_setcc(base::JZ, al);
             this->emit_bytes(0x0f, 0xb6, 0xc0);
             store_rax_vreg(inst.dest);
@@ -2252,8 +2269,7 @@ namespace eosio { namespace vm {
          load_vreg_rax(inst.rr.src1);
          if (is32) this->emit_cmp(ecx, eax);
          else      this->emit_cmp(rcx, rax);
-         // Try to fuse with the next if_/br_if — skip setcc+movzbl+store
-         if (try_fuse_branch(func, idx, inst.dest, cc)) return true;
+         if ((inst.flags & IR_FUSE_NEXT) && emit_fused_branch(func, idx, cc)) return true;
          this->emit_setcc(cc, al);
          this->emit_bytes(0x0f, 0xb6, 0xc0); // movzbl %al, %eax
          store_rax_vreg(inst.dest);

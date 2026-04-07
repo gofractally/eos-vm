@@ -156,6 +156,7 @@ namespace eosio { namespace vm {
       IR_SIDE_EFFECT  = 1 << 0,
       IR_COMMUTATIVE  = 1 << 1,
       IR_DEAD         = 1 << 2,
+      IR_FUSE_NEXT    = 1 << 3,  // Comparison: skip setcc, fuse with next if_/br_if
    };
 
    // IR instruction. POD type — no constructor/destructor.
@@ -243,6 +244,12 @@ namespace eosio { namespace vm {
       // Live intervals (allocated lazily during regalloc, count = next_vreg)
       ir_live_interval* intervals      = nullptr;
       uint32_t          interval_count = 0;
+
+      // SSA use chains (allocated by optimizer, count = next_vreg).
+      // use_count[v] = number of instructions that read vreg v.
+      // def_inst[v]  = instruction index that defines vreg v (UINT32_MAX if none).
+      uint16_t*       use_count   = nullptr;
+      uint32_t*       def_inst    = nullptr;
 
       uint32_t        next_vreg   = 0;
       uint32_t        num_params  = 0;
