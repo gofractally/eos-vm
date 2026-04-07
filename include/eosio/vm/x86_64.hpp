@@ -319,7 +319,7 @@ namespace eosio { namespace vm {
          emit_bytes(0xe9);
          return emit_branch_target32();
       }
-      void* emit_br_if(uint32_t depth_change, uint8_t rt) {
+      void* emit_br_if(uint32_t depth_change, uint8_t rt, uint32_t = UINT32_MAX) {
          if (auto cond = try_pop_recent_op<condition_op>()) {
             COUNT_INSTR_NO_FLAGS(); // The previous flags are use be the conditional branch
             if (is_simple_multipop(depth_change, rt)) {
@@ -354,7 +354,7 @@ namespace eosio { namespace vm {
 
       // Generate a binary search.
       struct br_table_generator {
-         void* emit_case(uint32_t depth_change, uint8_t rt) {
+         void* emit_case(uint32_t depth_change, uint8_t rt, uint32_t = UINT32_MAX) {
             while(true) {
                assert(!stack.empty() && "The parser is supposed to handle the number of elements in br_table.");
                auto [min, max, label] = stack.back();
@@ -399,7 +399,7 @@ namespace eosio { namespace vm {
             }
 
          }
-         void* emit_default(uint32_t depth_change, uint8_t rt) {
+         void* emit_default(uint32_t depth_change, uint8_t rt, uint32_t = UINT32_MAX) {
             void* result = emit_case(depth_change, rt);
             assert(stack.empty() && "unexpected default.");
             return result;

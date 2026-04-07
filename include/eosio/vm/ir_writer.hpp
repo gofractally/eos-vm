@@ -368,10 +368,33 @@ namespace eosio { namespace vm {
          return inst_idx;
       }
 
-      branch_t emit_br_if(uint32_t dc, uint8_t rt) {
+      branch_t emit_br_if(uint32_t dc, uint8_t rt, uint32_t label = UINT32_MAX) {
          uint32_t inst_idx = 0;
          if (!_unreachable) {
             uint32_t cond = _func->vpop();
+            // If the br_if carries a result value and the target block has a merge vreg,
+            // emit a mov to copy the result to the merge vreg.
+            // This is safe because: if the branch is taken, the merge vreg is correct.
+            // If not taken, the merge vreg will be overwritten by the fall-through path.
+            if (rt != types::pseudo && _func->vstack_depth() > 0 && label != UINT32_MAX) {
+               uint32_t target_ctrl = _func->ctrl_stack_top - 1 - label;
+               if (target_ctrl < _func->ctrl_stack_top) {
+                  auto& target_entry = _func->ctrl_stack[target_ctrl];
+                  if (target_entry.merge_vreg != ir_vreg_none && !target_entry.is_loop) {
+                     uint32_t src = _func->vstack_back();
+                     if (src != target_entry.merge_vreg) {
+                        ir_inst mov{};
+                        mov.opcode = ir_op::mov;
+                        mov.type = rt;
+                        mov.flags = IR_NONE;
+                        mov.dest = target_entry.merge_vreg;
+                        mov.rr.src1 = src;
+                        mov.rr.src2 = ir_vreg_none;
+                        _func->emit(mov);
+                     }
+                  }
+               }
+            }
             ir_inst inst{};
             inst.opcode = ir_op::br_if;
             inst.type = rt;
@@ -388,9 +411,29 @@ namespace eosio { namespace vm {
       struct br_table_parser {
          ir_writer* _writer;
          br_table_parser(ir_writer* w) : _writer(w) {}
-         branch_t emit_case(uint32_t dc, uint8_t rt) {
-            // Always emit case instructions — br_table sets unreachable but
-            // the cases must still be emitted for the dispatch table.
+         branch_t emit_case(uint32_t dc, uint8_t rt, uint32_t label = UINT32_MAX) {
+            // Emit merge mov if target has a merge vreg
+            if (rt != types::pseudo && label != UINT32_MAX) {
+               auto* func = _writer->_func;
+               uint32_t target_ctrl = func->ctrl_stack_top - 1 - label;
+               if (target_ctrl < func->ctrl_stack_top) {
+                  auto& target_entry = func->ctrl_stack[target_ctrl];
+                  if (target_entry.merge_vreg != ir_vreg_none && !target_entry.is_loop &&
+                      func->vstack_depth() > 0) {
+                     uint32_t src = func->vstack_back();
+                     if (src != target_entry.merge_vreg) {
+                        ir_inst mov{};
+                        mov.opcode = ir_op::mov;
+                        mov.type = rt;
+                        mov.flags = IR_NONE;
+                        mov.dest = target_entry.merge_vreg;
+                        mov.rr.src1 = src;
+                        mov.rr.src2 = ir_vreg_none;
+                        func->emit(mov);
+                     }
+                  }
+               }
+            }
             ir_inst inst{};
             inst.opcode = ir_op::br;
             inst.type = rt;
@@ -402,8 +445,8 @@ namespace eosio { namespace vm {
             _writer->_func->emit(inst);
             return inst_idx;
          }
-         branch_t emit_default(uint32_t dc, uint8_t rt) {
-            return emit_case(dc, rt);
+         branch_t emit_default(uint32_t dc, uint8_t rt, uint32_t label = UINT32_MAX) {
+            return emit_case(dc, rt, label);
          }
       };
       br_table_parser emit_br_table(uint32_t table_size) {

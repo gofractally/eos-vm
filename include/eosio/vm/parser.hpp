@@ -1023,7 +1023,7 @@ namespace eosio { namespace vm {
                   uint32_t label = parse_varuint32(code);
                   op_stack.pop(types::i32);
                   auto [depth_change,rt] = compute_depth_change(label);
-                  auto branch = code_writer.emit_br_if(depth_change, rt);
+                  auto branch = code_writer.emit_br_if(depth_change, rt, label);
                   handle_branch_target(label, branch);
                } break;
                case opcodes::br_table: {
@@ -1036,7 +1036,7 @@ namespace eosio { namespace vm {
                   for (size_t i = 0; i < table_size; i++) {
                      uint32_t label = parse_varuint32(code);
                      auto [depth_change,rt] = compute_depth_change(label);
-                     auto branch = handler.emit_case(depth_change, rt);
+                     auto branch = handler.emit_case(depth_change, rt, label);
                      handle_branch_target(label, branch);
                      uint8_t one_result = pc_stack[pc_stack.size() - label - 1].label_result;
                      if(i == 0) {
@@ -1047,7 +1047,7 @@ namespace eosio { namespace vm {
                   }
                   uint32_t label = parse_varuint32(code);
                   auto [depth_change,rt] = compute_depth_change(label);
-                  auto branch = handler.emit_default(depth_change, rt);
+                  auto branch = handler.emit_default(depth_change, rt, label);
                   handle_branch_target(label, branch);
                   EOS_VM_ASSERT(table_size == 0 || result_type == pc_stack[pc_stack.size() - label - 1].label_result,
                                 wasm_parse_exception, "br_table labels must have the same type");

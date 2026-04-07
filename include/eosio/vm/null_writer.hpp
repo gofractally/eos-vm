@@ -19,8 +19,8 @@ class null_writer {
    branch_t emit_br(uint32_t /*depth_change*/, uint8_t /*rt*/, uint32_t /*label*/ = 0) { return {}; }
    branch_t emit_br_if(uint32_t /*depth_change*/, uint8_t /*rt*/, uint32_t /*label*/ = 0) { return {}; }
    struct br_table_parser {
-      branch_t emit_case(uint32_t /*depth_change*/, uint8_t /*rt*/) { return {}; }
-      branch_t emit_default(uint32_t /*depth_change*/, uint8_t /*rt*/) { return {}; }
+      branch_t emit_case(uint32_t /*depth_change*/, uint8_t /*rt*/, uint32_t = UINT32_MAX) { return {}; }
+      branch_t emit_default(uint32_t /*depth_change*/, uint8_t /*rt*/, uint32_t = UINT32_MAX) { return {}; }
    };
    br_table_parser emit_br_table(uint32_t /*table_size*/) { return {}; }
    void emit_call(const func_type& /*ft*/, uint32_t /*funcnum*/) {}

@@ -40,4 +40,4 @@
 build.tar.gz
 build/
 compile_commands.json
-Testing/
+Testing/build-spec-tests/

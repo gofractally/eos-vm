@@ -48,7 +48,7 @@ namespace eosio { namespace vm {
          instr.data = encode_depth_change(depth_change, rt);
          return &instr.pc;
       }
-      uint32_t * emit_br_if(uint32_t depth_change, uint8_t rt) {
+      uint32_t * emit_br_if(uint32_t depth_change, uint8_t rt, uint32_t = UINT32_MAX) {
          auto& instr = append_instr(br_if_t{});
          instr.data = encode_depth_change(depth_change, rt);
          return &instr.pc;
@@ -72,13 +72,13 @@ namespace eosio { namespace vm {
             _this->fb[_this->op_index] = error_t{};
             bt.size           = table_size;
          }
-         uint32_t * emit_case(uint32_t depth_change, uint8_t rt) {
+         uint32_t * emit_case(uint32_t depth_change, uint8_t rt, uint32_t = UINT32_MAX) {
             auto& elem = _br_tab[_i++];
             elem.stack_pop = encode_depth_change(depth_change, rt);
             return &elem.pc;
          }
          // Must be called after all cases
-         uint32_t* emit_default(uint32_t depth_change, uint8_t rt) {
+         uint32_t* emit_default(uint32_t depth_change, uint8_t rt, uint32_t = UINT32_MAX) {
             auto result = emit_case(depth_change, rt);
             EOS_VM_ASSERT(_this->fb[_this->op_index].is_a<error_t>(), wasm_parse_exception, "overwrote br_table data");
             return result;
