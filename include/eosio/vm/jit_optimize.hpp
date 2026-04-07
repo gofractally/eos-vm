@@ -268,15 +268,19 @@ namespace eosio { namespace vm {
                count_use(inst.rr.src1);
                break;
             default:
+               // Generic bridge: reads src1/src2 (rr union) for unhandled ops.
+               // Also count dest as a use for stores (already handled above).
+               count_use(inst.rr.src1);
+               count_use(inst.rr.src2);
                break;
             }
          }
 
          // ── Phase 3: Dead code elimination ──
-         // Disabled until use-count covers all opcodes (default bridge uses).
-         // Mark instructions whose results are never used (and have no side effects)
-         if (false)
-         for (uint32_t i = 0; i < n; ++i) {
+         // TODO: re-enable once use-count is verified correct for all opcodes.
+         // The default case in Phase 2 over-counts (safe for fusion) but the
+         // interaction with DCE needs careful auditing.
+         if (false) for (uint32_t i = 0; i < n; ++i) {
             auto& inst = func.insts[i];
             if (inst.flags & IR_DEAD) continue;
             if (inst.flags & IR_SIDE_EFFECT) continue;
@@ -303,9 +307,14 @@ namespace eosio { namespace vm {
 
             auto& next = func.insts[i + 1];
             if (next.flags & IR_DEAD) continue;
-            // Only fuse with if_ (not br_if — br_if needs multipop handling)
-            if (next.opcode != ir_op::if_) continue;
-            if (next.br.src1 != inst.dest) continue;
+            if (next.opcode == ir_op::if_ && next.br.src1 == inst.dest) {
+               // OK — fuse with if_
+            } else if (next.opcode == ir_op::br_if && next.br.src1 == inst.dest
+                       && next.dest == 0) {  // dest = depth_change; only fuse when 0 (no multipop)
+               // OK — fuse with br_if (no multipop)
+            } else {
+               continue;
+            }
 
             inst.flags |= IR_FUSE_NEXT;
             next.flags |= IR_DEAD;

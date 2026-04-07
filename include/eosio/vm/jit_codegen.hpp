@@ -134,6 +134,12 @@ namespace eosio { namespace vm {
             _use_regalloc = false;
          }
 
+         // Store SSA info for constant-operand fusion in emit_binop_reg
+         _func_def_inst = func.def_inst;
+         _func_use_count = func.use_count;
+         _func_insts = func.insts;
+         _func_inst_count = func.inst_count;
+
          start_function(code, func.func_index + _mod.get_imported_functions_size());
 
          // Emit function prologue
@@ -1204,6 +1210,26 @@ namespace eosio { namespace vm {
          }
       }
 
+      // Check if src2 is a compile-time constant. If so, load src1 into rax,
+      // apply op with the immediate, store result. Returns true if handled.
+      // Emit binop with constant src2: load src1 → rax, apply op with immediate, store.
+      // Lambda receives int32_t immediate value.
+      template<typename F>
+      bool emit_binop_imm(const ir_inst& inst, F op_imm, bool /*is32*/) {
+         if (!_func_def_inst || inst.rr.src2 >= _num_vregs) return false;
+         uint32_t def = _func_def_inst[inst.rr.src2];
+         if (def >= _func_inst_count) return false;
+         auto& di = _func_insts[def];
+         if (di.opcode != ir_op::const_i32 && di.opcode != ir_op::const_i64) return false;
+         int32_t imm = static_cast<int32_t>(di.imm64);
+         load_vreg_rax(inst.rr.src1);
+         op_imm(imm);
+         store_rax_vreg(inst.dest);
+         if (_func_use_count && _func_use_count[inst.rr.src2] == 1)
+            di.flags |= IR_DEAD;
+         return true;
+      }
+
       // ──────── Register-based IR emission ────────
       // Uses physical registers for vreg values instead of push/pop.
       // rax and rcx are temporaries. Vregs in physical registers are
@@ -1435,16 +1461,23 @@ namespace eosio { namespace vm {
             return true;
          }
 
-         // Integer binary ops (with constant folding for i32)
-         case ir_op::i32_add: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_add(s, d); }, true);
-         case ir_op::i32_sub: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, true);
+         // Integer binary ops
+         case ir_op::i32_add:
+            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_add(s, d); }, true);
+         case ir_op::i32_sub:
+            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, true);
          case ir_op::i32_mul: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, true);
-         case ir_op::i32_and: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, true);
-         case ir_op::i32_or:  return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, true);
-         case ir_op::i32_xor: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, true);
+         case ir_op::i32_and:
+            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, true);
+         case ir_op::i32_or:
+            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, true);
+         case ir_op::i32_xor:
+            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, true);
 
-         case ir_op::i64_add: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_add(s, d); }, false);
-         case ir_op::i64_sub: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, false);
+         case ir_op::i64_add:
+            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_add(s, d); }, false);
+         case ir_op::i64_sub:
+            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, false);
          case ir_op::i64_mul: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, false);
          case ir_op::i64_and: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, false);
          case ir_op::i64_or:  return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, false);
@@ -2239,21 +2272,16 @@ namespace eosio { namespace vm {
          if (pr_d >= 0 && pr_s1 >= 0 && pr_s2 >= 0) {
             // All in registers — optimal path
             if (pr_d == pr_s1) {
-               // dest = src1, just apply op with src2
                if (is32) op(phys_to_reg32(pr_d), phys_to_reg32(pr_s2));
                else      op(phys_to_reg64(pr_d), phys_to_reg64(pr_s2));
             } else if (pr_d == pr_s2) {
-               // dest = src2, need temp to avoid clobbering src2
-               // Use rax as temp: rax = src1, op(rax, src2), mov rax to dest
                if (is32) { this->emit_mov(phys_to_reg32(pr_s1), eax); op(eax, phys_to_reg32(pr_s2)); this->emit_mov(eax, phys_to_reg32(pr_d)); }
                else      { this->emit_mov(phys_to_reg64(pr_s1), rax); op(rax, phys_to_reg64(pr_s2)); this->emit_mov(rax, phys_to_reg64(pr_d)); }
             } else {
-               // dest != src1 && dest != src2: mov src1 to dest, op with src2
                if (is32) { this->emit_mov(phys_to_reg32(pr_s1), phys_to_reg32(pr_d)); op(phys_to_reg32(pr_d), phys_to_reg32(pr_s2)); }
                else      { this->emit_mov(phys_to_reg64(pr_s1), phys_to_reg64(pr_d)); op(phys_to_reg64(pr_d), phys_to_reg64(pr_s2)); }
             }
          } else {
-            // Some spilled — use rax/rcx temps
             load_vreg_rcx(inst.rr.src2);
             load_vreg_rax(inst.rr.src1);
             if (is32) op(eax, ecx);
@@ -3051,6 +3079,11 @@ namespace eosio { namespace vm {
       bool _use_regalloc = false;
       uint32_t _callee_saved_used = 0;
       uint32_t _callee_saved_count = 0;
+      // SSA info from optimizer (for const-operand fusion)
+      uint32_t* _func_def_inst = nullptr;
+      uint16_t* _func_use_count = nullptr;
+      ir_inst*  _func_insts = nullptr;
+      uint32_t  _func_inst_count = 0;
    };
 
 }} // namespace eosio::vm
