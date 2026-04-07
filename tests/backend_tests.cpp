@@ -4,7 +4,6 @@
 
 using namespace eosio::vm;
 
-extern wasm_allocator wa;
 
 BACKEND_TEST_CASE("Tests that the arguments of top level calls are validated",
                   "[call_typecheck]") {

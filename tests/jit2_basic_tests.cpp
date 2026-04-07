@@ -5,7 +5,6 @@
 using namespace eosio;
 using namespace eosio::vm;
 
-extern wasm_allocator wa;
 
 // (module
 //   (func (export "add") (param i32 i32) (result i32)

@@ -381,8 +381,6 @@ struct my_host_functions {
    static int test2(int value) { return value * 42; }
 };
 
-extern wasm_allocator wa;
-
 BACKEND_TEST_CASE( "Testing host functions", "[host_functions_test]" ) {
    my_host_functions host;
    using rhf_t = registered_host_functions<standalone_function_t>;

@@ -5,7 +5,6 @@
 
 using namespace eosio::vm;
 
-extern wasm_allocator wa;
 
 namespace {
 

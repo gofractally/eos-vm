@@ -10,7 +10,6 @@
 using namespace eosio;
 using namespace eosio::vm;
 
-extern wasm_allocator wa;
 
 BACKEND_TEST_CASE("Test that we can load and run a wasm that uses 8191 stack elements",
                   "[8k_minus_1_stack_elems_test]") {

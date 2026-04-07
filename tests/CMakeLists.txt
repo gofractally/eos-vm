@@ -120,42 +120,13 @@ catch_discover_tests( eos_vm_simd_tests )
 endif(ENABLE_SPEC_TESTS)
 
 add_executable(unit_tests main.cpp
-                          allocator_tests.cpp
-                          eosio_max_nested_structures_tests.cpp
-                          guarded_ptr_tests.cpp
-                          varint_tests.cpp
-                          variant_tests.cpp
-                          host_functions_tests.cpp
-                          preconditions_tests.cpp
-                          allow_code_after_function_end_tests.cpp
-                          allow_invalid_empty_local_set_tests.cpp
-                          allow_u32_limits_flags_tests.cpp
-                          allow_zero_blocktype_tests.cpp
-                          forbid_export_mutable_globals_tests.cpp
-                          max_br_table_elements_tests.cpp
-                          max_code_bytes_tests.cpp
-                          max_func_local_bytes_tests.cpp
-                          max_linear_memory_init_tests.cpp
-                          max_local_sets_tests.cpp
-                          max_memory_offset_tests.cpp
-                          max_mutable_globals_tests.cpp
-                          max_nested_structures_tests.cpp
-                          max_pages_tests.cpp
-                          max_section_elements_tests.cpp
-                          max_stack_bytes_tests.cpp
-                          call_return_stack_bytes_tests.cpp
-                          max_table_elements_tests.cpp
-                          null_tests.cpp
-                          reentry_tests.cpp
-                          signals_tests.cpp
-                          stack_restriction_tests.cpp
-                          watchdog_tests.cpp
-                          implementation_limits_tests.cpp
-                          instantiation_tests.cpp
-                          backend_tests.cpp
-                          vector_tests.cpp
-                          globals_memory_tests.cpp
-                          call_indirect_tests.cpp)
+                          unity_batch_1.cpp
+                          unity_batch_2.cpp
+                          unity_batch_3.cpp
+                          unity_batch_4.cpp
+                          unity_batch_5.cpp
+                          unity_batch_6.cpp
+                          unity_batch_7.cpp)
 
 target_link_libraries(unit_tests eos-vm Catch2::Catch2)
 

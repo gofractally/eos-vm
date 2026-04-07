@@ -4,7 +4,6 @@
 
 using namespace eosio::vm;
 
-extern wasm_allocator wa;
 
 TEST_CASE("Tests a null backend", "[null_backend]") {
    /*

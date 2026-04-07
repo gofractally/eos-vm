@@ -1,3 +1,5 @@
+#pragma once
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -170,6 +172,8 @@ inline bool check_nan(const std::optional<eosio::vm::operand_stack_elem>& v) {
                                       [](eosio::vm::f64_const_t f) { return std::isnan(f.data.f); },
                                       [](eosio::vm::v128_const_t){ return false; }}, *v);
 }
+
+extern eosio::vm::wasm_allocator wa;
 
 inline eosio::vm::wasm_allocator* get_wasm_allocator() {
    static eosio::vm::wasm_allocator alloc;
