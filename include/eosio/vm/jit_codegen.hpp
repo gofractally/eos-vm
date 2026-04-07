@@ -128,9 +128,9 @@ namespace eosio { namespace vm {
                }
             }
             _num_spill_slots = func.num_spill_slots;
-            // TODO: Enable regalloc once call-crossing intervals are handled.
-            // Currently caller-saved registers get clobbered by calls.
-            _use_regalloc = false;
+            // Regalloc emission ready but needs debugging for complex WASM
+            // (SHA-256 crashes with memory out-of-bounds — spill slot issue)
+            _use_regalloc = false; // TODO: enable after fixing spill addressing
          } else {
             _use_regalloc = false;
          }

@@ -79,38 +79,62 @@ namespace eosio { namespace vm {
       static uint32_t allocate_registers(ir_function& func) {
          if (func.interval_count == 0) return 0;
 
-         // Sort intervals by start position (use a simple insertion sort
-         // since it's allocated from growable_allocator and we can't use std::sort
-         // with non-contiguous memory... actually it IS contiguous)
+         // Find call instruction positions — intervals spanning calls must be spilled
+         // since we use caller-saved registers
+         bool has_calls = false;
+         for (uint32_t i = 0; i < func.inst_count; ++i) {
+            if (func.insts[i].opcode == ir_op::call ||
+                func.insts[i].opcode == ir_op::call_indirect) {
+               has_calls = true;
+               break;
+            }
+         }
+
+         // Sort intervals by start position
          std::sort(func.intervals, func.intervals + func.interval_count,
                    [](const ir_live_interval& a, const ir_live_interval& b) {
                       return a.start < b.start;
                    });
 
-         // Active intervals (currently assigned to a register)
-         // Using a simple fixed-size array since we have at most 12 registers
          static constexpr int NUM_REGS = static_cast<int>(phys_reg::count);
-         uint32_t active[NUM_REGS]; // index into intervals array
+         uint32_t active[NUM_REGS];
          bool reg_used[NUM_REGS] = {};
          int num_active = 0;
          uint32_t next_spill_slot = 0;
 
          for (uint32_t i = 0; i < func.interval_count; ++i) {
             auto& interval = func.intervals[i];
-
-            // Skip unused vregs
             if (interval.start == UINT32_MAX) continue;
+
+            // Check if this interval crosses a call instruction
+            bool crosses_call = false;
+            if (has_calls) {
+               for (uint32_t j = 0; j < func.inst_count; ++j) {
+                  if ((func.insts[j].opcode == ir_op::call ||
+                       func.insts[j].opcode == ir_op::call_indirect) &&
+                      j > interval.start && j < interval.end) {
+                     crosses_call = true;
+                     break;
+                  }
+               }
+            }
 
             // Expire old intervals
             for (int j = 0; j < num_active; ) {
                auto& active_iv = func.intervals[active[j]];
                if (active_iv.end < interval.start) {
-                  // This interval has expired — free its register
                   reg_used[active_iv.phys_reg] = false;
-                  active[j] = active[--num_active]; // swap-remove
+                  active[j] = active[--num_active];
                } else {
                   ++j;
                }
+            }
+
+            // If interval crosses a call, must spill (caller-saved regs clobbered)
+            if (crosses_call) {
+               interval.phys_reg = -1;
+               interval.spill_slot = static_cast<int16_t>(next_spill_slot++);
+               continue;
             }
 
             // Try to assign a register
@@ -127,8 +151,6 @@ namespace eosio { namespace vm {
                reg_used[assigned] = true;
                active[num_active++] = i;
             } else {
-               // Spill: assign a stack slot
-               // TODO: spill the interval that ends latest (better heuristic)
                interval.phys_reg = -1;
                interval.spill_slot = static_cast<int16_t>(next_spill_slot++);
             }
