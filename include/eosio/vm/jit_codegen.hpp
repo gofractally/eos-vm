@@ -129,7 +129,7 @@ namespace eosio { namespace vm {
                }
             }
             _num_spill_slots = func.num_spill_slots;
-            _use_regalloc = true;
+            _use_regalloc = false; // Test stack mode for ECDSA
          } else {
             _use_regalloc = false;
          }
@@ -1231,8 +1231,45 @@ namespace eosio { namespace vm {
             }
             return true;
          }
-         case ir_op::call_indirect:
-            return false; // TODO
+         case ir_op::call_indirect: {
+            uint32_t fti = inst.call.index;
+            const func_type& ft = _mod.types[fti];
+            // Table index was pushed by an arg instruction — pop it
+            this->emit_pop_raw(rax);
+            // Bounds check
+            uint32_t table_size = _mod.tables[0].limits.initial;
+            this->emit_cmp(table_size, eax);
+            base::fix_branch(this->emit_branchcc32(base::JAE), call_indirect_handler);
+            // Table lookup
+            this->emit_bytes(0x48, 0xc1, 0xe0, 0x04); // shlq $4, %rax
+            if (_mod.indirect_table(0)) {
+               this->emit_mov(*(rsi + wasm_allocator::table_offset()), rcx);
+               this->emit_add(rcx, rax);
+            } else {
+               this->emit_bytes(0x48, 0x8d, 0x84, 0x06);
+               this->emit_operand32(static_cast<uint32_t>(wasm_allocator::table_offset()));
+            }
+            this->emit_bytes(0x81, 0x38);
+            this->emit_operand32(fti);
+            base::fix_branch(this->emit_branchcc32(base::JNE), type_error_handler);
+            if constexpr (!StackLimitIsBytes) {
+               this->emit(base::DECD, ebx);
+               base::fix_branch(this->emit_branchcc32(base::JZ), stack_overflow_handler);
+            }
+            this->emit_bytes(0xff, 0x50, 0x08); // call *8(%rax)
+            // Remove args, store result
+            uint32_t arg_bytes = 0;
+            for (uint32_t p = 0; p < ft.param_types.size(); ++p)
+               arg_bytes += (ft.param_types[p] == types::v128) ? 16 : 8;
+            if (arg_bytes > 0) this->emit_add(arg_bytes, rsp);
+            if constexpr (!StackLimitIsBytes) {
+               this->emit(base::INCD, ebx);
+            }
+            if (ft.return_count > 0 && inst.dest != ir_vreg_none) {
+               store_rax_vreg(inst.dest);
+            }
+            return true;
+         }
 
          // Global access
          case ir_op::global_get: {

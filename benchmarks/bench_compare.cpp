@@ -710,9 +710,8 @@ int main() {
    };
    compute_def compute_tests[] = {
       {"SHA-256 (64B, 10K)",   BENCH_SHA256_WASM, "bench_sha256",       bench_sha256,       10'000},
-      // ECDSA disabled — jit2 hangs, investigating
-      // {"ECDSA verify (k1)",    BENCH_ECDSA_WASM,  "bench_ecdsa_verify", bench_ecdsa_verify, 100},
-      // {"ECDSA sign (k1)",      BENCH_ECDSA_WASM,  "bench_ecdsa_sign",   bench_ecdsa_sign,   100},
+      {"ECDSA verify (k1)",    BENCH_ECDSA_WASM,  "bench_ecdsa_verify", bench_ecdsa_verify, 100},
+      {"ECDSA sign (k1)",      BENCH_ECDSA_WASM,  "bench_ecdsa_sign",   bench_ecdsa_sign,   100},
    };
    const int num_compute = sizeof(compute_tests) / sizeof(compute_tests[0]);
    double compute_results[3][RT_COUNT] = {};

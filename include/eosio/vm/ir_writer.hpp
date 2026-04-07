@@ -43,10 +43,18 @@ namespace eosio { namespace vm {
       }
 
       ~ir_writer() {
-         // Pass 1.5: Register allocation
-         for (uint32_t i = 0; i < _num_functions; ++i) {
-            jit_regalloc::compute_live_intervals(_functions[i], _allocator);
-            jit_regalloc::allocate_registers(_functions[i]);
+         // Pass 1.5: Register allocation (only if codegen will use it)
+         // Skip for large modules to avoid exhausting allocator
+         // TODO: compute only for functions that will use regalloc
+         bool do_regalloc = true;
+         uint32_t total_vregs = 0;
+         for (uint32_t i = 0; i < _num_functions; ++i) total_vregs += _functions[i].next_vreg;
+         if (total_vregs > 10000) do_regalloc = false; // too large
+         if (do_regalloc) {
+            for (uint32_t i = 0; i < _num_functions; ++i) {
+               jit_regalloc::compute_live_intervals(_functions[i], _allocator);
+               jit_regalloc::allocate_registers(_functions[i]);
+            }
          }
 
          // Pass 2: Code generation (jit_codegen calls start_code in constructor)
@@ -318,19 +326,7 @@ namespace eosio { namespace vm {
       // ──── Calls ────
       void emit_call(const func_type& ft, uint32_t funcnum) {
          if (!_unreachable) {
-            // Emit arg instructions to record which vregs are call arguments.
-            // In stack mode these are no-ops; in register mode they push vregs to stack.
             uint32_t nparams = ft.param_types.size();
-            for (uint32_t i = 0; i < nparams; ++i) {
-               uint32_t arg_vreg = _func->vstack[_func->vstack_top - nparams + i];
-               ir_inst arg_inst{};
-               arg_inst.opcode = ir_op::arg;
-               arg_inst.type = ft.param_types[i];
-               arg_inst.dest = ir_vreg_none;
-               arg_inst.rr.src1 = arg_vreg;
-               arg_inst.rr.src2 = ir_vreg_none;
-               _func->emit(arg_inst);
-            }
             for (uint32_t i = 0; i < nparams; ++i) {
                _func->vpop();
             }
@@ -361,7 +357,8 @@ namespace eosio { namespace vm {
       void emit_call_indirect(const func_type& ft, uint32_t fti) {
          if (!_unreachable) {
             uint32_t table_idx = _func->vpop();
-            for (uint32_t i = 0; i < ft.param_types.size(); ++i) {
+            uint32_t nparams = ft.param_types.size();
+            for (uint32_t i = 0; i < nparams; ++i) {
                _func->vpop();
             }
             if (ft.return_count > 0) {
