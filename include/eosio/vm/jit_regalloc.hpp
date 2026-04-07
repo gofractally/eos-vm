@@ -64,13 +64,16 @@ namespace eosio { namespace vm {
             }
 
             // Source vregs: used at this instruction
-            // Use the rr union (src1, src2) — same layout as br, ri, etc.
+            // Note: for load/store instructions, rr.src2 == ri.imm (not a vreg!)
             if (inst.rr.src1 != ir_vreg_none && inst.rr.src1 < num_vregs) {
                auto& iv = func.intervals[inst.rr.src1];
                if (i < iv.start) iv.start = i;
                if (i > iv.end) iv.end = i;
             }
-            if (inst.rr.src2 != ir_vreg_none && inst.rr.src2 < num_vregs) {
+            // Only read src2 for instructions that use the rr union (not ri/br/call)
+            bool has_src2 = (inst.opcode >= ir_op::i32_eqz && inst.opcode <= ir_op::i64_rotr)
+                         || inst.opcode == ir_op::select;
+            if (has_src2 && inst.rr.src2 != ir_vreg_none && inst.rr.src2 < num_vregs) {
                auto& iv = func.intervals[inst.rr.src2];
                if (i < iv.start) iv.start = i;
                if (i > iv.end) iv.end = i;
@@ -164,6 +167,22 @@ namespace eosio { namespace vm {
          }
 
          func.num_spill_slots = next_spill_slot;
+
+         // Compute max liveness for diagnostics
+         uint32_t max_live = 0;
+         for (uint32_t pos = 0; pos < func.inst_count; ++pos) {
+            uint32_t live = 0;
+            for (uint32_t iv = 0; iv < func.interval_count; ++iv) {
+               if (func.intervals[iv].start != UINT32_MAX &&
+                   func.intervals[iv].start <= pos && pos <= func.intervals[iv].end)
+                  ++live;
+            }
+            if (live > max_live) max_live = live;
+         }
+         fprintf(stderr, "regalloc func %u: %u vregs, %u in regs, %u spilled, max_live=%u\n",
+                 func.func_index, func.interval_count,
+                 func.interval_count - next_spill_slot, next_spill_slot, max_live);
+
          return next_spill_slot;
       }
    };

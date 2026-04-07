@@ -129,7 +129,7 @@ namespace eosio { namespace vm {
                }
             }
             _num_spill_slots = func.num_spill_slots;
-            _use_regalloc = false; // Disabled: phi-node issue at control flow join points
+            _use_regalloc = false; // Stack mode baseline
          } else {
             _use_regalloc = false;
          }
@@ -1216,15 +1216,17 @@ namespace eosio { namespace vm {
             }
             void* branch = emit_call32();
             register_call(branch, funcnum);
-            // Pop args from stack, push result
-            emit_call_multipop(ft);
+            // Remove args from stack (no push — register mode)
+            uint32_t arg_bytes = 0;
+            for (uint32_t p = 0; p < ft.param_types.size(); ++p)
+               arg_bytes += (ft.param_types[p] == types::v128) ? 16 : 8;
+            if (arg_bytes > 0)
+               this->emit_add(arg_bytes, rsp);
             if constexpr (!StackLimitIsBytes) {
                this->emit(base::INCD, ebx);
             }
-            // Store result to dest vreg (result is in rax from the call)
+            // Store result to dest vreg (result already in rax)
             if (ft.return_count > 0 && inst.dest != ir_vreg_none) {
-               // Result is on x86 stack after multipop pushed it — pop to vreg
-               this->emit_pop_raw(rax);
                store_rax_vreg(inst.dest);
             }
             return true;
@@ -1559,9 +1561,10 @@ namespace eosio { namespace vm {
          }
 
          default:
-            // Unknown op — trap so we know what's missing
-            fprintf(stderr, "REGALLOC: unhandled op %u\n", (unsigned)inst.opcode);
-            return false;
+            // Unknown op — emit unreachable trap so execution stops immediately
+            fprintf(stderr, "REGALLOC: unhandled op %u at inst %u\n", (unsigned)inst.opcode, idx);
+            emit_error_handler(&on_unreachable);
+            return true; // don't fall back to stack mode
          }
       }
 
@@ -1856,7 +1859,12 @@ namespace eosio { namespace vm {
          if (pr >= 0) {
             this->emit_mov(phys_to_reg64(pr), rax);
          } else if (_spill_map && vreg < _num_vregs && _spill_map[vreg] >= 0) {
-            this->emit_mov(*(rbp + get_spill_offset(_spill_map[vreg])), rax);
+            int32_t off = get_spill_offset(_spill_map[vreg]);
+            this->emit_mov(*(rbp + off), rax);
+         } else if (_use_regalloc) {
+            // Vreg has no register and no spill slot — shouldn't happen
+            // This indicates a bug in live interval computation
+            fprintf(stderr, "BUG: vreg %u has no register and no spill slot!\n", vreg);
          }
       }
 

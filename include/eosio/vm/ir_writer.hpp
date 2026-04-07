@@ -43,11 +43,11 @@ namespace eosio { namespace vm {
       }
 
       ~ir_writer() {
-         // Pass 1.5: Register allocation (disabled)
-         // for (uint32_t i = 0; i < _num_functions; ++i) {
-         //    jit_regalloc::compute_live_intervals(_functions[i], _allocator);
-         //    jit_regalloc::allocate_registers(_functions[i]);
-         // }
+         // Pass 1.5: Register allocation
+         for (uint32_t i = 0; i < _num_functions; ++i) {
+            jit_regalloc::compute_live_intervals(_functions[i], _allocator);
+            jit_regalloc::allocate_registers(_functions[i]);
+         }
 
          // Pass 2: Code generation (jit_codegen calls start_code in constructor)
          codegen_t codegen(_allocator, _mod);
@@ -958,7 +958,7 @@ namespace eosio { namespace vm {
          inst.opcode = op;
          inst.type = type;
          inst.flags = IR_SIDE_EFFECT;
-         inst.dest = ir_vreg_none;  // stores have no result vreg
+         inst.dest = val;  // reuse dest field for value vreg (stores have no result)
          inst.ri.src1 = addr;
          inst.ri.imm = static_cast<int32_t>(offset);
          _func->emit(inst);
