@@ -2332,7 +2332,11 @@ namespace eosio { namespace vm {
          if ((inst.flags & IR_FUSE_NEXT) && emit_fused_branch(func, idx, cc)) return true;
          this->emit_setcc(cc, al);
          this->emit_bytes(0x0f, 0xb6, 0xc0); // movzbl %al, %eax
-         store_rax_vreg(inst.dest);
+         int8_t pr_dest = get_phys(inst.dest);
+         if (pr_dest >= 0 && phys_to_reg64(pr_dest) != rax)
+            this->emit_mov(rax, phys_to_reg64(pr_dest));
+         else
+            store_rax_vreg(inst.dest);
          return true;
       }
 
