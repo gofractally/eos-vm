@@ -106,6 +106,7 @@ namespace eosio { namespace vm {
          entry.result_type = ft.return_count > 0 ? static_cast<uint8_t>(ft.return_type) : types::pseudo;
          entry.is_loop = 0;
          entry.is_function = 1;
+         entry.entered_unreachable = 0;
          entry.merge_vreg = ir_vreg_none;
          _func->ctrl_push(entry);
          _func->start_block(entry.block_idx);
@@ -178,7 +179,9 @@ namespace eosio { namespace vm {
             }
 
             _func->end_block(entry.block_idx);
-            _unreachable = false;
+            // If the block was entered in unreachable code, it stays unreachable.
+            // Only blocks entered reachably can make code reachable again.
+            _unreachable = entry.entered_unreachable ? true : false;
          }
          return block_idx;
       }
@@ -210,6 +213,7 @@ namespace eosio { namespace vm {
          entry.result_type = result_type;
          entry.is_loop = 0;
          entry.is_function = 0;
+         entry.entered_unreachable = _unreachable ? 1 : 0;
          // Allocate merge vreg for blocks with result types (needed for br targets)
          if (result_type != types::pseudo) {
             entry.merge_vreg = _func->alloc_vreg(result_type);
@@ -227,6 +231,7 @@ namespace eosio { namespace vm {
          entry.result_type = types::pseudo;
          entry.is_loop = 1;
          entry.is_function = 0;
+         entry.entered_unreachable = _unreachable ? 1 : 0;
          entry.merge_vreg = ir_vreg_none;
          _func->ctrl_push(entry);
          _func->start_block(entry.block_idx);
@@ -240,6 +245,7 @@ namespace eosio { namespace vm {
          entry.result_type = result_type;
          entry.is_loop = 0;
          entry.is_function = 0;
+         entry.entered_unreachable = _unreachable ? 1 : 0;
          if (result_type != types::pseudo) {
             entry.merge_vreg = _func->alloc_vreg(result_type);
          } else {
@@ -267,8 +273,10 @@ namespace eosio { namespace vm {
 
       branch_t emit_else(branch_t if_inst_idx) {
          uint32_t else_inst_idx = UINT32_MAX;
+         bool was_entered_unreachable = false;
          if (_func->ctrl_stack_top > 0) {
             auto& entry = _func->ctrl_back();
+            was_entered_unreachable = entry.entered_unreachable;
 
             // If the block has a result type and the then-branch produced a value,
             // emit a mov to the merge vreg so both branches write the same destination.
@@ -312,7 +320,9 @@ namespace eosio { namespace vm {
             }
             _func->vstack_resize(entry.stack_depth);
          }
-         _unreachable = false;
+         // Only become reachable if the if was entered in reachable code.
+         // If the if was in dead code, the else body is also unreachable.
+         _unreachable = was_entered_unreachable;
          return else_inst_idx;
       }
 
