@@ -1153,6 +1153,40 @@ namespace eosio { namespace vm {
          this->emit(base::RET);
       }
 
+      // ──────── Instruction fusion helpers ────────
+      // Check if the next instruction is if_/br_if consuming dest_vreg.
+      // If so, fuse the comparison with the branch: emit cmp+jcc directly,
+      // mark the next instruction as dead, and return the fused branch info.
+      bool try_fuse_branch(ir_function& /*func*/, uint32_t /*idx*/, uint32_t /*dest_vreg*/, Jcc /*cc*/) {
+         return false; // Disabled — needs more careful implementation
+      }
+
+      // Invert a condition code (for if_ which branches on FALSE)
+      static Jcc invert_cc(Jcc cc) {
+         // x86 Jcc opcodes: even = false condition, odd = true condition.
+         // XOR with 1 inverts (JE↔JNE, JL↔JGE, JB↔JAE, etc.)
+         return Jcc{static_cast<uint8_t>(cc.opcode ^ 1)};
+      }
+
+      // Emit a conditional branch to a block (for fused cmp+br_if)
+      void emit_branch_cc_to_block(ir_function& func, uint32_t block_idx,
+                                    uint32_t depth_change, uint8_t rt, Jcc cc) {
+         if (block_idx >= _num_blocks) return;
+         // For fused br_if, no multipop needed (handled by the IR's depth_change)
+         if (_block_addrs[block_idx] != nullptr) {
+            // Backward branch (loop)
+            void* branch = this->emit_branchcc32(cc);
+            base::fix_branch(branch, _block_addrs[block_idx]);
+         } else {
+            // Forward branch
+            void* branch = this->emit_branchcc32(cc);
+            auto* fixup = _allocator.alloc<block_fixup>(1);
+            fixup->branch = branch;
+            fixup->next = _block_fixups[block_idx];
+            _block_fixups[block_idx] = fixup;
+         }
+      }
+
       // ──────── Register-based IR emission ────────
       // Uses physical registers for vreg values instead of push/pop.
       // rax and rcx are temporaries. Vregs in physical registers are
@@ -1414,6 +1448,8 @@ namespace eosio { namespace vm {
          case ir_op::i32_eqz: {
             load_vreg_rax(inst.rr.src1);
             this->emit(base::TEST, eax, eax);
+            // eqz produces 1 when zero → JZ condition
+            if (try_fuse_branch(func, idx, inst.dest, base::JZ)) return true;
             this->emit_setcc(base::JZ, al);
             this->emit_bytes(0x0f, 0xb6, 0xc0); // movzbl
             store_rax_vreg(inst.dest);
@@ -1421,16 +1457,16 @@ namespace eosio { namespace vm {
          }
 
          // Comparisons
-         case ir_op::i32_eq: return emit_relop_reg(inst, base::JE, true);
-         case ir_op::i32_ne: return emit_relop_reg(inst, base::JNE, true);
-         case ir_op::i32_lt_s: return emit_relop_reg(inst, base::JL, true);
-         case ir_op::i32_lt_u: return emit_relop_reg(inst, base::JB, true);
-         case ir_op::i32_gt_s: return emit_relop_reg(inst, base::JG, true);
-         case ir_op::i32_gt_u: return emit_relop_reg(inst, base::JA, true);
-         case ir_op::i32_le_s: return emit_relop_reg(inst, base::JLE, true);
-         case ir_op::i32_le_u: return emit_relop_reg(inst, base::JBE, true);
-         case ir_op::i32_ge_s: return emit_relop_reg(inst, base::JGE, true);
-         case ir_op::i32_ge_u: return emit_relop_reg(inst, base::JAE, true);
+         case ir_op::i32_eq: return emit_relop_reg(func, inst, idx, base::JE, true);
+         case ir_op::i32_ne: return emit_relop_reg(func, inst, idx, base::JNE, true);
+         case ir_op::i32_lt_s: return emit_relop_reg(func, inst, idx, base::JL, true);
+         case ir_op::i32_lt_u: return emit_relop_reg(func, inst, idx, base::JB, true);
+         case ir_op::i32_gt_s: return emit_relop_reg(func, inst, idx, base::JG, true);
+         case ir_op::i32_gt_u: return emit_relop_reg(func, inst, idx, base::JA, true);
+         case ir_op::i32_le_s: return emit_relop_reg(func, inst, idx, base::JLE, true);
+         case ir_op::i32_le_u: return emit_relop_reg(func, inst, idx, base::JBE, true);
+         case ir_op::i32_ge_s: return emit_relop_reg(func, inst, idx, base::JGE, true);
+         case ir_op::i32_ge_u: return emit_relop_reg(func, inst, idx, base::JAE, true);
 
          // Local access
          case ir_op::local_get: {
@@ -1546,6 +1582,7 @@ namespace eosio { namespace vm {
          case ir_op::i64_eqz:
             load_vreg_rax(inst.rr.src1);
             this->emit(base::TEST, rax, rax);
+            if (try_fuse_branch(func, idx, inst.dest, base::JZ)) return true;
             this->emit_setcc(base::JZ, al);
             this->emit_bytes(0x0f, 0xb6, 0xc0);
             store_rax_vreg(inst.dest);
@@ -1567,16 +1604,16 @@ namespace eosio { namespace vm {
             return true;
 
          // i64 comparisons
-         case ir_op::i64_eq: return emit_relop_reg(inst, base::JE, false);
-         case ir_op::i64_ne: return emit_relop_reg(inst, base::JNE, false);
-         case ir_op::i64_lt_s: return emit_relop_reg(inst, base::JL, false);
-         case ir_op::i64_lt_u: return emit_relop_reg(inst, base::JB, false);
-         case ir_op::i64_gt_s: return emit_relop_reg(inst, base::JG, false);
-         case ir_op::i64_gt_u: return emit_relop_reg(inst, base::JA, false);
-         case ir_op::i64_le_s: return emit_relop_reg(inst, base::JLE, false);
-         case ir_op::i64_le_u: return emit_relop_reg(inst, base::JBE, false);
-         case ir_op::i64_ge_s: return emit_relop_reg(inst, base::JGE, false);
-         case ir_op::i64_ge_u: return emit_relop_reg(inst, base::JAE, false);
+         case ir_op::i64_eq: return emit_relop_reg(func, inst, idx, base::JE, false);
+         case ir_op::i64_ne: return emit_relop_reg(func, inst, idx, base::JNE, false);
+         case ir_op::i64_lt_s: return emit_relop_reg(func, inst, idx, base::JL, false);
+         case ir_op::i64_lt_u: return emit_relop_reg(func, inst, idx, base::JB, false);
+         case ir_op::i64_gt_s: return emit_relop_reg(func, inst, idx, base::JG, false);
+         case ir_op::i64_gt_u: return emit_relop_reg(func, inst, idx, base::JA, false);
+         case ir_op::i64_le_s: return emit_relop_reg(func, inst, idx, base::JLE, false);
+         case ir_op::i64_le_u: return emit_relop_reg(func, inst, idx, base::JBE, false);
+         case ir_op::i64_ge_s: return emit_relop_reg(func, inst, idx, base::JGE, false);
+         case ir_op::i64_ge_u: return emit_relop_reg(func, inst, idx, base::JAE, false);
 
          // Division/remainder
          case ir_op::i32_div_s:
@@ -2210,11 +2247,13 @@ namespace eosio { namespace vm {
       }
 
       // Register-based comparison helper
-      bool emit_relop_reg(const ir_inst& inst, Jcc cc, bool is32) {
+      bool emit_relop_reg(ir_function& func, const ir_inst& inst, uint32_t idx, Jcc cc, bool is32) {
          load_vreg_rcx(inst.rr.src2);
          load_vreg_rax(inst.rr.src1);
          if (is32) this->emit_cmp(ecx, eax);
          else      this->emit_cmp(rcx, rax);
+         // Try to fuse with the next if_/br_if — skip setcc+movzbl+store
+         if (try_fuse_branch(func, idx, inst.dest, cc)) return true;
          this->emit_setcc(cc, al);
          this->emit_bytes(0x0f, 0xb6, 0xc0); // movzbl %al, %eax
          store_rax_vreg(inst.dest);
