@@ -212,7 +212,7 @@ namespace eosio { namespace vm {
       uint8_t  result_type;
       uint8_t  is_loop;
       uint8_t  is_function;
-      uint8_t  _pad;
+      uint8_t  entered_unreachable; // true if control entered in unreachable code
       uint32_t merge_block;
       uint32_t merge_vreg;  // For if/else with result: vreg that both branches write to
    };
