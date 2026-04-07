@@ -2405,14 +2405,23 @@ namespace eosio { namespace vm {
       template<class I, class R>
       bool emit_store_reg(const ir_inst& inst, I instr, R reg) {
          uint32_t uoffset = static_cast<uint32_t>(inst.ri.imm);
-         load_vreg_rax(inst.dest);   // value
-         load_vreg_rcx(inst.ri.src1); // addr
+         int8_t pr_addr = get_phys(inst.ri.src1);
+
+         // Use address physical register directly when available (skip load to rcx)
+         load_vreg_rax(inst.dest);   // value always in rax (reg = eax/rax/al/ax)
+         general_register64 addr = rcx;
+         if (pr_addr >= 0 && phys_to_reg64(pr_addr) != rax) {
+            addr = phys_to_reg64(pr_addr);
+         } else {
+            load_vreg_rcx(inst.ri.src1);
+         }
+
          if (uoffset & 0x80000000u) {
             this->emit_mov(uoffset, edx);
-            this->emit_add(rdx, rcx);
-            this->emit(instr, *(rcx + rsi + 0), reg);
+            this->emit_add(rdx, addr);
+            this->emit(instr, *(addr + rsi + 0), reg);
          } else {
-            this->emit(instr, *(rcx + rsi + uoffset), reg);
+            this->emit(instr, *(addr + rsi + uoffset), reg);
          }
          return true;
       }
