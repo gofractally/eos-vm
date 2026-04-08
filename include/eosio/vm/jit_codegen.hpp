@@ -208,10 +208,11 @@ namespace eosio { namespace vm {
 
       // Compile one function from IR to x86_64
       void compile_function(ir_function& func, function_body& body) {
-         // Use separate scratch allocator for transient per-function data.
-         // This keeps the code allocator clean — no scratch data interleaved
-         // between function code buffers.
+         // Scratch allocator for transient per-function data (block fixups, vreg maps).
+         // Disarmed before code buffer allocation so code stays permanent.
          jit_scratch_allocator scratch(_scratch_alloc);
+         // Note: scratch wraps _scratch_alloc which may be _allocator itself
+         // (single allocator mode) or a separate allocator.
          _scratch = &scratch;
 
          // Allocate transient metadata from scratch (reclaimed after codegen)
@@ -256,7 +257,12 @@ namespace eosio { namespace vm {
          _func_insts = func.insts;
          _func_inst_count = func.inst_count;
 
-         // Code buffer — allocated from the code allocator (tightly packed)
+         // Disarm scratch so its destructor won't reclaim the code buffer.
+         // When _scratch_alloc == _allocator, scratch data stays interleaved
+         // with code — the waste is acceptable given deterministic limits.
+         scratch.disarm();
+
+         // Code buffer
          const std::size_t bytes_per_inst = func.has_simd ? 128 : 64;
          const std::size_t est_size = static_cast<std::size_t>(func.inst_count) * bytes_per_inst + 256;
          auto* buf = _allocator.alloc<unsigned char>(est_size);
@@ -1264,25 +1270,40 @@ namespace eosio { namespace vm {
          case ir_op::memory_fill: {
             // stack: [dest, val, count] with count on top
             this->emit_pop_raw(rcx);  // count
-            this->emit_pop_raw(rax);  // val (al for stosb)
+            this->emit_pop_raw(rax);  // val
             this->emit_pop_raw(rdx);  // dest wasm addr
             this->emit(base::TEST, ecx, ecx);
-            void* skip = this->emit_branchcc32(base::JZ);
-            // Probe dest end: save val+count, compute dest+count as 64-bit
-            this->emit_push_raw(rcx);           // save count
-            this->emit_push_raw(rax);           // save val
-            this->emit_mov(edx, eax);           // eax = dest (zero-ext)
-            this->emit_add(rcx, rax);           // rax = dest + count (64-bit)
-            this->emit_bytes(0x0f, 0xb6, 0x44, 0x06, 0xff); // movzbl -1(%rsi,%rax), %eax — probe
-            this->emit_pop_raw(rax);            // restore val
-            this->emit_pop_raw(rcx);            // restore count
-            // rep stosb: rdi=native dest, al=val, ecx=count
-            this->emit_push_raw(rdi);           // save rdi (context)
+            void* nonzero = this->emit_branchcc32(base::JNZ);
+            // count == 0: call helper for bounds check only (spec requires trap if dest > mem_size)
+            this->emit_push_raw(rdi);
+            this->emit_push_raw(rsi);
+            this->emit_mov(edx, esi);           // dest → arg2
+            // edx = val (arg3), ecx = 0 (arg4)
+            this->emit_mov(rsp, r8);
+            this->emit_bytes(0x48, 0x83, 0xe4, 0xf0);
+            this->emit_push_raw(r8);
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&memory_fill_impl);
+            this->emit_bytes(0xff, 0xd0);
+            this->emit_pop_raw(rsp);
+            this->emit_pop_raw(rsi);
+            this->emit_pop_raw(rdi);
+            { void* done = emit_jmp32();
+            base::fix_branch(nonzero, code);
+            // count > 0: probe last byte via guard page, then rep stosb
+            this->emit_push_raw(rcx);
+            this->emit_push_raw(rax);
+            this->emit_mov(edx, eax);
+            this->emit_add(rcx, rax);
+            this->emit_bytes(0x0f, 0xb6, 0x44, 0x06, 0xff); // probe dest+count-1
+            this->emit_pop_raw(rax);
+            this->emit_pop_raw(rcx);
+            this->emit_push_raw(rdi);
             this->emit_mov(edx, edi);
             this->emit_add(rsi, rdi);
             this->emit_bytes(0xf3, 0xaa);       // rep stosb
-            this->emit_pop_raw(rdi);            // restore rdi
-            base::fix_branch(skip, code);
+            this->emit_pop_raw(rdi);
+            base::fix_branch(done, code); }
             break;
          }
 
@@ -1292,38 +1313,49 @@ namespace eosio { namespace vm {
             this->emit_pop_raw(rdx);  // src wasm addr
             this->emit_pop_raw(rax);  // dest wasm addr
             this->emit(base::TEST, ecx, ecx);
-            void* skip = this->emit_branchcc32(base::JZ);
-            // Probe both range ends before copying anything
-            this->emit_push_raw(rax);           // save dest
-            this->emit_push_raw(rdx);           // save src
-            this->emit_push_raw(rcx);           // save count
-            // Probe src end
-            this->emit_mov(edx, eax);           // eax = src (zero-ext)
-            this->emit_add(rcx, rax);           // rax = src + count (64-bit)
-            this->emit_bytes(0x0f, 0xb6, 0x44, 0x06, 0xff); // movzbl -1(%rsi,%rax), %eax — probe
-            // Probe dest end
-            this->emit_mov(*(rsp + 16), eax);   // reload dest from stack
-            this->emit_add(rcx, rax);           // rax = dest + count (64-bit)
-            this->emit_bytes(0x0f, 0xb6, 0x44, 0x06, 0xff); // movzbl -1(%rsi,%rax), %eax — probe
-            this->emit_pop_raw(rcx);            // restore count
-            this->emit_pop_raw(rdx);            // restore src
-            this->emit_pop_raw(rax);            // restore dest
-            // Do copy with overlap handling
-            this->emit_push_raw(rdi);           // save rdi
-            this->emit_push_raw(rsi);           // save rsi (linear mem base)
-            // rsi still holds linear memory base (not yet clobbered)
+            void* nonzero = this->emit_branchcc32(base::JNZ);
+            // count == 0: call helper for bounds check only
+            this->emit_push_raw(rdi);
+            this->emit_push_raw(rsi);
+            this->emit_mov(eax, esi);           // dest → arg2
+            // edx = src (arg3), ecx = 0 (arg4)
+            this->emit_mov(rsp, r8);
+            this->emit_bytes(0x48, 0x83, 0xe4, 0xf0);
+            this->emit_push_raw(r8);
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&memory_copy_impl);
+            this->emit_bytes(0xff, 0xd0);
+            this->emit_pop_raw(rsp);
+            this->emit_pop_raw(rsi);
+            this->emit_pop_raw(rdi);
+            { void* done = emit_jmp32();
+            base::fix_branch(nonzero, code);
+            // count > 0: probe last bytes then copy
+            this->emit_push_raw(rax);
+            this->emit_push_raw(rdx);
+            this->emit_push_raw(rcx);
+            this->emit_mov(edx, eax);
+            this->emit_add(rcx, rax);
+            this->emit_bytes(0x0f, 0xb6, 0x44, 0x06, 0xff); // probe src+count-1
+            this->emit_mov(*(rsp + 16), eax);
+            this->emit_add(rcx, rax);
+            this->emit_bytes(0x0f, 0xb6, 0x44, 0x06, 0xff); // probe dest+count-1
+            this->emit_pop_raw(rcx);
+            this->emit_pop_raw(rdx);
+            this->emit_pop_raw(rax);
+            // Copy with overlap handling
+            this->emit_push_raw(rdi);
+            this->emit_push_raw(rsi);
             this->emit_add(rsi, rdx);           // native src
             this->emit_add(rsi, rax);           // native dest
-            this->emit_mov(rdx, rsi);           // rsi = native src
-            this->emit_mov(rax, rdi);           // rdi = native dest
-            // Overlap check: if dest > src && count > (dest-src), copy backward
+            this->emit_mov(rdx, rsi);
+            this->emit_mov(rax, rdi);
             this->emit_mov(rdi, rax);
-            this->emit_sub(rsi, rax);           // rax = dest - src
+            this->emit_sub(rsi, rax);
             {
                void* fwd = this->emit_branchcc32(base::JBE);
                this->emit_cmp(rcx, rax);
                void* no_overlap = this->emit_branchcc32(base::JAE);
-               // Backward copy
                this->emit_add(rcx, rsi);
                this->emit(base::DEC, rsi);
                this->emit_add(rcx, rdi);
@@ -1339,7 +1371,7 @@ namespace eosio { namespace vm {
             }
             this->emit_pop_raw(rsi);
             this->emit_pop_raw(rdi);
-            base::fix_branch(skip, code);
+            base::fix_branch(done, code); }
             break;
          }
 
@@ -2249,76 +2281,11 @@ namespace eosio { namespace vm {
             return true;
          }
 
-         // ── Bulk memory ops — inline with guard-page probes ──
-         case ir_op::memory_fill: {
-            this->emit_pop_raw(rcx);  // count
-            this->emit_pop_raw(rax);  // val
-            this->emit_pop_raw(rdx);  // dest
-            this->emit(base::TEST, ecx, ecx);
-            void* skip = this->emit_branchcc32(base::JZ);
-            this->emit_push_raw(rcx);
-            this->emit_push_raw(rax);
-            this->emit_mov(edx, eax);
-            this->emit_add(rcx, rax);
-            this->emit_bytes(0x0f, 0xb6, 0x44, 0x06, 0xff); // movzbl -1(%rsi,%rax), %eax
-            this->emit_pop_raw(rax);
-            this->emit_pop_raw(rcx);
-            this->emit_push_raw(rdi);
-            this->emit_mov(edx, edi);
-            this->emit_add(rsi, rdi);
-            this->emit_bytes(0xf3, 0xaa);       // rep stosb
-            this->emit_pop_raw(rdi);
-            base::fix_branch(skip, code);
-            return true;
-         }
-         case ir_op::memory_copy: {
-            this->emit_pop_raw(rcx);  // count
-            this->emit_pop_raw(rdx);  // src
-            this->emit_pop_raw(rax);  // dest
-            this->emit(base::TEST, ecx, ecx);
-            void* skip = this->emit_branchcc32(base::JZ);
-            this->emit_push_raw(rax);
-            this->emit_push_raw(rdx);
-            this->emit_push_raw(rcx);
-            this->emit_mov(edx, eax);
-            this->emit_add(rcx, rax);
-            this->emit_bytes(0x0f, 0xb6, 0x44, 0x06, 0xff); // probe src end
-            this->emit_mov(*(rsp + 16), eax);   // reload dest
-            this->emit_add(rcx, rax);
-            this->emit_bytes(0x0f, 0xb6, 0x44, 0x06, 0xff); // probe dest end
-            this->emit_pop_raw(rcx);
-            this->emit_pop_raw(rdx);
-            this->emit_pop_raw(rax);
-            this->emit_push_raw(rdi);
-            this->emit_push_raw(rsi);
-            this->emit_add(rsi, rdx);
-            this->emit_add(rsi, rax);
-            this->emit_mov(rdx, rsi);
-            this->emit_mov(rax, rdi);
-            this->emit_mov(rdi, rax);
-            this->emit_sub(rsi, rax);
-            {
-               void* fwd = this->emit_branchcc32(base::JBE);
-               this->emit_cmp(rcx, rax);
-               void* no_overlap = this->emit_branchcc32(base::JAE);
-               this->emit_add(rcx, rsi);
-               this->emit(base::DEC, rsi);
-               this->emit_add(rcx, rdi);
-               this->emit(base::DEC, rdi);
-               this->emit_bytes(0xfd);
-               this->emit_bytes(0xf3, 0xa4);
-               this->emit_bytes(0xfc);
-               void* done = emit_jmp32();
-               base::fix_branch(fwd, code);
-               base::fix_branch(no_overlap, code);
-               this->emit_bytes(0xf3, 0xa4);
-               base::fix_branch(done, code);
-            }
-            this->emit_pop_raw(rsi);
-            this->emit_pop_raw(rdi);
-            base::fix_branch(skip, code);
-            return true;
-         }
+         // Bulk memory ops: fall through to stack-based emit_ir_inst
+         // which has inline bounds-checking + rep movsb/stosb.
+         case ir_op::memory_fill:
+         case ir_op::memory_copy:
+            return false;
          case ir_op::memory_init:
          case ir_op::data_drop:
          case ir_op::table_init:
@@ -5574,8 +5541,30 @@ namespace eosio { namespace vm {
       static int32_t grow_memory(Context* context, int32_t pages) { return context->grow_linear_memory(pages); }
       static void on_memory_error() { throw_<wasm_memory_exception>("wasm memory out-of-bounds"); }
 
-      // Bulk memory helpers — called from JIT code via indirect call.
-      // These handle overlapping copies correctly and avoid inline rep movsb/stosb.
+      // Bulk memory helpers with explicit bounds checking.
+      // Called via longjmp_on_exception since they may throw.
+      static void memory_fill_impl(Context* ctx, uint32_t dest, uint32_t val, uint32_t count) {
+         vm::longjmp_on_exception([&]() {
+            uint64_t end = static_cast<uint64_t>(dest) + count;
+            uint64_t mem_size = static_cast<uint64_t>(ctx->current_linear_memory()) * 65536ULL;
+            if (end > mem_size)
+               throw_<wasm_memory_exception>("memory.fill out of bounds");
+            if (count > 0)
+               std::memset(ctx->linear_memory() + dest, static_cast<uint8_t>(val), count);
+         });
+      }
+
+      static void memory_copy_impl(Context* ctx, uint32_t dest, uint32_t src, uint32_t count) {
+         vm::longjmp_on_exception([&]() {
+            uint64_t src_end = static_cast<uint64_t>(src) + count;
+            uint64_t dst_end = static_cast<uint64_t>(dest) + count;
+            uint64_t mem_size = static_cast<uint64_t>(ctx->current_linear_memory()) * 65536ULL;
+            if (src_end > mem_size || dst_end > mem_size)
+               throw_<wasm_memory_exception>("memory.copy out of bounds");
+            if (count > 0)
+               std::memmove(ctx->linear_memory() + dest, ctx->linear_memory() + src, count);
+         });
+      }
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>("unreachable"); }
       static void on_fp_error() { vm::throw_<wasm_interpreter_exception>("floating point error"); }
       static void on_call_indirect_error() { vm::throw_<wasm_interpreter_exception>("call_indirect out of range"); }
