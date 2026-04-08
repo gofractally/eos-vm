@@ -3255,11 +3255,11 @@ namespace eosio { namespace vm {
       // Binary f32 op: xmm0 = src1, xmm1 = src2, OPss xmm1, xmm0 → result in rax
       void emit_f32_binop(const ir_inst& inst, uint8_t op) {
          load_vreg_rax(inst.rr.src1);
-         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+         this->emit_vmovd(eax, xmm0);                      // movd eax, xmm0
          load_vreg_rax(inst.rr.src2);
-         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);  // movq rax, xmm1
+         this->emit_vmovd(eax, xmm1);                      // movd eax, xmm1
          this->emit_bytes(0xf3, 0x0f, op, 0xc1);           // OPss xmm1, xmm0
-         this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);  // movq xmm0, rax
+         this->emit_bytes(0x66, 0x0f, 0x7e, 0xc0);         // movd xmm0, eax
          store_rax_vreg(inst.dest);
       }
       // Binary f64 op
@@ -3276,14 +3276,14 @@ namespace eosio { namespace vm {
       void emit_f32_relop(const ir_inst& inst, uint8_t cmp_op, bool swap, bool flip) {
          if (swap) {
             load_vreg_rax(inst.rr.src2);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+            this->emit_vmovd(eax, xmm0);
             load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);  // movq rax, xmm1
+            this->emit_vmovd(eax, xmm1);
          } else {
             load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+            this->emit_vmovd(eax, xmm0);
             load_vreg_rax(inst.rr.src2);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);  // movq rax, xmm1
+            this->emit_vmovd(eax, xmm1);
          }
          this->emit_bytes(0xf3, 0x0f, 0xc2, 0xc1, cmp_op);   // cmpss $imm, xmm1, xmm0
          this->emit_bytes(0x66, 0x0f, 0x7e, 0xc0);            // movd xmm0, eax
