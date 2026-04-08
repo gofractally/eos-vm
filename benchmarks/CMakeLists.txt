@@ -254,7 +254,7 @@ if(ENABLE_BENCH_COMPUTE)
    set(WASM_CC "${WASI_SDK_PREFIX}/bin/clang")
    set(WASM_CFLAGS --target=wasm32-unknown-unknown -O3 -nostdlib
                    -Wl,--no-entry -Wl,--export-dynamic -Wl,--allow-undefined
-                   -mbulk-memory -msign-ext)
+                   -mbulk-memory -msign-ext -msimd128)
 
    # --- SHA-256 WASM module ---
    set(SHA256_WASM "${CMAKE_CURRENT_BINARY_DIR}/bench_sha256.wasm")
@@ -330,7 +330,7 @@ if(ENABLE_BENCH_COMPUTE)
       uECC_SUPPORTS_secp256k1=1
       uECC_SUPPORT_COMPRESSED_POINT=0
    )
-   target_compile_options(bench-native PRIVATE -O3 -w)
+   target_compile_options(bench-native PRIVATE -O3 -w -fno-stack-protector -march=native)
 
    list(APPEND BENCH_LIBS bench-native)
    list(APPEND BENCH_DEFS BENCH_HAS_COMPUTE)
