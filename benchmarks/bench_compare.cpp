@@ -453,8 +453,12 @@ static double run_eosvm_compute(const std::vector<uint8_t>& wasm_bytes, const ch
    using backend_t = eosio::vm::backend<std::nullptr_t, Impl>;
    wasm_code code(wasm_bytes.begin(), wasm_bytes.end());
    wasm_allocator wa;
+
+   auto jit_t1 = std::chrono::high_resolution_clock::now();
    backend_t bkend(code, &wa);
    bkend.initialize(nullptr);
+   auto jit_t2 = std::chrono::high_resolution_clock::now();
+   double jit_ms = std::chrono::duration<double, std::milli>(jit_t2 - jit_t1).count();
 
    auto result = bkend.call_with_return("env", func, n);
    int64_t rv = result ? result->to_i64() : -1;
@@ -462,8 +466,9 @@ static double run_eosvm_compute(const std::vector<uint8_t>& wasm_bytes, const ch
    auto t1 = std::chrono::high_resolution_clock::now();
    bkend.call_with_return("env", func, n);
    auto t2 = std::chrono::high_resolution_clock::now();
-   fprintf(stderr, "  %s result=%ld\n", func, rv);
-   return std::chrono::duration<double, std::milli>(t2 - t1).count();
+   double exec_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+   fprintf(stderr, "  %s result=%ld  compile=%.1fms exec=%.1fms\n", func, rv, jit_ms, exec_ms);
+   return exec_ms;
 }
 
 #ifdef BENCH_HAS_WASM3
@@ -749,28 +754,36 @@ int main(int argc, char** argv) {
       uint32_t    iters;
    };
    compute_def compute_tests[] = {
-      {"SHA-256 (64B, 10K)",   BENCH_SHA256_WASM, "bench_sha256",       bench_sha256,       10'000},
-      {"ECDSA verify (k1)",    BENCH_ECDSA_WASM,  "bench_ecdsa_verify", bench_ecdsa_verify, 100},
-      {"ECDSA sign (k1)",      BENCH_ECDSA_WASM,  "bench_ecdsa_sign",   bench_ecdsa_sign,   100},
-      {"Fibonacci (1M)",       BENCH_MISC_WASM,   "bench_fib",          bench_fib,          1'000'000},
-      {"Bubble sort (64, 1K)", BENCH_MISC_WASM,   "bench_sort",         bench_sort,         1'000},
-      {"CRC32 (256B, 10K)",    BENCH_MISC_WASM,   "bench_crc32",        bench_crc32,        10'000},
-      {"MatMul 8x8 (10K)",     BENCH_MISC_WASM,   "bench_matmul",       bench_matmul,       10'000},
-      {"MatMul SIMD 8x8 (10K)",BENCH_MISC_WASM,   "bench_matmul_simd",  bench_matmul_simd,  10'000},
+      {"SHA-256 simd",         BENCH_SHA256_WASM,      "bench_sha256",       bench_sha256,       10'000},
+      {"SHA-256 no-simd",      BENCH_SHA256_NOSI_WASM, "bench_sha256",       bench_sha256,       10'000},
+      {"ECDSA verify simd",    BENCH_ECDSA_WASM,       "bench_ecdsa_verify", bench_ecdsa_verify, 100},
+      {"ECDSA verify no-simd", BENCH_ECDSA_NOSI_WASM,  "bench_ecdsa_verify", bench_ecdsa_verify, 100},
+      {"ECDSA sign simd",      BENCH_ECDSA_WASM,       "bench_ecdsa_sign",   bench_ecdsa_sign,   100},
+      {"ECDSA sign no-simd",   BENCH_ECDSA_NOSI_WASM,  "bench_ecdsa_sign",   bench_ecdsa_sign,   100},
+      {"Fibonacci",            BENCH_MISC_WASM,        "bench_fib",          bench_fib,          1'000'000},
+      {"Bubble sort",          BENCH_MISC_WASM,        "bench_sort",         bench_sort,         1'000},
+      {"CRC32",                BENCH_MISC_WASM,        "bench_crc32",        bench_crc32,        10'000},
+      {"MatMul scalar",        BENCH_MISC_WASM,        "bench_matmul",       bench_matmul,       10'000},
+      {"MatMul SIMD",          BENCH_MISC_WASM,        "bench_matmul_simd",  bench_matmul_simd,  10'000},
    };
    const int num_compute = sizeof(compute_tests) / sizeof(compute_tests[0]);
    double compute_results[16][RT_COUNT] = {};
    const char* compute_labels[16];
 
-   // Pre-load WASM files
-   std::vector<uint8_t> sha_wasm, ecdsa_wasm, misc_wasm;
+   // Pre-load WASM files (SIMD and no-SIMD variants)
+   std::vector<uint8_t> sha_wasm, sha_nosi_wasm, ecdsa_wasm, ecdsa_nosi_wasm, misc_wasm;
    try { sha_wasm = eosio::vm::read_wasm(BENCH_SHA256_WASM); } catch (...) {}
+   try { sha_nosi_wasm = eosio::vm::read_wasm(BENCH_SHA256_NOSI_WASM); } catch (...) {}
    try { ecdsa_wasm = eosio::vm::read_wasm(BENCH_ECDSA_WASM); } catch (...) {}
+   try { ecdsa_nosi_wasm = eosio::vm::read_wasm(BENCH_ECDSA_NOSI_WASM); } catch (...) {}
    try { misc_wasm = eosio::vm::read_wasm(BENCH_MISC_WASM); } catch (...) {}
 
    auto get_wasm = [&](int t) -> std::vector<uint8_t>& {
-      if (compute_tests[t].wasm_path == std::string(BENCH_SHA256_WASM)) return sha_wasm;
-      if (compute_tests[t].wasm_path == std::string(BENCH_ECDSA_WASM)) return ecdsa_wasm;
+      auto path = std::string(compute_tests[t].wasm_path);
+      if (path == BENCH_SHA256_WASM) return sha_wasm;
+      if (path == BENCH_SHA256_NOSI_WASM) return sha_nosi_wasm;
+      if (path == BENCH_ECDSA_WASM) return ecdsa_wasm;
+      if (path == BENCH_ECDSA_NOSI_WASM) return ecdsa_nosi_wasm;
       return misc_wasm;
    };
 

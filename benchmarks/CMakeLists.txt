@@ -252,19 +252,30 @@ endif()
 
 if(ENABLE_BENCH_COMPUTE)
    set(WASM_CC "${WASI_SDK_PREFIX}/bin/clang")
-   set(WASM_CFLAGS --target=wasm32-unknown-unknown -O3 -nostdlib
+   set(WASM_CFLAGS_BASE --target=wasm32-unknown-unknown -O3 -nostdlib
                    -Wl,--no-entry -Wl,--export-dynamic -Wl,--allow-undefined
-                   -mbulk-memory -msign-ext -msimd128)
+                   -mbulk-memory -msign-ext)
+   set(WASM_CFLAGS_SIMD ${WASM_CFLAGS_BASE} -msimd128)
+   set(WASM_CFLAGS_NOSI ${WASM_CFLAGS_BASE})
 
-   # --- SHA-256 WASM module ---
+   # --- SHA-256 WASM modules (with and without SIMD) ---
    set(SHA256_WASM "${CMAKE_CURRENT_BINARY_DIR}/bench_sha256.wasm")
+   set(SHA256_NOSI_WASM "${CMAKE_CURRENT_BINARY_DIR}/bench_sha256_nosi.wasm")
    add_custom_command(
       OUTPUT "${SHA256_WASM}"
-      COMMAND "${WASM_CC}" ${WASM_CFLAGS}
+      COMMAND "${WASM_CC}" ${WASM_CFLAGS_SIMD}
               -o "${SHA256_WASM}"
               "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_sha256.c"
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_sha256.c"
-      COMMENT "Compiling bench_sha256.c -> WASM"
+      COMMENT "Compiling bench_sha256.c -> WASM (SIMD)"
+   )
+   add_custom_command(
+      OUTPUT "${SHA256_NOSI_WASM}"
+      COMMAND "${WASM_CC}" ${WASM_CFLAGS_NOSI}
+              -o "${SHA256_NOSI_WASM}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_sha256.c"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_sha256.c"
+      COMMENT "Compiling bench_sha256.c -> WASM (no SIMD)"
    )
 
    # --- micro-ecc (ECDSA library) ---
@@ -279,39 +290,60 @@ if(ENABLE_BENCH_COMPUTE)
       FetchContent_Populate(micro_ecc)
    endif()
 
-   # --- ECDSA WASM module ---
+   # --- ECDSA WASM modules (with and without SIMD) ---
    set(ECDSA_WASM "${CMAKE_CURRENT_BINARY_DIR}/bench_ecdsa.wasm")
-   add_custom_command(
-      OUTPUT "${ECDSA_WASM}"
-      COMMAND "${WASM_CC}" ${WASM_CFLAGS}
-              -DuECC_OPTIMIZATION_LEVEL=3
+   set(ECDSA_NOSI_WASM "${CMAKE_CURRENT_BINARY_DIR}/bench_ecdsa_nosi.wasm")
+   set(ECDSA_DEFS -DuECC_OPTIMIZATION_LEVEL=3
               -DuECC_SUPPORTS_secp160r1=0
               -DuECC_SUPPORTS_secp192r1=0
               -DuECC_SUPPORTS_secp224r1=0
               -DuECC_SUPPORTS_secp256r1=0
               -DuECC_SUPPORTS_secp256k1=1
               -DuECC_SUPPORT_COMPRESSED_POINT=0
-              -I"${micro_ecc_SOURCE_DIR}"
-              -o "${ECDSA_WASM}"
-              "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_ecdsa.c"
-              "${micro_ecc_SOURCE_DIR}/uECC.c"
+              -I"${micro_ecc_SOURCE_DIR}")
+   set(ECDSA_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_ecdsa.c"
+              "${micro_ecc_SOURCE_DIR}/uECC.c")
+   add_custom_command(
+      OUTPUT "${ECDSA_WASM}"
+      COMMAND "${WASM_CC}" ${WASM_CFLAGS_SIMD} ${ECDSA_DEFS}
+              -o "${ECDSA_WASM}" ${ECDSA_SRCS}
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_ecdsa.c"
               "${micro_ecc_SOURCE_DIR}/uECC.c"
-      COMMENT "Compiling bench_ecdsa.c + micro-ecc -> WASM"
+      COMMENT "Compiling bench_ecdsa.c + micro-ecc -> WASM (SIMD)"
+   )
+   add_custom_command(
+      OUTPUT "${ECDSA_NOSI_WASM}"
+      COMMAND "${WASM_CC}" ${WASM_CFLAGS_NOSI} ${ECDSA_DEFS}
+              -o "${ECDSA_NOSI_WASM}" ${ECDSA_SRCS}
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_ecdsa.c"
+              "${micro_ecc_SOURCE_DIR}/uECC.c"
+      COMMENT "Compiling bench_ecdsa.c + micro-ecc -> WASM (no SIMD)"
    )
 
    # --- Misc compute benchmarks (fib, sort, crc32, matmul) ---
    set(MISC_WASM "${CMAKE_CURRENT_BINARY_DIR}/bench_misc.wasm")
+   set(MISC_NOSI_WASM "${CMAKE_CURRENT_BINARY_DIR}/bench_misc_nosi.wasm")
    add_custom_command(
       OUTPUT "${MISC_WASM}"
-      COMMAND "${WASM_CC}" ${WASM_CFLAGS}
+      COMMAND "${WASM_CC}" ${WASM_CFLAGS_SIMD}
               -o "${MISC_WASM}"
               "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_misc.c"
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_misc.c"
-      COMMENT "Compiling bench_misc.c -> WASM"
+      COMMENT "Compiling bench_misc.c -> WASM (SIMD)"
+   )
+   add_custom_command(
+      OUTPUT "${MISC_NOSI_WASM}"
+      COMMAND "${WASM_CC}" ${WASM_CFLAGS_NOSI}
+              -o "${MISC_NOSI_WASM}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_misc.c"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_misc.c"
+      COMMENT "Compiling bench_misc.c -> WASM (no SIMD)"
    )
 
-   add_custom_target(compute-wasm ALL DEPENDS "${SHA256_WASM}" "${ECDSA_WASM}" "${MISC_WASM}")
+   add_custom_target(compute-wasm ALL DEPENDS
+      "${SHA256_WASM}" "${SHA256_NOSI_WASM}"
+      "${ECDSA_WASM}" "${ECDSA_NOSI_WASM}"
+      "${MISC_WASM}" "${MISC_NOSI_WASM}")
 
    # --- Native baseline: compile the same C code as a native static library ---
    add_library(bench-native STATIC
@@ -347,7 +379,10 @@ if(ENABLE_BENCH_COMPUTE)
    add_dependencies(bench-compare compute-wasm)
    target_compile_definitions(bench-compare PRIVATE
       BENCH_SHA256_WASM="${SHA256_WASM}"
+      BENCH_SHA256_NOSI_WASM="${SHA256_NOSI_WASM}"
       BENCH_ECDSA_WASM="${ECDSA_WASM}"
+      BENCH_ECDSA_NOSI_WASM="${ECDSA_NOSI_WASM}"
       BENCH_MISC_WASM="${MISC_WASM}"
+      BENCH_MISC_NOSI_WASM="${MISC_NOSI_WASM}"
    )
 endif()
