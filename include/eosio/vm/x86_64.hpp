@@ -4480,6 +4480,7 @@ namespace eosio { namespace vm {
 
       using fn_type = native_value(*)(void* context, void* memory);
       void finalize(function_body& body) {
+         body.jit_code_size = static_cast<uint32_t>(code - _code_start);
          _allocator.reclaim(code, _code_end - code);
          body.jit_code_offset = _code_start - (unsigned char*)_code_segment_base;
       }

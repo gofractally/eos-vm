@@ -106,6 +106,7 @@ double run_wasmtime(const std::vector<uint8_t>& wasm, const char* func, uint32_t
 }
 
 double run_wasmtime_compute(const std::vector<uint8_t>& wasm, const char* func, uint32_t n) {
+   auto ct1 = std::chrono::high_resolution_clock::now();
    wasm_engine_t* engine = wasm_engine_new();
    wasmtime_store_t* store = wasmtime_store_new(engine, nullptr, nullptr);
    wasmtime_context_t* ctx = wasmtime_store_context(store);
@@ -113,6 +114,8 @@ double run_wasmtime_compute(const std::vector<uint8_t>& wasm, const char* func, 
    wasmtime_module_t* module = nullptr;
    wasmtime_error_t* err = wasmtime_module_new(engine, wasm.data(), wasm.size(), &module);
    if (err) { fprintf(stderr, "wasmtime compute module error\n"); wasmtime_error_delete(err); wasmtime_store_delete(store); wasm_engine_delete(engine); return -1; }
+   auto ct2 = std::chrono::high_resolution_clock::now();
+   fprintf(stderr, "  wasmtime compile=%.1fms\n", std::chrono::duration<double, std::milli>(ct2 - ct1).count());
 
    wasmtime_instance_t instance;
    wasm_trap_t* trap = nullptr;

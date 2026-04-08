@@ -437,9 +437,7 @@ static void dump_code_sizes(const std::vector<uint8_t>& wasm_bytes, const char* 
    auto& mod = bkend.get_module();
    uint32_t total = 0;
    for (uint32_t i = 0; i < mod.code.size(); ++i) {
-      uint32_t offset = mod.code[i].jit_code_offset;
-      uint32_t next = (i + 1 < mod.code.size()) ? mod.code[i+1].jit_code_offset : offset + 1000;
-      uint32_t size = next - offset;
+      uint32_t size = mod.code[i].jit_code_size;
       total += size;
       if (mod.code.size() <= 5) {
          fprintf(stderr, "  %s func[%u]: wasm=%u bytes, native=%u bytes (%.1fx)\n",

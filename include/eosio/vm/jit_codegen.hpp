@@ -198,6 +198,9 @@ namespace eosio { namespace vm {
 
          body.jit_code_offset = code_start - static_cast<unsigned char*>(_code_segment_base);
 
+         // Record actual emitted code size.
+         body.jit_code_size = static_cast<uint32_t>(code - code_start);
+
          _scratch = nullptr;
          _block_addrs = nullptr;
          _block_fixups = nullptr;

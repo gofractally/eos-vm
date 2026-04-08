@@ -150,6 +150,7 @@ namespace eosio { namespace vm {
       std::vector<local_entry>    locals;
       opcode*                     code;
       std::size_t                 jit_code_offset;
+      std::uint32_t               jit_code_size = 0;
       std::uint32_t               stack_size = 0;
    };
 
