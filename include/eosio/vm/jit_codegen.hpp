@@ -4011,13 +4011,14 @@ namespace eosio { namespace vm {
             this->emit_vmovdqu(*rsp, xmm0);
             this->emit_add(16, rsp);
             this->emit_vmovdqu(*rsp, xmm1);
-            this->emit(base::VPMULUDQ, xmm0, xmm1, xmm2);
-            this->emit(base::VPSHUFD, typename base::imm8{0xb1}, xmm0, xmm0);
-            this->emit(base::VPMULLD, xmm0, xmm1, xmm0);
-            this->emit(base::VPHADDD, xmm0, xmm0, xmm0);
+            // a*b = (ah*bl + al*bh) << 32 + al*bl
+            this->emit(base::VPMULUDQ, xmm0, xmm1, xmm2);  // al*bl (64-bit)
+            this->emit(base::VPSHUFD, typename base::imm8{0xb1}, xmm0, xmm0);  // swap hi/lo 32-bit
+            this->emit(base::VPMULLD, xmm0, xmm1, xmm0);    // cross products (32-bit)
+            this->emit(base::VPHADDD, xmm0, xmm0, xmm0);    // add adjacent pairs
             this->emit_const_zero(xmm1);
-            this->emit(base::VPUNPCKLDQ, xmm0, xmm1, xmm0);
-            this->emit(base::VPADDQ, xmm0, xmm2, xmm0);
+            this->emit(base::VPUNPCKLDQ, xmm0, xmm1, xmm0); // interleave with zero → shift to high 32 bits
+            this->emit(base::VPADDQ, xmm0, xmm2, xmm0);     // add to low product
             this->emit_vmovdqu(xmm0, *rsp);
             break;
          }
