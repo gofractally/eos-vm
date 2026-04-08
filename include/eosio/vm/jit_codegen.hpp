@@ -2837,7 +2837,7 @@ namespace eosio { namespace vm {
                else      { this->emit_mov(phys_to_reg64(pr_s1), phys_to_reg64(pr_d)); op(phys_to_reg64(pr_d), phys_to_reg64(pr_s2)); }
             }
          } else if (pr_d >= 0 && pr_s1 >= 0) {
-            // dest+src1 in registers, src2 spilled — load src2, operate in dest
+            // dest+src1 in registers, src2 spilled
             if (pr_d != pr_s1) {
                if (is32) this->emit_mov(phys_to_reg32(pr_s1), phys_to_reg32(pr_d));
                else      this->emit_mov(phys_to_reg64(pr_s1), phys_to_reg64(pr_d));
@@ -2846,10 +2846,16 @@ namespace eosio { namespace vm {
             if (is32) op(phys_to_reg32(pr_d), ecx);
             else      op(phys_to_reg64(pr_d), rcx);
          } else if (pr_d >= 0 && pr_s2 >= 0) {
-            // dest+src2 in registers, src1 spilled — load src1 to rax, operate, store to dest
-            load_vreg_rax(inst.rr.src1);
-            if (is32) { op(eax, phys_to_reg32(pr_s2)); this->emit_mov(eax, phys_to_reg32(pr_d)); }
-            else      { op(rax, phys_to_reg64(pr_s2)); this->emit_mov(rax, phys_to_reg64(pr_d)); }
+            // dest+src2 in registers, src1 spilled — mov spill→dest, op dest, src2
+            int16_t sp1 = get_vreg_spill(inst.rr.src1);
+            if (sp1 >= 0) {
+               if (is32) { this->emit_mov(*(rbp + get_spill_offset(sp1)), phys_to_reg32(pr_d)); op(phys_to_reg32(pr_d), phys_to_reg32(pr_s2)); }
+               else      { this->emit_mov(*(rbp + get_spill_offset(sp1)), phys_to_reg64(pr_d)); op(phys_to_reg64(pr_d), phys_to_reg64(pr_s2)); }
+            } else {
+               load_vreg_rax(inst.rr.src1);
+               if (is32) { op(eax, phys_to_reg32(pr_s2)); this->emit_mov(eax, phys_to_reg32(pr_d)); }
+               else      { op(rax, phys_to_reg64(pr_s2)); this->emit_mov(rax, phys_to_reg64(pr_d)); }
+            }
          } else {
             // Generic: both through rax/rcx
             load_vreg_rcx(inst.rr.src2);
@@ -3300,6 +3306,15 @@ namespace eosio { namespace vm {
             int8_t xr = get_xmm(vreg);
             if (xr >= 0) this->emit_vmovq(rax, static_cast<typename base::xmm_register>(xr));
          }
+      }
+
+      // No memory operand overloads needed — the all-spilled path
+      // uses direct emit() calls instead.
+
+      // Get the spill slot for a vreg (-1 if in register or XMM)
+      int16_t get_vreg_spill(uint32_t vreg) const {
+         if (!_spill_map || vreg >= _num_vregs) return -1;
+         return _spill_map[vreg];
       }
 
       // Get rbp-relative offset for a spill slot
