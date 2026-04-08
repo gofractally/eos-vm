@@ -257,6 +257,13 @@ namespace eosio { namespace vm {
          _func_insts = func.insts;
          _func_inst_count = func.inst_count;
 
+         // Pre-allocate fixup pool before disarming scratch. Each branch
+         // instruction may need a fixup node. Worst case: every IR instruction
+         // is a branch. Allocate from scratch (reclaimed after function).
+         _fixup_pool = scratch.alloc<block_fixup>(func.inst_count + 1);
+         _fixup_pool_next = 0;
+         _fixup_pool_size = func.inst_count + 1;
+
          // Disarm scratch so its destructor won't reclaim the code buffer.
          // When _scratch_alloc == _allocator, scratch data stays interleaved
          // with code — the waste is acceptable given deterministic limits.
@@ -622,7 +629,7 @@ namespace eosio { namespace vm {
             // Then-block: emit jump to end (forward fixup to block end)
             if (target_block < _num_blocks) {
                void* jmp = emit_jmp32();
-               auto* fixup = _scratch->alloc<block_fixup>(1);
+               auto* fixup = alloc_fixup();
                fixup->branch = jmp;
                fixup->next = _block_fixups[target_block];
                _block_fixups[target_block] = fixup;
@@ -1470,7 +1477,7 @@ namespace eosio { namespace vm {
             base::fix_branch(branch, _block_addrs[block_idx]);
          } else {
             void* branch = this->emit_branchcc32(cc);
-            auto* fixup = _scratch->alloc<block_fixup>(1);
+            auto* fixup = alloc_fixup();
             fixup->branch = branch;
             fixup->next = _block_fixups[block_idx];
             _block_fixups[block_idx] = fixup;
@@ -1607,7 +1614,7 @@ namespace eosio { namespace vm {
             uint32_t target_block = inst.br.target;
             if (target_block < _num_blocks) {
                void* jmp = emit_jmp32();
-               auto* fixup = _scratch->alloc<block_fixup>(1);
+               auto* fixup = alloc_fixup();
                fixup->branch = jmp;
                fixup->next = _block_fixups[target_block];
                _block_fixups[target_block] = fixup;
@@ -2957,6 +2964,13 @@ namespace eosio { namespace vm {
          block_fixup* next;
       };
 
+      block_fixup* alloc_fixup() {
+         if (_fixup_pool && _fixup_pool_next < _fixup_pool_size)
+            return &_fixup_pool[_fixup_pool_next++];
+         // Fallback (shouldn't happen if pool is sized correctly)
+         return _scratch->alloc<block_fixup>(1);
+      }
+
       // Record that a block's code starts at current position
       void mark_block_start(uint32_t block_idx) {
          if (block_idx < _num_blocks) {
@@ -2999,7 +3013,7 @@ namespace eosio { namespace vm {
             base::fix_branch(branch, _block_addrs[block_idx]);
          } else {
             void* branch = emit_jmp32();
-            auto* fixup = _scratch->alloc<block_fixup>(1);
+            auto* fixup = alloc_fixup();
             fixup->branch = branch;
             fixup->next = _block_fixups[block_idx];
             _block_fixups[block_idx] = fixup;
@@ -3021,7 +3035,7 @@ namespace eosio { namespace vm {
                base::fix_branch(branch, _block_addrs[block_idx]);
             } else {
                void* branch = this->emit_branchcc32(base::JNZ);
-               auto* fixup = _scratch->alloc<block_fixup>(1);
+               auto* fixup = alloc_fixup();
                fixup->branch = branch;
                fixup->next = _block_fixups[block_idx];
                _block_fixups[block_idx] = fixup;
@@ -5577,6 +5591,9 @@ namespace eosio { namespace vm {
       // Per-function block address tracking (set during compile_function)
       void** _block_addrs = nullptr;
       block_fixup** _block_fixups = nullptr;
+      block_fixup* _fixup_pool = nullptr;
+      uint32_t _fixup_pool_next = 0;
+      uint32_t _fixup_pool_size = 0;
       uint32_t _num_blocks = 0;
       // (if/else fixups stored in block_fixups, no separate stack)
       // br_table state
