@@ -3,8 +3,10 @@
 
 #include <stdint.h>
 
+#define EXPORT __attribute__((visibility("default")))
+
 // 1. Integer loop: iterative fibonacci (tests loop overhead, branch prediction)
-int64_t bench_fib(int32_t n) {
+EXPORT int64_t bench_fib(int32_t n) {
    int64_t a = 0, b = 1;
    for (int32_t i = 0; i < n; i++) {
       int64_t t = a + b;
@@ -15,7 +17,7 @@ int64_t bench_fib(int32_t n) {
 }
 
 // 2. Memory-heavy: bubble sort a small array (tests load/store patterns)
-int64_t bench_sort(int32_t iterations) {
+EXPORT int64_t bench_sort(int32_t iterations) {
    int32_t arr[64];
    int64_t checksum = 0;
    for (int32_t iter = 0; iter < iterations; iter++) {
@@ -46,7 +48,7 @@ static void crc32_init(void) {
    }
 }
 
-int64_t bench_crc32(int32_t iterations) {
+EXPORT int64_t bench_crc32(int32_t iterations) {
    crc32_init();
    uint32_t crc = 0xFFFFFFFF;
    // CRC32 over a synthetic data stream
@@ -60,7 +62,7 @@ int64_t bench_crc32(int32_t iterations) {
 }
 
 // 4. Mixed integer: matrix multiply 8x8 (tests nested loops, register pressure)
-int64_t bench_matmul(int32_t iterations) {
+EXPORT int64_t bench_matmul(int32_t iterations) {
    int32_t A[64], B[64], C[64];
    int64_t checksum = 0;
    for (int32_t iter = 0; iter < iterations; iter++) {

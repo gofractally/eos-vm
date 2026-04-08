@@ -22,6 +22,10 @@ extern "C" {
    int64_t bench_sha256(int32_t iterations);
    int64_t bench_ecdsa_verify(int32_t iterations);
    int64_t bench_ecdsa_sign(int32_t iterations);
+   int64_t bench_fib(int32_t n);
+   int64_t bench_sort(int32_t iterations);
+   int64_t bench_crc32(int32_t iterations);
+   int64_t bench_matmul(int32_t iterations);
 }
 #endif
 
@@ -747,19 +751,30 @@ int main(int argc, char** argv) {
       {"SHA-256 (64B, 10K)",   BENCH_SHA256_WASM, "bench_sha256",       bench_sha256,       10'000},
       {"ECDSA verify (k1)",    BENCH_ECDSA_WASM,  "bench_ecdsa_verify", bench_ecdsa_verify, 100},
       {"ECDSA sign (k1)",      BENCH_ECDSA_WASM,  "bench_ecdsa_sign",   bench_ecdsa_sign,   100},
+      {"Fibonacci (1M)",       BENCH_MISC_WASM,   "bench_fib",          bench_fib,          1'000'000},
+      {"Bubble sort (64, 1K)", BENCH_MISC_WASM,   "bench_sort",         bench_sort,         1'000},
+      {"CRC32 (256B, 10K)",    BENCH_MISC_WASM,   "bench_crc32",        bench_crc32,        10'000},
+      {"MatMul 8x8 (10K)",     BENCH_MISC_WASM,   "bench_matmul",       bench_matmul,       10'000},
    };
    const int num_compute = sizeof(compute_tests) / sizeof(compute_tests[0]);
-   double compute_results[3][RT_COUNT] = {};
-   const char* compute_labels[3];
+   double compute_results[16][RT_COUNT] = {};
+   const char* compute_labels[16];
 
    // Pre-load WASM files
-   std::vector<uint8_t> sha_wasm, ecdsa_wasm;
+   std::vector<uint8_t> sha_wasm, ecdsa_wasm, misc_wasm;
    try { sha_wasm = eosio::vm::read_wasm(BENCH_SHA256_WASM); } catch (...) {}
    try { ecdsa_wasm = eosio::vm::read_wasm(BENCH_ECDSA_WASM); } catch (...) {}
+   try { misc_wasm = eosio::vm::read_wasm(BENCH_MISC_WASM); } catch (...) {}
+
+   auto get_wasm = [&](int t) -> std::vector<uint8_t>& {
+      if (compute_tests[t].wasm_path == std::string(BENCH_SHA256_WASM)) return sha_wasm;
+      if (compute_tests[t].wasm_path == std::string(BENCH_ECDSA_WASM)) return ecdsa_wasm;
+      return misc_wasm;
+   };
 
    for (int t = 0; t < num_compute; t++) {
       compute_labels[t] = compute_tests[t].label;
-      auto& wasm = (t == 0) ? sha_wasm : ecdsa_wasm;
+      auto& wasm = get_wasm(t);
       auto func = compute_tests[t].func;
       auto iters = compute_tests[t].iters;
 

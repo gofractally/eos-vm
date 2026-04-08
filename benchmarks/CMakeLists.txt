@@ -300,12 +300,24 @@ if(ENABLE_BENCH_COMPUTE)
       COMMENT "Compiling bench_ecdsa.c + micro-ecc -> WASM"
    )
 
-   add_custom_target(compute-wasm ALL DEPENDS "${SHA256_WASM}" "${ECDSA_WASM}")
+   # --- Misc compute benchmarks (fib, sort, crc32, matmul) ---
+   set(MISC_WASM "${CMAKE_CURRENT_BINARY_DIR}/bench_misc.wasm")
+   add_custom_command(
+      OUTPUT "${MISC_WASM}"
+      COMMAND "${WASM_CC}" ${WASM_CFLAGS}
+              -o "${MISC_WASM}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_misc.c"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_misc.c"
+      COMMENT "Compiling bench_misc.c -> WASM"
+   )
+
+   add_custom_target(compute-wasm ALL DEPENDS "${SHA256_WASM}" "${ECDSA_WASM}" "${MISC_WASM}")
 
    # --- Native baseline: compile the same C code as a native static library ---
    add_library(bench-native STATIC
       "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_sha256.c"
       "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_ecdsa.c"
+      "${CMAKE_CURRENT_SOURCE_DIR}/compute/bench_misc.c"
       "${micro_ecc_SOURCE_DIR}/uECC.c"
    )
    target_include_directories(bench-native PRIVATE "${micro_ecc_SOURCE_DIR}")
@@ -336,5 +348,6 @@ if(ENABLE_BENCH_COMPUTE)
    target_compile_definitions(bench-compare PRIVATE
       BENCH_SHA256_WASM="${SHA256_WASM}"
       BENCH_ECDSA_WASM="${ECDSA_WASM}"
+      BENCH_MISC_WASM="${MISC_WASM}"
    )
 endif()
