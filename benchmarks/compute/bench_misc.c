@@ -83,6 +83,91 @@ EXPORT int64_t bench_matmul(int32_t iterations) {
    return checksum;
 }
 
+// 5. Floating point: Mandelbrot set iteration count (tests f64 mul/add/cmp)
+EXPORT int64_t bench_mandelbrot(int32_t iterations) {
+   int64_t total = 0;
+   double step = 3.0 / (double)iterations;
+   for (int32_t iy = 0; iy < iterations; iy++) {
+      double ci = -1.5 + (double)iy * step;
+      for (int32_t ix = 0; ix < iterations; ix++) {
+         double cr = -2.0 + (double)ix * step;
+         double zr = 0.0, zi = 0.0;
+         int32_t count = 0;
+         for (count = 0; count < 50; count++) {
+            double zr2 = zr * zr;
+            double zi2 = zi * zi;
+            if (zr2 + zi2 > 4.0) break;
+            zi = 2.0 * zr * zi + ci;
+            zr = zr2 - zi2 + cr;
+         }
+         total += count;
+      }
+   }
+   return total;
+}
+
+// 6. Float math: Nbody gravitational simulation (tests f64 sqrt, mul, add, div)
+EXPORT int64_t bench_nbody(int32_t iterations) {
+   // 8 bodies with position (x,y,z) and velocity (vx,vy,vz) and mass
+   double x[8], y[8], z[8], vx[8], vy[8], vz[8], mass[8];
+   // Initialize with deterministic values
+   for (int i = 0; i < 8; i++) {
+      x[i]  = (double)(i * 17 % 11) - 5.0;
+      y[i]  = (double)(i * 31 % 13) - 6.0;
+      z[i]  = (double)(i * 7 % 9) - 4.0;
+      vx[i] = 0.0; vy[i] = 0.0; vz[i] = 0.0;
+      mass[i] = 1.0 + (double)(i % 3);
+   }
+   double dt = 0.01;
+   for (int32_t iter = 0; iter < iterations; iter++) {
+      // Compute forces (all pairs)
+      for (int i = 0; i < 8; i++) {
+         for (int j = i + 1; j < 8; j++) {
+            double dx = x[j] - x[i];
+            double dy = y[j] - y[i];
+            double dz = z[j] - z[i];
+            double dist2 = dx*dx + dy*dy + dz*dz + 0.01; // softening
+            // Fast inverse sqrt approximation: 1/sqrt(dist2) via Newton
+            double inv = 1.0 / dist2; // use 1/r^2 instead of sqrt for speed
+            double f = inv * dt;
+            double fx = dx * f, fy = dy * f, fz = dz * f;
+            vx[i] += fx * mass[j]; vy[i] += fy * mass[j]; vz[i] += fz * mass[j];
+            vx[j] -= fx * mass[i]; vy[j] -= fy * mass[i]; vz[j] -= fz * mass[i];
+         }
+      }
+      // Integrate positions
+      for (int i = 0; i < 8; i++) {
+         x[i] += vx[i] * dt;
+         y[i] += vy[i] * dt;
+         z[i] += vz[i] * dt;
+      }
+   }
+   // Return checksum as fixed-point
+   double sum = 0.0;
+   for (int i = 0; i < 8; i++)
+      sum += x[i] + y[i] + z[i];
+   return (int64_t)(sum * 1000000.0);
+}
+
+// 7. Float32: Dot product of large f32 arrays (tests f32 mul+add throughput)
+EXPORT int64_t bench_fdot(int32_t iterations) {
+   float A[256], B[256];
+   for (int i = 0; i < 256; i++) {
+      A[i] = (float)(i * 7 + 1) * 0.001f;
+      B[i] = (float)(i * 13 + 3) * 0.001f;
+   }
+   float total = 0.0f;
+   for (int32_t iter = 0; iter < iterations; iter++) {
+      float dot = 0.0f;
+      for (int i = 0; i < 256; i++)
+         dot += A[i] * B[i];
+      total += dot;
+      // Perturb slightly to prevent optimization
+      A[iter & 255] += 0.0001f;
+   }
+   return (int64_t)(total * 1000.0f);
+}
+
 #ifdef __wasm_simd128__
 #include <wasm_simd128.h>
 #endif

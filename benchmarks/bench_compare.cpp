@@ -28,6 +28,9 @@ extern "C" {
    int64_t bench_sha256_simd(int32_t iterations);
    int64_t bench_matmul(int32_t iterations);
    int64_t bench_matmul_simd(int32_t iterations);
+   int64_t bench_mandelbrot(int32_t iterations);
+   int64_t bench_nbody(int32_t iterations);
+   int64_t bench_fdot(int32_t iterations);
 }
 #endif
 
@@ -765,6 +768,9 @@ int main(int argc, char** argv) {
       {"CRC32",                BENCH_MISC_WASM,        "bench_crc32",        bench_crc32,        10'000},
       {"MatMul scalar",        BENCH_MISC_WASM,        "bench_matmul",       bench_matmul,       10'000},
       {"MatMul SIMD",          BENCH_MISC_WASM,        "bench_matmul_simd",  bench_matmul_simd,  10'000},
+      {"Mandelbrot (f64)",     BENCH_MISC_WASM,        "bench_mandelbrot",   bench_mandelbrot,   500},
+      {"Nbody (f64)",          BENCH_MISC_WASM,        "bench_nbody",        bench_nbody,        100'000},
+      {"F32 dot product",      BENCH_MISC_WASM,        "bench_fdot",         bench_fdot,         100'000},
    };
    const int num_compute = sizeof(compute_tests) / sizeof(compute_tests[0]);
    double compute_results[16][RT_COUNT] = {};
