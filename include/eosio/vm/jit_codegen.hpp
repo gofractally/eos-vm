@@ -3526,15 +3526,11 @@ namespace eosio { namespace vm {
          uint16_t vs1 = inst.simd.v_src1;
          uint16_t vs2 = inst.simd.v_src2;
          uint16_t vd  = inst.simd.v_dest;
-         // Only handle ops where all v128 vregs have XMM registers or spill slots
-         if (vd == 0xFFFF) return false;
          if (!_xmm_map) return false;
 
-         // Map common binops to their VEX opcode
-         // Format: emit(OP, src2_xmm, src1_xmm, dest_xmm)
+         // Helper: v128 binop — load both sources to XMM, apply op, store to dest
          auto try_binop = [&](auto op) -> bool {
-            if (vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
-            // If either source is on the x86 stack (not in XMM/spill), fall back
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
             if (!load_v128_to_xmm(vs1, xmm0)) return false;
             if (!load_v128_to_xmm(vs2, xmm1)) return false;
             this->emit(op, xmm1, xmm0, xmm0);
@@ -3542,16 +3538,103 @@ namespace eosio { namespace vm {
             return true;
          };
 
+         // Helper: v128 unop — load source to XMM, apply 2-operand op, store
          auto try_unop = [&](auto op) -> bool {
-            if (vs1 == 0xFFFF) return false;
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
             if (!load_v128_to_xmm(vs1, xmm0)) return false;
             this->emit(op, xmm0, xmm0);
             store_xmm_to_v128(xmm0, vd);
             return true;
          };
 
+         // Helper: v128 load from memory — get address into rax, load to XMM, store to dest
+         auto try_load = [&](auto op) -> bool {
+            if (vd == 0xFFFF) return false;
+            simd_load_address(inst.simd.offset, inst.simd.addr);
+            this->emit(op, *(rax + rsi + 0), xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         };
+
+         // Helper: v128 comparison — binop + optional flip (XOR with all-ones)
+         auto try_cmp = [&](auto op, bool swap, bool flip) -> bool {
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            if (swap) {
+               if (!load_v128_to_xmm(vs2, xmm0)) return false;
+               if (!load_v128_to_xmm(vs1, xmm1)) return false;
+            } else {
+               if (!load_v128_to_xmm(vs1, xmm0)) return false;
+               if (!load_v128_to_xmm(vs2, xmm1)) return false;
+            }
+            this->emit(op, xmm1, xmm0, xmm0);
+            if (flip) {
+               this->emit_const_ones(xmm1);
+               this->emit(base::VPXOR, xmm1, xmm0, xmm0);
+            }
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         };
+
+         // Helper: unsigned comparison via min/max — minmax(a,b)==a means a<=b
+         auto try_cmp_minmax = [&](auto minmax_op, auto eq_op, bool flip) -> bool {
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            if (!load_v128_to_xmm(vs2, xmm1)) return false;
+            this->emit(minmax_op, xmm1, xmm0, xmm1); // xmm1 = minmax(src1, src2)
+            this->emit(eq_op, xmm1, xmm0, xmm0);     // xmm0 = (src1 == minmax_result)
+            if (!flip) {
+               // Invert: we got "eq" but want "ne" of the eq
+               this->emit_const_zero(xmm1);
+               this->emit(base::VPCMPEQB, xmm1, xmm0, xmm0);
+            }
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         };
+
+         // Helper: shift op — load shift count from scalar vreg, apply to v128 source
+         auto try_shift = [&](auto op, uint8_t mask) -> bool {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            // Load shift count from scalar vreg
+            uint32_t shift_vreg = inst.simd.offset;
+            if (shift_vreg != ir_vreg_none && (has_reg(shift_vreg) ||
+                (_spill_map && shift_vreg < _num_vregs && _spill_map[shift_vreg] >= 0)))
+               load_vreg_rax(shift_vreg);
+            else
+               return false; // shift count on x86 stack, fall back
+            this->emit_bytes(0x83, 0xe0, mask); // and $mask, %eax
+            this->emit_vmovd(eax, xmm1);
+            this->emit(op, xmm1, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         };
+
          switch (sub) {
-         // Integer add/sub
+         // ── Memory loads — directly to XMM register ──
+         case simd_sub::v128_load: return try_load(base::VMOVDQU_A);
+         case simd_sub::v128_load8x8_s: return try_load(base::VPMOVSXBW);
+         case simd_sub::v128_load8x8_u: return try_load(base::VPMOVZXBW);
+         case simd_sub::v128_load16x4_s: return try_load(base::VPMOVSXWD);
+         case simd_sub::v128_load16x4_u: return try_load(base::VPMOVZXWD);
+         case simd_sub::v128_load32x2_s: return try_load(base::VPMOVSXDQ);
+         case simd_sub::v128_load32x2_u: return try_load(base::VPMOVZXDQ);
+         case simd_sub::v128_load8_splat: return try_load(base::VPBROADCASTB);
+         case simd_sub::v128_load16_splat: return try_load(base::VPBROADCASTW);
+         case simd_sub::v128_load32_splat: return try_load(base::VPBROADCASTD);
+         case simd_sub::v128_load64_splat: return try_load(base::VPBROADCASTQ);
+         case simd_sub::v128_load32_zero: return try_load(base::VMOVD_A);
+         case simd_sub::v128_load64_zero: return try_load(base::VMOVQ_A);
+
+         // ── Memory store — load from XMM, store to memory ──
+         case simd_sub::v128_store: {
+            if (vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            simd_load_address(inst.simd.offset, inst.simd.addr);
+            this->emit(base::VMOVDQU_B, *(rax + rsi + 0), xmm0);
+            return true;
+         }
+
+         // ── Integer add/sub ──
          case simd_sub::i8x16_add: return try_binop(base::VPADDB);
          case simd_sub::i16x8_add: return try_binop(base::VPADDW);
          case simd_sub::i32x4_add: return try_binop(base::VPADDD);
@@ -3572,25 +3655,70 @@ namespace eosio { namespace vm {
          case simd_sub::f64x2_sub: return try_binop(base::VSUBPD);
          case simd_sub::f64x2_mul: return try_binop(base::VMULPD);
          case simd_sub::f64x2_div: return try_binop(base::VDIVPD);
-         // Logical
+
+         // ── Logical ──
          case simd_sub::v128_and: return try_binop(base::VPAND);
          case simd_sub::v128_or:  return try_binop(base::VPOR);
          case simd_sub::v128_xor: return try_binop(base::VPXOR);
-         // VPANDN computes NOT(xmm_src2) AND xmm_src1, but wasm andnot(a,b) = a AND NOT(b).
-         // Swap operands: load b→xmm0, a→xmm1, emit VPANDN(xmm1,xmm0,xmm0) = NOT(xmm0)&xmm1 = NOT(b)&a.
          case simd_sub::v128_andnot: {
-            if (vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
             if (!load_v128_to_xmm(vs2, xmm0)) return false;
             if (!load_v128_to_xmm(vs1, xmm1)) return false;
             this->emit(base::VPANDN, xmm1, xmm0, xmm0);
             store_xmm_to_v128(xmm0, vd);
             return true;
          }
-         // Comparisons
+         case simd_sub::v128_not: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit_const_ones(xmm1);
+            this->emit(base::VPXOR, xmm1, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+
+         // ── Comparisons — equality ──
          case simd_sub::i8x16_eq: return try_binop(base::VPCMPEQB);
          case simd_sub::i16x8_eq: return try_binop(base::VPCMPEQW);
          case simd_sub::i32x4_eq: return try_binop(base::VPCMPEQD);
-         // Saturating add/sub
+         case simd_sub::i64x2_eq: return try_binop(base::VPCMPEQQ);
+         // Comparisons — not-equal (eq + flip)
+         case simd_sub::i8x16_ne: return try_cmp(base::VPCMPEQB, true, true);
+         case simd_sub::i16x8_ne: return try_cmp(base::VPCMPEQW, true, true);
+         case simd_sub::i32x4_ne: return try_cmp(base::VPCMPEQD, true, true);
+         case simd_sub::i64x2_ne: return try_cmp(base::VPCMPEQQ, true, true);
+         // Comparisons — signed lt/gt/le/ge via pcmpgt
+         case simd_sub::i8x16_lt_s: return try_cmp(base::VPCMPGTB, true, false);
+         case simd_sub::i8x16_gt_s: return try_cmp(base::VPCMPGTB, false, false);
+         case simd_sub::i8x16_le_s: return try_cmp(base::VPCMPGTB, false, true);
+         case simd_sub::i8x16_ge_s: return try_cmp(base::VPCMPGTB, true, true);
+         case simd_sub::i16x8_lt_s: return try_cmp(base::VPCMPGTW, true, false);
+         case simd_sub::i16x8_gt_s: return try_cmp(base::VPCMPGTW, false, false);
+         case simd_sub::i16x8_le_s: return try_cmp(base::VPCMPGTW, false, true);
+         case simd_sub::i16x8_ge_s: return try_cmp(base::VPCMPGTW, true, true);
+         case simd_sub::i32x4_lt_s: return try_cmp(base::VPCMPGTD, true, false);
+         case simd_sub::i32x4_gt_s: return try_cmp(base::VPCMPGTD, false, false);
+         case simd_sub::i32x4_le_s: return try_cmp(base::VPCMPGTD, false, true);
+         case simd_sub::i32x4_ge_s: return try_cmp(base::VPCMPGTD, true, true);
+         case simd_sub::i64x2_lt_s: return try_cmp(base::VPCMPGTQ, true, false);
+         case simd_sub::i64x2_gt_s: return try_cmp(base::VPCMPGTQ, false, false);
+         case simd_sub::i64x2_le_s: return try_cmp(base::VPCMPGTQ, false, true);
+         case simd_sub::i64x2_ge_s: return try_cmp(base::VPCMPGTQ, true, true);
+         // Comparisons — unsigned via min/max
+         case simd_sub::i8x16_lt_u: return try_cmp_minmax(base::VPMINUB, base::VPCMPEQB, false);
+         case simd_sub::i8x16_gt_u: return try_cmp_minmax(base::VPMAXUB, base::VPCMPEQB, false);
+         case simd_sub::i8x16_le_u: return try_cmp_minmax(base::VPMAXUB, base::VPCMPEQB, true);
+         case simd_sub::i8x16_ge_u: return try_cmp_minmax(base::VPMINUB, base::VPCMPEQB, true);
+         case simd_sub::i16x8_lt_u: return try_cmp_minmax(base::VPMINUW, base::VPCMPEQW, false);
+         case simd_sub::i16x8_gt_u: return try_cmp_minmax(base::VPMAXUW, base::VPCMPEQW, false);
+         case simd_sub::i16x8_le_u: return try_cmp_minmax(base::VPMAXUW, base::VPCMPEQW, true);
+         case simd_sub::i16x8_ge_u: return try_cmp_minmax(base::VPMINUW, base::VPCMPEQW, true);
+         case simd_sub::i32x4_lt_u: return try_cmp_minmax(base::VPMINUD, base::VPCMPEQD, false);
+         case simd_sub::i32x4_gt_u: return try_cmp_minmax(base::VPMAXUD, base::VPCMPEQD, false);
+         case simd_sub::i32x4_le_u: return try_cmp_minmax(base::VPMAXUD, base::VPCMPEQD, true);
+         case simd_sub::i32x4_ge_u: return try_cmp_minmax(base::VPMINUD, base::VPCMPEQD, true);
+
+         // ── Saturating add/sub ──
          case simd_sub::i8x16_add_sat_s: return try_binop(base::VPADDSB);
          case simd_sub::i8x16_add_sat_u: return try_binop(base::VPADDUSB);
          case simd_sub::i8x16_sub_sat_s: return try_binop(base::VPSUBSB);
@@ -3599,7 +3727,8 @@ namespace eosio { namespace vm {
          case simd_sub::i16x8_add_sat_u: return try_binop(base::VPADDUSW);
          case simd_sub::i16x8_sub_sat_s: return try_binop(base::VPSUBSW);
          case simd_sub::i16x8_sub_sat_u: return try_binop(base::VPSUBUSW);
-         // Min/max
+
+         // ── Min/max ──
          case simd_sub::i8x16_min_s: return try_binop(base::VPMINSB);
          case simd_sub::i8x16_min_u: return try_binop(base::VPMINUB);
          case simd_sub::i8x16_max_s: return try_binop(base::VPMAXSB);
@@ -3612,13 +3741,257 @@ namespace eosio { namespace vm {
          case simd_sub::i32x4_min_u: return try_binop(base::VPMINUD);
          case simd_sub::i32x4_max_s: return try_binop(base::VPMAXSD);
          case simd_sub::i32x4_max_u: return try_binop(base::VPMAXUD);
-         // Avgr
+
+         // ── Avgr ──
          case simd_sub::i8x16_avgr_u: return try_binop(base::VPAVGB);
          case simd_sub::i16x8_avgr_u: return try_binop(base::VPAVGW);
-         // Abs (unop)
+
+         // ── Abs (unop) ──
          case simd_sub::i8x16_abs: return try_unop(base::VPABSB);
          case simd_sub::i16x8_abs: return try_unop(base::VPABSW);
          case simd_sub::i32x4_abs: return try_unop(base::VPABSD);
+
+         // ── Neg (zero - src) ──
+         case simd_sub::i8x16_neg: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit_const_zero(xmm1);
+            this->emit(base::VPSUBB, xmm0, xmm1, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i16x8_neg: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit_const_zero(xmm1);
+            this->emit(base::VPSUBW, xmm0, xmm1, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i32x4_neg: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit_const_zero(xmm1);
+            this->emit(base::VPSUBD, xmm0, xmm1, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i64x2_neg: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit_const_zero(xmm1);
+            this->emit(base::VPSUBQ, xmm0, xmm1, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+
+         // ── Shift operations ──
+         case simd_sub::i16x8_shl: return try_shift(base::VPSLLW, 0x0f);
+         case simd_sub::i16x8_shr_s: return try_shift(base::VPSRAW, 0x0f);
+         case simd_sub::i16x8_shr_u: return try_shift(base::VPSRLW, 0x0f);
+         case simd_sub::i32x4_shl: return try_shift(base::VPSLLD, 0x1f);
+         case simd_sub::i32x4_shr_s: return try_shift(base::VPSRAD, 0x1f);
+         case simd_sub::i32x4_shr_u: return try_shift(base::VPSRLD, 0x1f);
+         case simd_sub::i64x2_shl: return try_shift(base::VPSLLQ, 0x3f);
+         case simd_sub::i64x2_shr_u: return try_shift(base::VPSRLQ, 0x3f);
+
+         // ── Narrow ──
+         case simd_sub::i8x16_narrow_i16x8_s: return try_binop(base::VPACKSSWB);
+         case simd_sub::i8x16_narrow_i16x8_u: return try_binop(base::VPACKUSWB);
+         case simd_sub::i16x8_narrow_i32x4_s: return try_binop(base::VPACKSSDW);
+         case simd_sub::i16x8_narrow_i32x4_u: return try_binop(base::VPACKUSDW);
+
+         // ── Extend low (unop) ──
+         case simd_sub::i16x8_extend_low_i8x16_s: return try_unop(base::VPMOVSXBW);
+         case simd_sub::i16x8_extend_low_i8x16_u: return try_unop(base::VPMOVZXBW);
+         case simd_sub::i32x4_extend_low_i16x8_s: return try_unop(base::VPMOVSXWD);
+         case simd_sub::i32x4_extend_low_i16x8_u: return try_unop(base::VPMOVZXWD);
+         case simd_sub::i64x2_extend_low_i32x4_s: return try_unop(base::VPMOVSXDQ);
+         case simd_sub::i64x2_extend_low_i32x4_u: return try_unop(base::VPMOVZXDQ);
+
+         // ── Extend high (shift right 8 bytes, then extend) ──
+         case simd_sub::i16x8_extend_high_i8x16_s: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPMOVSXBW, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i16x8_extend_high_i8x16_u: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPMOVZXBW, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i32x4_extend_high_i16x8_s: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPMOVSXWD, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i32x4_extend_high_i16x8_u: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPMOVZXWD, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i64x2_extend_high_i32x4_s: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPMOVSXDQ, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i64x2_extend_high_i32x4_u: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPMOVZXDQ, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+
+         // ── Dot product ──
+         case simd_sub::i32x4_dot_i16x8_s: return try_binop(base::VPMADDWD);
+
+         // ── Extmul ──
+         case simd_sub::i16x8_extmul_low_i8x16_s: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            if (!load_v128_to_xmm(vs2, xmm1)) return false;
+            this->emit(base::VPMOVSXBW, xmm0, xmm0);
+            this->emit(base::VPMOVSXBW, xmm1, xmm1);
+            this->emit(base::VPMULLW, xmm1, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i16x8_extmul_high_i8x16_s: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            if (!load_v128_to_xmm(vs2, xmm1)) return false;
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm1, xmm1);
+            this->emit(base::VPMOVSXBW, xmm0, xmm0);
+            this->emit(base::VPMOVSXBW, xmm1, xmm1);
+            this->emit(base::VPMULLW, xmm1, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i16x8_extmul_low_i8x16_u: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            if (!load_v128_to_xmm(vs2, xmm1)) return false;
+            this->emit(base::VPMOVZXBW, xmm0, xmm0);
+            this->emit(base::VPMOVZXBW, xmm1, xmm1);
+            this->emit(base::VPMULLW, xmm1, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i16x8_extmul_high_i8x16_u: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            if (!load_v128_to_xmm(vs2, xmm1)) return false;
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm1, xmm1);
+            this->emit(base::VPMOVZXBW, xmm0, xmm0);
+            this->emit(base::VPMOVZXBW, xmm1, xmm1);
+            this->emit(base::VPMULLW, xmm1, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i32x4_extmul_low_i16x8_s: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            if (!load_v128_to_xmm(vs2, xmm1)) return false;
+            this->emit(base::VPMOVSXWD, xmm0, xmm0);
+            this->emit(base::VPMOVSXWD, xmm1, xmm1);
+            this->emit(base::VPMULLD, xmm1, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i32x4_extmul_high_i16x8_s: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            if (!load_v128_to_xmm(vs2, xmm1)) return false;
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm1, xmm1);
+            this->emit(base::VPMOVSXWD, xmm0, xmm0);
+            this->emit(base::VPMOVSXWD, xmm1, xmm1);
+            this->emit(base::VPMULLD, xmm1, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i32x4_extmul_low_i16x8_u: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            if (!load_v128_to_xmm(vs2, xmm1)) return false;
+            this->emit(base::VPMOVZXWD, xmm0, xmm0);
+            this->emit(base::VPMOVZXWD, xmm1, xmm1);
+            this->emit(base::VPMULLD, xmm1, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i32x4_extmul_high_i16x8_u: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            if (!load_v128_to_xmm(vs2, xmm1)) return false;
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm0, xmm0);
+            this->emit(base::VPSRLDQ_c, typename base::imm8{8}, xmm1, xmm1);
+            this->emit(base::VPMOVZXWD, xmm0, xmm0);
+            this->emit(base::VPMOVZXWD, xmm1, xmm1);
+            this->emit(base::VPMULLD, xmm1, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i64x2_extmul_low_i32x4_s: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            if (!load_v128_to_xmm(vs2, xmm1)) return false;
+            this->emit(base::VPSHUFD, typename base::imm8{0x10}, xmm0, xmm0);
+            this->emit(base::VPSHUFD, typename base::imm8{0x10}, xmm1, xmm1);
+            this->emit(base::VPMULDQ, xmm0, xmm1, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i64x2_extmul_high_i32x4_s: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            if (!load_v128_to_xmm(vs2, xmm1)) return false;
+            this->emit(base::VPSHUFD, typename base::imm8{0x32}, xmm0, xmm0);
+            this->emit(base::VPSHUFD, typename base::imm8{0x32}, xmm1, xmm1);
+            this->emit(base::VPMULDQ, xmm0, xmm1, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i64x2_extmul_low_i32x4_u: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            if (!load_v128_to_xmm(vs2, xmm1)) return false;
+            this->emit(base::VPSHUFD, typename base::imm8{0x10}, xmm0, xmm0);
+            this->emit(base::VPSHUFD, typename base::imm8{0x10}, xmm1, xmm1);
+            this->emit(base::VPMULUDQ, xmm0, xmm1, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i64x2_extmul_high_i32x4_u: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            if (!load_v128_to_xmm(vs2, xmm1)) return false;
+            this->emit(base::VPSHUFD, typename base::imm8{0x32}, xmm0, xmm0);
+            this->emit(base::VPSHUFD, typename base::imm8{0x32}, xmm1, xmm1);
+            this->emit(base::VPMULUDQ, xmm0, xmm1, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+
          default:
             return false; // fall back to stack-based path
          }
