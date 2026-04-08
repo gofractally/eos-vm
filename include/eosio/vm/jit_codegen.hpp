@@ -1848,37 +1848,37 @@ namespace eosio { namespace vm {
          // Integer binary ops (with const-immediate for add/sub)
          case ir_op::i32_add:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_add(imm, d); }, true)) return true;
-            return emit_binop(inst, [this](auto d, auto s){ this->emit_add(s, d); }, true);
+            return emit_binop(inst, base::ADD_A, true);
          case ir_op::i32_sub:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_sub(imm, d); }, true)) return true;
-            return emit_binop(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, true);
-         case ir_op::i32_mul: return emit_binop(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, true);
+            return emit_binop(inst, base::SUB_A, true);
+         case ir_op::i32_mul: return emit_binop(inst, base::IMUL, true);
          case ir_op::i32_and:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_and(imm, d); }, true)) return true;
-            return emit_binop(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, true);
+            return emit_binop(inst, base::AND_A, true);
          case ir_op::i32_or:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_or(imm, d); }, true)) return true;
-            return emit_binop(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, true);
+            return emit_binop(inst, base::OR_A, true);
          case ir_op::i32_xor:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_xor(imm, d); }, true)) return true;
-            return emit_binop(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, true);
+            return emit_binop(inst, base::XOR_A, true);
 
          case ir_op::i64_add:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_add(imm, d); }, false)) return true;
-            return emit_binop(inst, [this](auto d, auto s){ this->emit_add(s, d); }, false);
+            return emit_binop(inst, base::ADD_A, false);
          case ir_op::i64_sub:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_sub(imm, d); }, false)) return true;
-            return emit_binop(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, false);
-         case ir_op::i64_mul: return emit_binop(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, false);
+            return emit_binop(inst, base::SUB_A, false);
+         case ir_op::i64_mul: return emit_binop(inst, base::IMUL, false);
          case ir_op::i64_and:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_and(imm, d); }, false)) return true;
-            return emit_binop(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, false);
+            return emit_binop(inst, base::AND_A, false);
          case ir_op::i64_or:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_or(imm, d); }, false)) return true;
-            return emit_binop(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, false);
+            return emit_binop(inst, base::OR_A, false);
          case ir_op::i64_xor:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_xor(imm, d); }, false)) return true;
-            return emit_binop(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, false);
+            return emit_binop(inst, base::XOR_A, false);
 
          // Shifts/rotates with constant folding
          case ir_op::i32_shl:   return emit_shift_reg(func, inst, 4, true);
@@ -2818,50 +2818,61 @@ namespace eosio { namespace vm {
          }
       }
 
-      // Register-based binary op helper
-      template<typename F>
-      bool emit_binop(const ir_inst& inst, F op, bool is32) {
+      // Register-based binary op helper — opcode-driven, supports memory operands.
+      // OP_A opcodes (ADD_A, SUB_A, etc.) use the form: op r/m, reg
+      // This allows direct operation on spill slots without loading to a temp register.
+      template<typename Op>
+      bool emit_binop(const ir_inst& inst, Op opcode, bool is32) {
          int8_t pr_d = get_phys(inst.dest);
          int8_t pr_s1 = get_phys(inst.rr.src1);
          int8_t pr_s2 = get_phys(inst.rr.src2);
-         if (pr_d >= 0 && pr_s1 >= 0 && pr_s2 >= 0) {
-            // All in registers — optimal path
-            if (pr_d == pr_s1) {
-               if (is32) op(phys_to_reg32(pr_d), phys_to_reg32(pr_s2));
-               else      op(phys_to_reg64(pr_d), phys_to_reg64(pr_s2));
-            } else if (pr_d == pr_s2) {
-               if (is32) { this->emit_mov(phys_to_reg32(pr_s1), eax); op(eax, phys_to_reg32(pr_s2)); this->emit_mov(eax, phys_to_reg32(pr_d)); }
-               else      { this->emit_mov(phys_to_reg64(pr_s1), rax); op(rax, phys_to_reg64(pr_s2)); this->emit_mov(rax, phys_to_reg64(pr_d)); }
+
+         // Helper: emit opcode with dest_reg and src operand (reg, spill, or XMM)
+         auto emit_op = [&](auto dest_reg, uint32_t src_vreg) {
+            int8_t pr_s = get_phys(src_vreg);
+            if (pr_s >= 0) {
+               if (is32) this->emit(opcode, phys_to_reg32(pr_s), dest_reg);
+               else      this->emit(opcode, phys_to_reg64(pr_s), dest_reg);
             } else {
-               if (is32) { this->emit_mov(phys_to_reg32(pr_s1), phys_to_reg32(pr_d)); op(phys_to_reg32(pr_d), phys_to_reg32(pr_s2)); }
-               else      { this->emit_mov(phys_to_reg64(pr_s1), phys_to_reg64(pr_d)); op(phys_to_reg64(pr_d), phys_to_reg64(pr_s2)); }
+               int16_t sp = get_vreg_spill(src_vreg);
+               if (sp >= 0) {
+                  // Memory operand: op [rbp+spill], dest_reg — 1 instruction
+                  this->emit(opcode, *(rbp + get_spill_offset(sp)), dest_reg);
+               } else {
+                  // XMM-resident integer: load to rcx first
+                  load_vreg_rcx(src_vreg);
+                  if (is32) this->emit(opcode, ecx, dest_reg);
+                  else      this->emit(opcode, rcx, dest_reg);
+               }
             }
-         } else if (pr_d >= 0 && pr_s1 >= 0) {
-            // dest+src1 in registers, src2 spilled
+         };
+
+         if (pr_d >= 0 && pr_s1 >= 0) {
+            // dest+src1 in registers
             if (pr_d != pr_s1) {
                if (is32) this->emit_mov(phys_to_reg32(pr_s1), phys_to_reg32(pr_d));
                else      this->emit_mov(phys_to_reg64(pr_s1), phys_to_reg64(pr_d));
             }
-            load_vreg_rcx(inst.rr.src2);
-            if (is32) op(phys_to_reg32(pr_d), ecx);
-            else      op(phys_to_reg64(pr_d), rcx);
-         } else if (pr_d >= 0 && pr_s2 >= 0) {
-            // dest+src2 in registers, src1 spilled — mov spill→dest, op dest, src2
+            if (is32) emit_op(phys_to_reg32(pr_d), inst.rr.src2);
+            else      emit_op(phys_to_reg64(pr_d), inst.rr.src2);
+         } else if (pr_d >= 0) {
+            // dest in register, src1 spilled — load src1 to dest, then op src2
             int16_t sp1 = get_vreg_spill(inst.rr.src1);
             if (sp1 >= 0) {
-               if (is32) { this->emit_mov(*(rbp + get_spill_offset(sp1)), phys_to_reg32(pr_d)); op(phys_to_reg32(pr_d), phys_to_reg32(pr_s2)); }
-               else      { this->emit_mov(*(rbp + get_spill_offset(sp1)), phys_to_reg64(pr_d)); op(phys_to_reg64(pr_d), phys_to_reg64(pr_s2)); }
+               if (is32) this->emit_mov(*(rbp + get_spill_offset(sp1)), phys_to_reg32(pr_d));
+               else      this->emit_mov(*(rbp + get_spill_offset(sp1)), phys_to_reg64(pr_d));
             } else {
                load_vreg_rax(inst.rr.src1);
-               if (is32) { op(eax, phys_to_reg32(pr_s2)); this->emit_mov(eax, phys_to_reg32(pr_d)); }
-               else      { op(rax, phys_to_reg64(pr_s2)); this->emit_mov(rax, phys_to_reg64(pr_d)); }
+               if (is32) this->emit_mov(eax, phys_to_reg32(pr_d));
+               else      this->emit_mov(rax, phys_to_reg64(pr_d));
             }
+            if (is32) emit_op(phys_to_reg32(pr_d), inst.rr.src2);
+            else      emit_op(phys_to_reg64(pr_d), inst.rr.src2);
          } else {
-            // Generic: both through rax/rcx
-            load_vreg_rcx(inst.rr.src2);
+            // dest spilled — use rax as accumulator, op src2 (possibly from memory)
             load_vreg_rax(inst.rr.src1);
-            if (is32) op(eax, ecx);
-            else      op(rax, rcx);
+            if (is32) emit_op(eax, inst.rr.src2);
+            else      emit_op(rax, inst.rr.src2);
             store_rax_vreg(inst.dest);
          }
          return true;
