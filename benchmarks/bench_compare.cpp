@@ -25,6 +25,7 @@ extern "C" {
    int64_t bench_fib(int32_t n);
    int64_t bench_sort(int32_t iterations);
    int64_t bench_crc32(int32_t iterations);
+   int64_t bench_sha256_simd(int32_t iterations);
    int64_t bench_matmul(int32_t iterations);
    int64_t bench_matmul_simd(int32_t iterations);
 }
@@ -754,8 +755,9 @@ int main(int argc, char** argv) {
       uint32_t    iters;
    };
    compute_def compute_tests[] = {
-      {"SHA-256 simd",         BENCH_SHA256_WASM,      "bench_sha256",       bench_sha256,       10'000},
-      {"SHA-256 no-simd",      BENCH_SHA256_NOSI_WASM, "bench_sha256",       bench_sha256,       10'000},
+      {"SHA-256 auto-simd",    BENCH_SHA256_WASM,      "bench_sha256",       bench_sha256,       10'000},
+      {"SHA-256 scalar",       BENCH_SHA256_NOSI_WASM, "bench_sha256",       bench_sha256,       10'000},
+      {"SHA-256 explicit-simd",BENCH_SHA256_WASM,      "bench_sha256_simd",  bench_sha256_simd,  10'000},
       {"ECDSA verify simd",    BENCH_ECDSA_WASM,       "bench_ecdsa_verify", bench_ecdsa_verify, 100},
       {"ECDSA verify no-simd", BENCH_ECDSA_NOSI_WASM,  "bench_ecdsa_verify", bench_ecdsa_verify, 100},
       {"ECDSA sign simd",      BENCH_ECDSA_WASM,       "bench_ecdsa_sign",   bench_ecdsa_sign,   100},
