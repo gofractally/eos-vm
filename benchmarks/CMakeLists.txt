@@ -294,6 +294,7 @@ if(ENABLE_BENCH_COMPUTE)
    set(ECDSA_WASM "${CMAKE_CURRENT_BINARY_DIR}/bench_ecdsa.wasm")
    set(ECDSA_NOSI_WASM "${CMAKE_CURRENT_BINARY_DIR}/bench_ecdsa_nosi.wasm")
    set(ECDSA_DEFS -DuECC_OPTIMIZATION_LEVEL=3
+              -DuECC_WORD_SIZE=8
               -DuECC_SUPPORTS_secp160r1=0
               -DuECC_SUPPORTS_secp192r1=0
               -DuECC_SUPPORTS_secp224r1=0
@@ -355,6 +356,7 @@ if(ENABLE_BENCH_COMPUTE)
    target_include_directories(bench-native PRIVATE "${micro_ecc_SOURCE_DIR}")
    target_compile_definitions(bench-native PRIVATE
       uECC_OPTIMIZATION_LEVEL=3
+      uECC_WORD_SIZE=8
       uECC_SUPPORTS_secp160r1=0
       uECC_SUPPORTS_secp192r1=0
       uECC_SUPPORTS_secp224r1=0
