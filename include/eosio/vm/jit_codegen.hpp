@@ -1459,6 +1459,37 @@ namespace eosio { namespace vm {
          return false;
       }
 
+      // Float comparison + branch fusion using ucomiss/ucomisd.
+      // Emits ucomiss/ucomisd to set EFLAGS, then fuses with the next br_if/if_.
+      // For lt(a,b): ucomiss b,a then JA (a < b when b is above a)
+      // For gt(a,b): ucomiss a,b then JA (swap args)
+      // For le(a,b): ucomiss b,a then JAE
+      // For ge(a,b): ucomiss a,b then JAE (swap args)
+      bool emit_float_fused_branch(ir_function& func, const ir_inst& inst,
+                                    uint32_t idx, bool is_f64, bool swap, Jcc cc) {
+         // Load operands into xmm0, xmm1
+         if (swap) {
+            load_vreg_rax(inst.rr.src1);
+            if (is_f64) this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0); // movq rax, xmm0
+            else        this->emit_vmovd(eax, xmm0);
+            load_vreg_rax(inst.rr.src2);
+            if (is_f64) this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8); // movq rax, xmm1
+            else        this->emit_vmovd(eax, xmm1);
+         } else {
+            load_vreg_rax(inst.rr.src2);
+            if (is_f64) this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0); // movq rax, xmm0
+            else        this->emit_vmovd(eax, xmm0);
+            load_vreg_rax(inst.rr.src1);
+            if (is_f64) this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8); // movq rax, xmm1
+            else        this->emit_vmovd(eax, xmm1);
+         }
+         // ucomiss xmm1, xmm0 (compare xmm0 with xmm1, set EFLAGS)
+         if (is_f64) this->emit_bytes(0x66, 0x0f, 0x2e, 0xc1); // ucomisd xmm1, xmm0
+         else        this->emit_bytes(0x0f, 0x2e, 0xc1);        // ucomiss xmm1, xmm0
+         // Fuse with next instruction (br_if or if_)
+         return emit_fused_branch(func, idx, cc);
+      }
+
       // Invert a condition code (for if_ which branches on FALSE)
       static Jcc invert_cc(Jcc cc) {
          // x86 Jcc opcodes: even = false condition, odd = true condition.
@@ -2455,19 +2486,47 @@ namespace eosio { namespace vm {
             return true;
 
          // ── Float comparisons (register mode) ──
-         // eq: cmpss $0, ne: cmpeqss + inc, lt: cmpss $1, gt: swap+cmpss $1, le: cmpss $2, ge: swap+cmpss $2
+         // Use ucomiss/ucomisd for fused compare+branch (sets EFLAGS directly).
+         // Fall back to cmpss/cmpsd for non-fused (produces 0/1 in GPR).
+         // ucomiss sets: CF=1 if unordered or src<dst, ZF=1 if equal, PF=1 if NaN.
+         // JA = CF=0 & ZF=0 (above, excludes NaN) → use for gt/lt with swapped args.
+         // JAE = CF=0 (above or equal, excludes NaN) → use for ge/le with swapped args.
+         case ir_op::f32_lt:
+            if ((inst.flags & IR_FUSE_NEXT) && emit_float_fused_branch(func, inst, idx, false, false, base::JA))
+               return true;
+            emit_f32_relop(inst, 0x01, false, false); return true;
+         case ir_op::f32_gt:
+            if ((inst.flags & IR_FUSE_NEXT) && emit_float_fused_branch(func, inst, idx, false, true, base::JA))
+               return true;
+            emit_f32_relop(inst, 0x01, true,  false); return true;
+         case ir_op::f32_le:
+            if ((inst.flags & IR_FUSE_NEXT) && emit_float_fused_branch(func, inst, idx, false, false, base::JAE))
+               return true;
+            emit_f32_relop(inst, 0x02, false, false); return true;
+         case ir_op::f32_ge:
+            if ((inst.flags & IR_FUSE_NEXT) && emit_float_fused_branch(func, inst, idx, false, true, base::JAE))
+               return true;
+            emit_f32_relop(inst, 0x02, true,  false); return true;
          case ir_op::f32_eq: emit_f32_relop(inst, 0x00, false, false); return true;
-         case ir_op::f32_ne: emit_f32_relop(inst, 0x00, false, true);  return true;  // eq then inc
-         case ir_op::f32_lt: emit_f32_relop(inst, 0x01, false, false); return true;
-         case ir_op::f32_gt: emit_f32_relop(inst, 0x01, true,  false); return true;  // swap, use lt
-         case ir_op::f32_le: emit_f32_relop(inst, 0x02, false, false); return true;
-         case ir_op::f32_ge: emit_f32_relop(inst, 0x02, true,  false); return true;  // swap, use le
+         case ir_op::f32_ne: emit_f32_relop(inst, 0x00, false, true);  return true;
+         case ir_op::f64_lt:
+            if ((inst.flags & IR_FUSE_NEXT) && emit_float_fused_branch(func, inst, idx, true, false, base::JA))
+               return true;
+            emit_f64_relop(inst, 0x01, false, false); return true;
+         case ir_op::f64_gt:
+            if ((inst.flags & IR_FUSE_NEXT) && emit_float_fused_branch(func, inst, idx, true, true, base::JA))
+               return true;
+            emit_f64_relop(inst, 0x01, true,  false); return true;
+         case ir_op::f64_le:
+            if ((inst.flags & IR_FUSE_NEXT) && emit_float_fused_branch(func, inst, idx, true, false, base::JAE))
+               return true;
+            emit_f64_relop(inst, 0x02, false, false); return true;
+         case ir_op::f64_ge:
+            if ((inst.flags & IR_FUSE_NEXT) && emit_float_fused_branch(func, inst, idx, true, true, base::JAE))
+               return true;
+            emit_f64_relop(inst, 0x02, true,  false); return true;
          case ir_op::f64_eq: emit_f64_relop(inst, 0x00, false, false); return true;
          case ir_op::f64_ne: emit_f64_relop(inst, 0x00, false, true);  return true;
-         case ir_op::f64_lt: emit_f64_relop(inst, 0x01, false, false); return true;
-         case ir_op::f64_gt: emit_f64_relop(inst, 0x01, true,  false); return true;
-         case ir_op::f64_le: emit_f64_relop(inst, 0x02, false, false); return true;
-         case ir_op::f64_ge: emit_f64_relop(inst, 0x02, true,  false); return true;
 
          // ── Float-to-int conversions (register mode) ──
          case ir_op::i32_trunc_s_f32:
