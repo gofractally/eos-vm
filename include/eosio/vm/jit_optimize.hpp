@@ -361,11 +361,14 @@ namespace eosio { namespace vm {
 
    private:
       static bool is_comparison(ir_op op) {
+         // Only fuse integer comparisons — they set EFLAGS directly.
+         // Float comparisons (f32/f64) use cmpss/cmpsd which produce a
+         // result in a register, not in EFLAGS. Fusing them with br_if
+         // would skip the branch entirely (br_if marked dead but no
+         // branch emitted).
          return op == ir_op::i32_eqz || op == ir_op::i64_eqz
              || (op >= ir_op::i32_eq && op <= ir_op::i32_ge_u)
-             || (op >= ir_op::i64_eq && op <= ir_op::i64_ge_u)
-             || (op >= ir_op::f32_eq && op <= ir_op::f32_ge)
-             || (op >= ir_op::f64_eq && op <= ir_op::f64_ge);
+             || (op >= ir_op::i64_eq && op <= ir_op::i64_ge_u);
       }
 
       // Evaluate a binary integer op at compile time.

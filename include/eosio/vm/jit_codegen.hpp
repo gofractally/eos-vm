@@ -214,6 +214,8 @@ namespace eosio { namespace vm {
          // Note: scratch wraps _scratch_alloc which may be _allocator itself
          // (single allocator mode) or a separate allocator.
          _scratch = &scratch;
+         _cur_func = &func;
+         _debug_trace = (func.block_count > 4 && func.type && func.type->param_types.size() == 2);
 
          // Allocate transient metadata from scratch (reclaimed after codegen)
          _block_addrs = scratch.alloc<void*>(func.block_count);
@@ -1472,6 +1474,8 @@ namespace eosio { namespace vm {
          // For non-loop blocks, _block_addrs has the block start which is WRONG
          // for br — non-loop br should target the block END (forward fixup).
          bool is_loop = func.blocks && func.blocks[block_idx].is_loop;
+         if (_debug_trace) fprintf(stderr, "  br_cc→block[%u] is_loop=%d addr=%p code=%p\n",
+            block_idx, is_loop, _block_addrs[block_idx], code);
          if (is_loop && _block_addrs[block_idx] != nullptr) {
             void* branch = this->emit_branchcc32(cc);
             base::fix_branch(branch, _block_addrs[block_idx]);
@@ -2975,12 +2979,15 @@ namespace eosio { namespace vm {
       void mark_block_start(uint32_t block_idx) {
          if (block_idx < _num_blocks) {
             _block_addrs[block_idx] = code;
+            if (_debug_trace) fprintf(stderr, "  block_start[%u] is_loop=%d addr=%p\n", block_idx,
+               (_cur_func && _cur_func->blocks) ? _cur_func->blocks[block_idx].is_loop : -1, code);
          }
       }
 
       // Record that a block's code ends at current position (for forward branches)
       void mark_block_end(ir_function& /*func*/, uint32_t block_idx, bool is_if) {
          if (block_idx >= _num_blocks) return;
+         if (_debug_trace) fprintf(stderr, "  block_end[%u] addr=%p fixups=%p\n", block_idx, code, (void*)_block_fixups[block_idx]);
          _block_addrs[block_idx] = code;
          // Patch all pending forward references to this block
          for (auto* f = _block_fixups[block_idx]; f; f = f->next) {
@@ -3005,9 +3012,9 @@ namespace eosio { namespace vm {
       void emit_branch_to_block(ir_function& func, uint32_t block_idx, uint32_t depth_change, uint8_t rt) {
          if (block_idx >= _num_blocks) return;
          emit_branch_multipop(depth_change, rt);
-         // Only use recorded address for loop blocks (backward jump to header).
-         // Non-loop blocks use forward fixup (resolved at block_end).
          bool is_loop = func.blocks && func.blocks[block_idx].is_loop;
+         if (_debug_trace) fprintf(stderr, "  br→block[%u] is_loop=%d addr=%p code=%p\n",
+            block_idx, is_loop, _block_addrs[block_idx], code);
          if (is_loop && _block_addrs[block_idx] != nullptr) {
             void* branch = emit_jmp32();
             base::fix_branch(branch, _block_addrs[block_idx]);
@@ -5591,6 +5598,8 @@ namespace eosio { namespace vm {
       // Per-function block address tracking (set during compile_function)
       void** _block_addrs = nullptr;
       block_fixup** _block_fixups = nullptr;
+      bool _debug_trace = false;
+      ir_function* _cur_func = nullptr;
       block_fixup* _fixup_pool = nullptr;
       uint32_t _fixup_pool_next = 0;
       uint32_t _fixup_pool_size = 0;
