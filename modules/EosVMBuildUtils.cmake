@@ -13,7 +13,7 @@ endif()
 # ##################################################################################################
 # Setup CCACHE
 # ##################################################################################################
-option(ENABLE_CCACHE "enable building with CCACHE or SCCACHE if they are present" OFF)
+option(ENABLE_CCACHE "enable building with CCACHE or SCCACHE if they are present" ON)
 
 if(ENABLE_CCACHE)
    find_program(CCACHE_PROGRAM ccache)
