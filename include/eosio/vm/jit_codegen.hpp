@@ -10,7 +10,88 @@
 // Phase 4 (register allocation): Linear scan assigns vregs to physical registers.
 //   This is where the 3-4x performance improvement comes from.
 //
-// All code is emitted into the growable_allocator (mmap-backed, no malloc).
+// Code allocator: growable_allocator (mmap-backed, executable).
+// Scratch allocator: separate growable_allocator for transient per-function data.
+//
+// ============================================================================
+// TODO: Optimization roadmap — closing the gap to wasmtime
+//
+// Current standing (vs wasmtime, lower is better):
+//   Host calls:          JIT2 wins 5-12x (fast direct dispatch)
+//   Fibonacci:           JIT2 wins 2.5x  (ties native)
+//   CRC32:               JIT2 tied        (1.1x native)
+//   SHA-256 scalar:      JIT2 1.8x slower (12ms vs 6.8ms)
+//   SHA-256 SIMD:        JIT2 1.8x slower (6.3ms vs 3.4ms)
+//   ECDSA:               JIT2 2.0x slower (102ms vs 51ms)
+//   Bubble sort:         JIT2 3.4x slower (2.3ms vs 0.7ms)
+//   MatMul SIMD:         JIT2 8.4x slower (4.2ms vs 0.5ms)
+//
+// Compile time: JIT2 compiles 3-13x faster than wasmtime.
+// Code size:    JIT2 generates 1.1-1.9x more native code than JIT1 (3-4x wasm).
+//
+// --- Code quality (biggest impact) ---
+//
+// [ ] Immediate operand folding: emit `add $5, %rax` instead of
+//     `mov $5, %rcx; add %rcx, %rax`. Applies to add, sub, cmp, and, or, xor,
+//     test, shl/shr with constant shift amounts. Estimated 10-20% improvement
+//     on scalar-heavy code (SHA-256, ECDSA).
+//
+// [ ] Address mode folding for loads/stores: emit `mov (%rsi,%rax,1), %rbx`
+//     with displacement instead of separate `add offset, %rax` instructions.
+//     Saves one instruction per load/store with non-zero offset.
+//
+// [ ] SIMD try_binop direct register emission: currently always loads to
+//     scratch xmm0/xmm1, operates, stores back. Should emit directly with
+//     allocated XMM registers like scalar emit_binop_reg does.
+//     e.g., `vpaddd %xmm5, %xmm3, %xmm7` instead of
+//     `vmovdqu %xmm3, %xmm0; vmovdqu %xmm5, %xmm1; vpaddd %xmm1, %xmm0, %xmm0; vmovdqu %xmm0, %xmm7`
+//
+// [ ] Loop-invariant code motion: hoist constant loads, address computations,
+//     and invariant expressions out of loops. Requires loop detection in IR.
+//
+// [ ] Common subexpression elimination (CSE): deduplicate repeated address
+//     calculations and redundant loads from the same memory location.
+//
+// [ ] Strength reduction for multiply by power-of-2: replace `imul $8, %rax`
+//     with `shl $3, %rax`.
+//
+// --- Memory / allocator ---
+//
+// [ ] Reclaim unused code buffer tails: after emitting, give back
+//     (est_size - actual_size) bytes to the code allocator. Currently blocked
+//     by allocator alignment — reclaim asserts LIFO and the alloc may have
+//     rounded up. Fix: track raw allocation size or add aligned reclaim.
+//
+// --- SIMD completeness ---
+//
+// [ ] i8x16 shift ops in XMM path: complex multi-instruction sequences
+//     (shl needs mask+broadcast, shr_s needs sign extension). Currently
+//     falls back to stack bridge.
+//
+// [ ] i64x2_shr_s in XMM path: no VPSRAQ in AVX (only AVX-512).
+//     Need manual sign-extension approach.
+//
+// [ ] i64x2_mul in XMM path: no single instruction. Use
+//     VPSRLQ+VPMULUDQ+VPADDQ sequence (same as extmul).
+//
+// [ ] i8x16_shuffle / i8x16_swizzle in XMM path: currently always
+//     goes through stack bridge. Shuffle needs pre-computed mask.
+//
+// [ ] Remaining ops not in XMM path: all_true, bitmask, any_true,
+//     extadd_pairwise, q15mulr_sat_s, popcnt.
+//
+// --- Softfloat overhead ---
+//
+// [ ] Reduce call ABI overhead for softfloat SIMD: currently saves/restores
+//     rdi+rsi on every call (~65 bytes per f32x4/f64x2 op). Could use a
+//     dedicated calling convention that preserves the context/memory registers.
+//
+// --- Bugs ---
+//
+// [ ] simd_const_385/387 crash: interpreter v128_load32_zero hits guard page.
+//     Pre-existing bounds checking bug, not JIT2-related.
+//
+// ============================================================================
 
 #include <eosio/vm/allocator.hpp>
 #include <eosio/vm/exceptions.hpp>
