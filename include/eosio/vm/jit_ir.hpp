@@ -250,6 +250,44 @@ namespace eosio { namespace vm {
       f32x4_demote_f64x2_zero, f64x2_promote_low_f32x4,
    };
 
+   // Returns true if a v128_op's simd.offset field holds a vreg number
+   // (shift amount or scalar value), false if it holds a literal memory offset.
+   inline bool simd_offset_is_vreg(simd_sub sub) {
+      switch (sub) {
+      // Shift ops store shift-amount vreg in offset
+      case simd_sub::i8x16_shl: case simd_sub::i8x16_shr_s: case simd_sub::i8x16_shr_u:
+      case simd_sub::i16x8_shl: case simd_sub::i16x8_shr_s: case simd_sub::i16x8_shr_u:
+      case simd_sub::i32x4_shl: case simd_sub::i32x4_shr_s: case simd_sub::i32x4_shr_u:
+      case simd_sub::i64x2_shl: case simd_sub::i64x2_shr_s: case simd_sub::i64x2_shr_u:
+      // Replace-lane ops store scalar vreg in offset
+      case simd_sub::i8x16_replace_lane: case simd_sub::i16x8_replace_lane:
+      case simd_sub::i32x4_replace_lane: case simd_sub::i64x2_replace_lane:
+      case simd_sub::f32x4_replace_lane: case simd_sub::f64x2_replace_lane:
+         return true;
+      default:
+         return false;
+      }
+   }
+
+   // Returns true if a v128_op produces a scalar (i32/i64) result rather than v128.
+   // For these ops, the result vreg is stored in simd.addr.
+   inline bool simd_produces_scalar(simd_sub sub) {
+      switch (sub) {
+      case simd_sub::v128_any_true:
+      case simd_sub::i8x16_all_true: case simd_sub::i8x16_bitmask:
+      case simd_sub::i16x8_all_true: case simd_sub::i16x8_bitmask:
+      case simd_sub::i32x4_all_true: case simd_sub::i32x4_bitmask:
+      case simd_sub::i64x2_all_true: case simd_sub::i64x2_bitmask:
+      case simd_sub::i8x16_extract_lane_s: case simd_sub::i8x16_extract_lane_u:
+      case simd_sub::i16x8_extract_lane_s: case simd_sub::i16x8_extract_lane_u:
+      case simd_sub::i32x4_extract_lane: case simd_sub::i64x2_extract_lane:
+      case simd_sub::f32x4_extract_lane: case simd_sub::f64x2_extract_lane:
+         return true;
+      default:
+         return false;
+      }
+   }
+
    enum ir_flags : uint8_t {
       IR_NONE         = 0,
       IR_SIDE_EFFECT  = 1 << 0,

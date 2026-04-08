@@ -84,19 +84,29 @@ namespace eosio { namespace vm {
          for (uint32_t i = 0; i < func.inst_count; ++i) {
             const auto& inst = func.insts[i];
 
+            // NOTE: Dead instructions are NOT skipped here. The register-allocated
+            // codegen path still emits dead instructions to populate registers
+            // (preventing stale data). Their vregs need valid intervals.
+
             // Destination vreg: defined at this instruction
-            // Exception: for store instructions, dest holds the VALUE vreg (a use, not def)
-            // — handled in the switch below instead.
-            // block_start/block_end use dest for block_idx, not a vreg — skip them.
             bool is_store = (inst.opcode >= ir_op::i32_store && inst.opcode <= ir_op::i64_store32);
             bool is_block_marker = (inst.opcode == ir_op::block_start || inst.opcode == ir_op::block_end);
-            // v128_op uses dest for sub-opcode, not a vreg
             bool is_v128_op = (inst.opcode == ir_op::v128_op);
             if (!is_store && !is_block_marker && !is_v128_op && inst.dest != ir_vreg_none && inst.dest < num_vregs) {
                auto& iv = func.intervals[inst.dest];
                if (i < iv.start) iv.start = i;
                if (i > iv.end) iv.end = i;
                iv.type = inst.type;
+            }
+            // Scalar-producing v128_ops store their result vreg in simd.addr
+            if (is_v128_op && simd_produces_scalar(static_cast<simd_sub>(inst.dest))) {
+               uint32_t result_vreg = inst.simd.addr;
+               if (result_vreg != ir_vreg_none && result_vreg < num_vregs) {
+                  auto& iv = func.intervals[result_vreg];
+                  if (i < iv.start) iv.start = i;
+                  if (i > iv.end) iv.end = i;
+                  iv.type = types::i32; // scalar result
+               }
             }
 
             // Source vregs: must check per-opcode which union fields are vregs.
@@ -136,6 +146,9 @@ namespace eosio { namespace vm {
             case ir_op::f32_le: case ir_op::f32_ge:
             case ir_op::f64_eq: case ir_op::f64_ne: case ir_op::f64_lt: case ir_op::f64_gt:
             case ir_op::f64_le: case ir_op::f64_ge:
+               use_vreg(inst.rr.src1);
+               use_vreg(inst.rr.src2);
+               break;
             case ir_op::select:
                use_vreg(inst.sel.val1);
                use_vreg(inst.sel.val2);
@@ -230,14 +243,17 @@ namespace eosio { namespace vm {
                use_vreg(inst.rr.src1);
                break;
 
-            // v128_op: addr and offset fields may reference GPR vregs
-            case ir_op::v128_op:
-               if (inst.simd.addr != ir_vreg_none)
+            // v128_op: addr field may reference a GPR vreg; offset field
+            // is a vreg only for shift/replace_lane ops, otherwise a literal.
+            // For scalar-producing ops, addr is a DEST vreg (not a source).
+            case ir_op::v128_op: {
+               auto sub = static_cast<simd_sub>(inst.dest);
+               if (!simd_produces_scalar(sub) && inst.simd.addr != ir_vreg_none)
                   use_vreg(inst.simd.addr);
-               // offset field used as scalar vreg for replace_lane/splat
-               if (inst.simd.offset != 0 && inst.simd.offset < num_vregs)
+               if (simd_offset_is_vreg(sub))
                   use_vreg(inst.simd.offset);
                break;
+            }
 
             // No source vregs
             case ir_op::nop: case ir_op::unreachable: case ir_op::drop:
@@ -383,6 +399,7 @@ namespace eosio { namespace vm {
 
          if (bmp_words > 64) delete[] call_bmp;
          func.num_spill_slots = next_spill_slot;
+
          return next_spill_slot;
       }
    };

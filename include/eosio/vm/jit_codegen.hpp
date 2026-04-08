@@ -675,15 +675,28 @@ namespace eosio { namespace vm {
          case ir_op::global_get: {
             uint32_t gi = inst.local.index;
             auto loc = emit_global_loc(gi);
-            this->emit_mov(loc, rax);
-            this->emit_push_raw(rax);
+            if (inst.type == types::v128) {
+               this->emit_vmovdqu(loc, xmm0);
+               this->emit_sub(16, rsp);
+               this->emit_vmovdqu(xmm0, *rsp);
+            } else {
+               this->emit_mov(loc, rax);
+               this->emit_push_raw(rax);
+            }
             break;
          }
          case ir_op::global_set: {
             uint32_t gi = inst.local.index;
-            this->emit_pop_raw(rax);
-            auto loc = emit_global_loc(gi);
-            this->emit_mov(rax, loc);
+            if (inst.type == types::v128) {
+               this->emit_vmovdqu(*rsp, xmm0);
+               this->emit_add(16, rsp);
+               auto loc = emit_global_loc(gi);
+               this->emit_vmovdqu(xmm0, loc);
+            } else {
+               this->emit_pop_raw(rax);
+               auto loc = emit_global_loc(gi);
+               this->emit_mov(rax, loc);
+            }
             break;
          }
 
@@ -963,8 +976,8 @@ namespace eosio { namespace vm {
          case ir_op::f32_sub: emit_f32_binop_sse(0x5c); break;
          case ir_op::f32_mul: emit_f32_binop_sse(0x59); break;
          case ir_op::f32_div: emit_f32_binop_sse(0x5e); break;
-         case ir_op::f32_min: emit_f32_binop_sse(0x5d); break; // minss
-         case ir_op::f32_max: emit_f32_binop_sse(0x5f); break; // maxss
+         case ir_op::f32_min: emit_f32_min_sse(); break;
+         case ir_op::f32_max: emit_f32_max_sse(); break;
          case ir_op::f32_copysign:
             // Copy sign from rhs to lhs: lhs = (lhs & 0x7fffffff) | (rhs & 0x80000000)
             this->emit_pop_raw(rcx); // rhs
@@ -1010,8 +1023,8 @@ namespace eosio { namespace vm {
          case ir_op::f64_sub: emit_f64_binop_sse(0x5c); break;
          case ir_op::f64_mul: emit_f64_binop_sse(0x59); break;
          case ir_op::f64_div: emit_f64_binop_sse(0x5e); break;
-         case ir_op::f64_min: emit_f64_binop_sse(0x5d); break;
-         case ir_op::f64_max: emit_f64_binop_sse(0x5f); break;
+         case ir_op::f64_min: emit_f64_min_sse(); break;
+         case ir_op::f64_max: emit_f64_max_sse(); break;
          case ir_op::f64_copysign:
             this->emit_pop_raw(rcx); // rhs
             this->emit_pop_raw(rax); // lhs
@@ -1165,51 +1178,46 @@ namespace eosio { namespace vm {
             break;
 
          // Bulk memory operations
-         case ir_op::memory_fill:
+         case ir_op::memory_fill: {
             // stack: [dest, val, count] with count on top
-            this->emit_pop_raw(rcx);  // count
-            this->emit_mov(rdi, r8);  // save rdi
-            this->emit_pop_raw(rax);  // value (al used by stosb)
-            this->emit_pop_raw(rdi);  // dest addr
-            this->emit_add(rsi, rdi); // convert to native addr
-            this->emit_bytes(0xf3, 0xaa); // rep stosb
-            this->emit_mov(r8, rdi);  // restore rdi
+            this->emit_pop_raw(rdx);  // count → arg3
+            this->emit_pop_raw(rcx);  // value (save in rcx temporarily)
+            this->emit_pop_raw(rax);  // dest wasm addr
+            this->emit_add(rsi, rax); // convert to native addr
+            // Set up SysV ABI call: rdi=dest, esi=val, rdx=count
+            this->emit_push_raw(rdi); // save context
+            this->emit_push_raw(rsi); // save linear memory base
+            this->emit_mov(rax, rdi); // dest → arg1
+            this->emit_mov(ecx, esi); // val → arg2
+            // rdx already has count
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&do_memory_fill);
+            this->emit(base::CALL, rax);
+            this->emit_pop_raw(rsi);  // restore linear memory base
+            this->emit_pop_raw(rdi);  // restore context
             break;
+         }
 
-         case ir_op::memory_copy:
+         case ir_op::memory_copy: {
             // stack: [dest, src, count] with count on top
-            this->emit_pop_raw(rcx);  // count
-            this->emit_mov(rsi, r8);  // save rsi (linear memory base)
-            this->emit_mov(rdi, r9);  // save rdi (context)
-            this->emit_pop_raw(rsi);  // src addr
-            this->emit_pop_raw(rdi);  // dest addr
-            this->emit_add(r8, rsi);  // convert to native
-            this->emit_add(r8, rdi);
-            // Handle overlapping: if dest > src, copy backward
-            this->emit_mov(rdi, rax);
-            this->emit_sub(rsi, rax);
-            {
-               void* fwd = this->emit_branchcc32(base::JBE);
-               this->emit_cmp(rcx, rax);
-               void* no_overlap = this->emit_branchcc32(base::JAE);
-               // Overlapping backward: std, rep movsb, cld
-               this->emit_add(rcx, rsi);
-               this->emit(base::DEC, rsi);
-               this->emit_add(rcx, rdi);
-               this->emit(base::DEC, rdi);
-               this->emit_bytes(0xfd); // std
-               this->emit_bytes(0xf3, 0xa4); // rep movsb
-               this->emit_bytes(0xfc); // cld
-               void* done = emit_jmp32();
-               base::fix_branch(fwd, code);
-               base::fix_branch(no_overlap, code);
-               // Forward copy
-               this->emit_bytes(0xf3, 0xa4); // rep movsb
-               base::fix_branch(done, code);
-            }
-            this->emit_mov(r8, rsi);  // restore rsi
-            this->emit_mov(r9, rdi);  // restore rdi
+            this->emit_pop_raw(rdx);  // count → arg3
+            this->emit_pop_raw(rcx);  // src wasm addr
+            this->emit_add(rsi, rcx); // convert src to native
+            this->emit_pop_raw(rax);  // dest wasm addr
+            this->emit_add(rsi, rax); // convert dest to native
+            // Set up SysV ABI call: rdi=dest, rsi=src, rdx=count
+            this->emit_push_raw(rdi); // save context
+            this->emit_push_raw(rsi); // save linear memory base
+            this->emit_mov(rax, rdi); // dest → arg1
+            this->emit_mov(rcx, rsi); // src → arg2
+            // rdx already has count
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&do_memory_copy);
+            this->emit(base::CALL, rax);
+            this->emit_pop_raw(rsi);  // restore linear memory base
+            this->emit_pop_raw(rdi);  // restore context
             break;
+         }
 
          case ir_op::memory_init:
          case ir_op::data_drop:
@@ -1547,14 +1555,27 @@ namespace eosio { namespace vm {
          // Global access
          case ir_op::global_get: {
             auto loc = emit_global_loc(inst.local.index);
-            this->emit_mov(loc, rax);
-            store_rax_vreg(inst.dest);
+            if (inst.type == types::v128) {
+               this->emit_vmovdqu(loc, xmm0);
+               this->emit_sub(16, rsp);
+               this->emit_vmovdqu(xmm0, *rsp);
+            } else {
+               this->emit_mov(loc, rax);
+               store_rax_vreg(inst.dest);
+            }
             return true;
          }
          case ir_op::global_set: {
-            load_vreg_rax(inst.local.src1);
-            auto loc = emit_global_loc(inst.local.index);
-            this->emit_mov(rax, loc);
+            if (inst.type == types::v128) {
+               this->emit_vmovdqu(*rsp, xmm0);
+               this->emit_add(16, rsp);
+               auto loc = emit_global_loc(inst.local.index);
+               this->emit_vmovdqu(xmm0, loc);
+            } else {
+               load_vreg_rax(inst.local.src1);
+               auto loc = emit_global_loc(inst.local.index);
+               this->emit_mov(rax, loc);
+            }
             return true;
          }
 
@@ -1989,58 +2010,52 @@ namespace eosio { namespace vm {
          // v128 SIMD operations: operands/results live on x86 stack
          case ir_op::v128_op:
             emit_simd_op(inst);
+            // For scalar-producing ops (extract_lane, bitmask, any_true, all_true),
+            // the result was pushed to the x86 stack — pop it into the dest vreg.
+            if (simd_produces_scalar(static_cast<simd_sub>(inst.dest))) {
+               this->emit_pop_raw(rax);
+               store_rax_vreg(inst.simd.addr);
+            }
             return true;
 
          // ── Bulk memory ops (args already pushed by arg instructions) ──
          case ir_op::memory_fill: {
             // Args on stack: [dest][val][count] with count on top
-            // Use stack-based save for rdi instead of r8 (r8 may hold a vreg)
-            this->emit_pop_raw(rcx);  // count
-            this->emit_pop_raw(rax);  // value (al used by stosb)
-            this->emit_pop_raw(rdx);  // dest addr
-            this->emit_push_raw(rdi); // save rdi on stack
-            this->emit_mov(edx, edi); // dest addr to edi
-            this->emit_add(rsi, rdi); // convert to native addr
-            this->emit_bytes(0xf3, 0xaa); // rep stosb
-            this->emit_pop_raw(rdi);  // restore rdi
+            this->emit_pop_raw(rdx);  // count → arg3
+            this->emit_pop_raw(rcx);  // value (save temporarily)
+            this->emit_pop_raw(rax);  // dest wasm addr
+            this->emit_add(rsi, rax); // convert to native addr
+            // SysV ABI call: rdi=dest, esi=val, rdx=count
+            this->emit_push_raw(rdi); // save context
+            this->emit_push_raw(rsi); // save linear memory base
+            this->emit_mov(rax, rdi); // dest → arg1
+            this->emit_mov(ecx, esi); // val → arg2
+            // rdx already has count
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&do_memory_fill);
+            this->emit(base::CALL, rax);
+            this->emit_pop_raw(rsi);  // restore linear memory base
+            this->emit_pop_raw(rdi);  // restore context
             return true;
          }
          case ir_op::memory_copy: {
             // Args on stack: [dest][src][count] with count on top
-            this->emit_pop_raw(rcx);  // count
-            this->emit_pop_raw(rax);  // src addr
-            this->emit_pop_raw(rdx);  // dest addr
-            // Save rsi, rdi on stack (don't use r8/r9 — may hold vregs)
-            this->emit_push_raw(rsi);
-            this->emit_push_raw(rdi);
-            this->emit_mov(*(rsp + 8), rsi); // recover saved rsi (linear memory base)
-            this->emit_add(rsi, rax); // src = rsi + src_addr (rsi = linear memory base)
-            this->emit_add(rsi, rdx); // dest = rsi + dest_addr
-            this->emit_mov(rax, rsi); // native src addr
-            this->emit_mov(rdx, rdi); // native dest addr
-            // Handle overlapping
-            this->emit_mov(rdi, rax);
-            this->emit_sub(rsi, rax); // rax = dest - src
-            {
-               void* fwd = this->emit_branchcc32(base::JBE);
-               this->emit_cmp(rcx, rax);
-               void* no_overlap = this->emit_branchcc32(base::JAE);
-               // Overlapping backward
-               this->emit_add(rcx, rsi);
-               this->emit(base::DEC, rsi);
-               this->emit_add(rcx, rdi);
-               this->emit(base::DEC, rdi);
-               this->emit_bytes(0xfd); // std
-               this->emit_bytes(0xf3, 0xa4); // rep movsb
-               this->emit_bytes(0xfc); // cld
-               void* done = emit_jmp32();
-               base::fix_branch(fwd, code);
-               base::fix_branch(no_overlap, code);
-               this->emit_bytes(0xf3, 0xa4); // rep movsb
-               base::fix_branch(done, code);
-            }
-            this->emit_pop_raw(rdi);  // restore rdi
-            this->emit_pop_raw(rsi);  // restore rsi
+            this->emit_pop_raw(rdx);  // count → arg3
+            this->emit_pop_raw(rcx);  // src wasm addr
+            this->emit_add(rsi, rcx); // convert src to native
+            this->emit_pop_raw(rax);  // dest wasm addr
+            this->emit_add(rsi, rax); // convert dest to native
+            // SysV ABI call: rdi=dest, rsi=src, rdx=count
+            this->emit_push_raw(rdi); // save context
+            this->emit_push_raw(rsi); // save linear memory base
+            this->emit_mov(rax, rdi); // dest → arg1
+            this->emit_mov(rcx, rsi); // src → arg2
+            // rdx already has count
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&do_memory_copy);
+            this->emit(base::CALL, rax);
+            this->emit_pop_raw(rsi);  // restore linear memory base
+            this->emit_pop_raw(rdi);  // restore context
             return true;
          }
          case ir_op::memory_init:
@@ -2174,14 +2189,14 @@ namespace eosio { namespace vm {
          case ir_op::f32_sub:      emit_f32_binop_reg(inst, 0x5c); return true;
          case ir_op::f32_mul:      emit_f32_binop_reg(inst, 0x59); return true;
          case ir_op::f32_div:      emit_f32_binop_reg(inst, 0x5e); return true;
-         case ir_op::f32_min:      emit_f32_binop_reg(inst, 0x5d); return true;
-         case ir_op::f32_max:      emit_f32_binop_reg(inst, 0x5f); return true;
+         case ir_op::f32_min:      emit_f32_min_reg(inst); return true;
+         case ir_op::f32_max:      emit_f32_max_reg(inst); return true;
          case ir_op::f64_add:      emit_f64_binop_reg(inst, 0x58); return true;
          case ir_op::f64_sub:      emit_f64_binop_reg(inst, 0x5c); return true;
          case ir_op::f64_mul:      emit_f64_binop_reg(inst, 0x59); return true;
          case ir_op::f64_div:      emit_f64_binop_reg(inst, 0x5e); return true;
-         case ir_op::f64_min:      emit_f64_binop_reg(inst, 0x5d); return true;
-         case ir_op::f64_max:      emit_f64_binop_reg(inst, 0x5f); return true;
+         case ir_op::f64_min:      emit_f64_min_reg(inst); return true;
+         case ir_op::f64_max:      emit_f64_max_reg(inst); return true;
 
          // ── Float copysign (register mode) ──
          case ir_op::f32_copysign:
@@ -2638,14 +2653,11 @@ namespace eosio { namespace vm {
             load_vreg_rax(addr_vreg);
          }
 
-         // WASM effective address = i32.add(base, offset), must wrap at 2^32.
-         // When offset != 0, add it using 32-bit arithmetic (wraps and zero-extends)
-         // before using as a 64-bit SIB index. Otherwise the 64-bit SIB displacement
-         // doesn't wrap, causing out-of-bounds accesses on large i32 base values.
+         // WASM effective address = base + offset. Use 64-bit add so overflow
+         // lands in guard pages instead of wrapping to a valid address.
          if (uoffset != 0) {
-            // Move addr to rcx (temp), add offset in 32-bit, use rcx as index
             if (addr != rcx) this->emit_mov(addr, rcx);
-            this->emit_add(static_cast<int32_t>(uoffset), ecx); // 32-bit wrapping add
+            emit_addr_offset_add(rcx, uoffset);
             this->emit(instr, *(rcx + rsi + 0), reg);
          } else {
             this->emit(instr, *(addr + rsi + 0), reg);
@@ -2683,11 +2695,9 @@ namespace eosio { namespace vm {
             }
          }
 
-         // WASM effective address wraps at 2^32 — add offset in 32-bit.
          if (uoffset != 0) {
-            // Move addr to rdx, add offset in 32-bit (wraps + zero-extends)
             this->emit_mov(addr, rdx);
-            this->emit_add(static_cast<int32_t>(uoffset), edx);
+            emit_addr_offset_add(rdx, uoffset);
             this->emit(instr, *(rdx + rsi + 0), reg);
          } else {
             this->emit(instr, *(addr + rsi + 0), reg);
@@ -3035,6 +3045,148 @@ namespace eosio { namespace vm {
          this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
       }
 
+      // ──────── IEEE 754 min/max helpers (stack mode) ────────
+      // WASM min/max semantics: min(-0,+0)=-0, max(-0,+0)=+0, any NaN → canonical NaN
+      // SSE minss/minsd return src2 on equal, so we need both directions + NaN handling.
+
+      // Canonicalize NaN: if xmm0 is NaN, replace with canonical NaN
+      void emit_f64_canonicalize_nan() {
+         // ucomisd xmm0, xmm0 — sets PF if NaN
+         this->emit_bytes(0x66, 0x0f, 0x2e, 0xc0);
+         void* not_nan = this->emit_branchcc32(Jcc{0x7b}); // JNP (jump if not parity)
+         // Load canonical NaN (0x7FF8000000000000) into xmm0
+         this->emit_bytes(0x48, 0xb8);
+         this->emit_operand64(0x7FF8000000000000ull);
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+         base::fix_branch(not_nan, code);
+      }
+
+      void emit_f32_canonicalize_nan() {
+         // ucomiss xmm0, xmm0 — sets PF if NaN
+         this->emit_bytes(0x0f, 0x2e, 0xc0);
+         void* not_nan = this->emit_branchcc32(Jcc{0x7b}); // JNP (jump if not parity)
+         // Load canonical NaN (0x7FC00000) into xmm0
+         this->emit_mov(0x7FC00000u, eax);
+         this->emit_bytes(0x66, 0x0f, 0x6e, 0xc0);  // movd eax, xmm0
+         base::fix_branch(not_nan, code);
+      }
+
+      void emit_f64_min_sse() {
+         // xmm0 = lhs (8(%rsp)), xmm1 = rhs ((%rsp))
+         this->emit_bytes(0xf2, 0x0f, 0x10, 0x44, 0x24, 0x08);  // movsd 8(%rsp), xmm0
+         this->emit_bytes(0xf2, 0x0f, 0x10, 0x0c, 0x24);        // movsd (%rsp), xmm1
+         // minsd xmm1, xmm0 → xmm0 = min(lhs, rhs) (returns rhs on equal)
+         this->emit_bytes(0xf2, 0x0f, 0x5d, 0xc1);
+         // minsd xmm0_orig, xmm1 → xmm1 = min(rhs, lhs) (returns lhs on equal)
+         // We need lhs again — reload
+         this->emit_bytes(0xf2, 0x0f, 0x10, 0x54, 0x24, 0x08);  // movsd 8(%rsp), xmm2
+         this->emit_bytes(0xf2, 0x0f, 0x10, 0x0c, 0x24);        // movsd (%rsp), xmm1
+         this->emit_bytes(0xf2, 0x0f, 0x5d, 0xca);              // minsd xmm2, xmm1
+         // OR the two results: handles -0 vs +0 (OR keeps sign bit)
+         this->emit_bytes(0x66, 0x0f, 0x56, 0xc1);              // orpd xmm1, xmm0
+         emit_f64_canonicalize_nan();
+         this->emit_bytes(0x48, 0x8d, 0x64, 0x24, 0x08);        // lea 8(%rsp), %rsp
+         this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);        // movsd xmm0, (%rsp)
+      }
+
+      void emit_f64_max_sse() {
+         this->emit_bytes(0xf2, 0x0f, 0x10, 0x44, 0x24, 0x08);  // movsd 8(%rsp), xmm0
+         this->emit_bytes(0xf2, 0x0f, 0x10, 0x0c, 0x24);        // movsd (%rsp), xmm1
+         // maxsd xmm1, xmm0
+         this->emit_bytes(0xf2, 0x0f, 0x5f, 0xc1);
+         this->emit_bytes(0xf2, 0x0f, 0x10, 0x54, 0x24, 0x08);  // movsd 8(%rsp), xmm2
+         this->emit_bytes(0xf2, 0x0f, 0x10, 0x0c, 0x24);        // movsd (%rsp), xmm1
+         this->emit_bytes(0xf2, 0x0f, 0x5f, 0xca);              // maxsd xmm2, xmm1
+         // AND the two results: handles -0 vs +0 (AND clears sign when one is +0)
+         this->emit_bytes(0x66, 0x0f, 0x54, 0xc1);              // andpd xmm1, xmm0
+         emit_f64_canonicalize_nan();
+         this->emit_bytes(0x48, 0x8d, 0x64, 0x24, 0x08);
+         this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
+      }
+
+      void emit_f32_min_sse() {
+         this->emit_bytes(0xf3, 0x0f, 0x10, 0x44, 0x24, 0x08);  // movss 8(%rsp), xmm0
+         this->emit_bytes(0xf3, 0x0f, 0x10, 0x0c, 0x24);        // movss (%rsp), xmm1
+         this->emit_bytes(0xf3, 0x0f, 0x5d, 0xc1);              // minss xmm1, xmm0
+         this->emit_bytes(0xf3, 0x0f, 0x10, 0x54, 0x24, 0x08);  // movss 8(%rsp), xmm2
+         this->emit_bytes(0xf3, 0x0f, 0x10, 0x0c, 0x24);        // movss (%rsp), xmm1
+         this->emit_bytes(0xf3, 0x0f, 0x5d, 0xca);              // minss xmm2, xmm1
+         this->emit_bytes(0x0f, 0x56, 0xc1);                    // orps xmm1, xmm0
+         emit_f32_canonicalize_nan();
+         this->emit_bytes(0x48, 0x8d, 0x64, 0x24, 0x08);
+         this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
+      }
+
+      void emit_f32_max_sse() {
+         this->emit_bytes(0xf3, 0x0f, 0x10, 0x44, 0x24, 0x08);  // movss 8(%rsp), xmm0
+         this->emit_bytes(0xf3, 0x0f, 0x10, 0x0c, 0x24);        // movss (%rsp), xmm1
+         this->emit_bytes(0xf3, 0x0f, 0x5f, 0xc1);              // maxss xmm1, xmm0
+         this->emit_bytes(0xf3, 0x0f, 0x10, 0x54, 0x24, 0x08);  // movss 8(%rsp), xmm2
+         this->emit_bytes(0xf3, 0x0f, 0x10, 0x0c, 0x24);        // movss (%rsp), xmm1
+         this->emit_bytes(0xf3, 0x0f, 0x5f, 0xca);              // maxss xmm2, xmm1
+         this->emit_bytes(0x0f, 0x54, 0xc1);                    // andps xmm1, xmm0
+         emit_f32_canonicalize_nan();
+         this->emit_bytes(0x48, 0x8d, 0x64, 0x24, 0x08);
+         this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
+      }
+
+      // ──────── IEEE 754 min/max helpers (register mode) ────────
+      void emit_f64_min_reg(const ir_inst& inst) {
+         load_vreg_rax(inst.rr.src1);
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+         load_vreg_rax(inst.rr.src2);
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);  // movq rax, xmm1
+         this->emit_bytes(0x66, 0x0f, 0x28, 0xd0);        // movapd xmm0, xmm2
+         this->emit_bytes(0xf2, 0x0f, 0x5d, 0xc1);        // minsd xmm1, xmm0
+         this->emit_bytes(0xf2, 0x0f, 0x5d, 0xca);        // minsd xmm2, xmm1
+         this->emit_bytes(0x66, 0x0f, 0x56, 0xc1);        // orpd xmm1, xmm0
+         emit_f64_canonicalize_nan();
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);  // movq xmm0, rax
+         store_rax_vreg(inst.dest);
+      }
+
+      void emit_f64_max_reg(const ir_inst& inst) {
+         load_vreg_rax(inst.rr.src1);
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+         load_vreg_rax(inst.rr.src2);
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);  // movq rax, xmm1
+         this->emit_bytes(0x66, 0x0f, 0x28, 0xd0);        // movapd xmm0, xmm2
+         this->emit_bytes(0xf2, 0x0f, 0x5f, 0xc1);        // maxsd xmm1, xmm0
+         this->emit_bytes(0xf2, 0x0f, 0x5f, 0xca);        // maxsd xmm2, xmm1
+         this->emit_bytes(0x66, 0x0f, 0x54, 0xc1);        // andpd xmm1, xmm0
+         emit_f64_canonicalize_nan();
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);  // movq xmm0, rax
+         store_rax_vreg(inst.dest);
+      }
+
+      void emit_f32_min_reg(const ir_inst& inst) {
+         load_vreg_rax(inst.rr.src1);
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+         load_vreg_rax(inst.rr.src2);
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);  // movq rax, xmm1
+         this->emit_bytes(0x0f, 0x28, 0xd0);              // movaps xmm0, xmm2
+         this->emit_bytes(0xf3, 0x0f, 0x5d, 0xc1);        // minss xmm1, xmm0
+         this->emit_bytes(0xf3, 0x0f, 0x5d, 0xca);        // minss xmm2, xmm1
+         this->emit_bytes(0x0f, 0x56, 0xc1);              // orps xmm1, xmm0
+         emit_f32_canonicalize_nan();
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);  // movq xmm0, rax
+         store_rax_vreg(inst.dest);
+      }
+
+      void emit_f32_max_reg(const ir_inst& inst) {
+         load_vreg_rax(inst.rr.src1);
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+         load_vreg_rax(inst.rr.src2);
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);  // movq rax, xmm1
+         this->emit_bytes(0x0f, 0x28, 0xd0);              // movaps xmm0, xmm2
+         this->emit_bytes(0xf3, 0x0f, 0x5f, 0xc1);        // maxss xmm1, xmm0
+         this->emit_bytes(0xf3, 0x0f, 0x5f, 0xca);        // maxss xmm2, xmm1
+         this->emit_bytes(0x0f, 0x54, 0xc1);              // andps xmm1, xmm0
+         emit_f32_canonicalize_nan();
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);  // movq xmm0, rax
+         store_rax_vreg(inst.dest);
+      }
+
       void emit_f32_relop_sse(uint8_t cmp_op, bool swap, bool flip) {
          if (swap) {
             this->emit_bytes(0xf3, 0x0f, 0x10, 0x04, 0x24);        // movss (%rsp), %xmm0
@@ -3143,14 +3295,26 @@ namespace eosio { namespace vm {
          }
       }
 
+      // Add offset to a 64-bit register without 32-bit wrapping.
+      // Uses 64-bit add so overflow lands in guard pages (no explicit branch).
+      void emit_addr_offset_add(general_register64 reg, uint32_t offset) {
+         if (offset < 0x80000000u) {
+            // imm32 sign-extends positively in 64-bit mode
+            this->emit_add(static_cast<int32_t>(offset), reg);
+         } else {
+            // Large offset: zero-extend via ecx, then 64-bit add
+            this->emit_mov(offset, ecx);
+            this->emit_add(rcx, reg);
+         }
+      }
+
       // ──────── Memory access helpers ────────
       template<class I, class R>
       void emit_load(int32_t offset, I instr, R reg) {
          uint32_t uoffset = static_cast<uint32_t>(offset);
          this->emit_pop_raw(rax);  // WASM address
-         // WASM effective address wraps at 2^32 — add offset in 32-bit
          if (uoffset != 0) {
-            this->emit_add(static_cast<int32_t>(uoffset), eax); // 32-bit wrapping add
+            emit_addr_offset_add(rax, uoffset);
          }
          this->emit(instr, *(rax + rsi + 0), reg);
          this->emit_push_raw(rax);
@@ -3161,9 +3325,8 @@ namespace eosio { namespace vm {
          uint32_t uoffset = static_cast<uint32_t>(offset);
          this->emit_pop_raw(rax);  // value
          this->emit_pop_raw(rcx);  // WASM address
-         // WASM effective address wraps at 2^32 — add offset in 32-bit
          if (uoffset != 0) {
-            this->emit_add(static_cast<int32_t>(uoffset), ecx); // 32-bit wrapping add
+            emit_addr_offset_add(rcx, uoffset);
          }
          this->emit(instr, *(rcx + rsi + 0), reg);
       }
@@ -3181,7 +3344,7 @@ namespace eosio { namespace vm {
             this->emit_pop_raw(rax);   // fallback: pop from stack
          }
          if (offset != 0) {
-            this->emit_add(static_cast<int32_t>(offset), eax);  // 32-bit wrapping add
+            emit_addr_offset_add(rax, static_cast<uint32_t>(offset));
          }
          // rsi holds linear memory base; effective address is rax + rsi
       }
@@ -4326,6 +4489,18 @@ namespace eosio { namespace vm {
       static int32_t current_memory(Context* context) { return context->current_linear_memory(); }
       static int32_t grow_memory(Context* context, int32_t pages) { return context->grow_linear_memory(pages); }
       static void on_memory_error() { throw_<wasm_memory_exception>("wasm memory out-of-bounds"); }
+
+      // Bulk memory helpers — called from JIT code via indirect call.
+      // These handle overlapping copies correctly and avoid inline rep movsb/stosb.
+      // Args are passed via registers: rdi=context (saved/restored by caller),
+      // but we use the C calling convention via function pointer call.
+      static void do_memory_fill(void* dest, uint8_t val, uint64_t count) {
+         std::memset(dest, val, static_cast<std::size_t>(count));
+      }
+
+      static void do_memory_copy(void* dest, const void* src, uint64_t count) {
+         std::memmove(dest, src, static_cast<std::size_t>(count));
+      }
 
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>("unreachable"); }
       static void on_fp_error() { vm::throw_<wasm_interpreter_exception>("floating point error"); }

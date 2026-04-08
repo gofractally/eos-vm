@@ -276,12 +276,15 @@ namespace eosio { namespace vm {
             case ir_op::memory_grow:
                count_use(inst.rr.src1);
                break;
-            case ir_op::v128_op:
-               if (inst.simd.addr != ir_vreg_none)
+            case ir_op::v128_op: {
+               auto sub = static_cast<simd_sub>(inst.dest);
+               // For scalar-producing ops, addr is a DEST vreg, not a source
+               if (!simd_produces_scalar(sub) && inst.simd.addr != ir_vreg_none)
                   count_use(inst.simd.addr);
-               if (inst.simd.offset != 0 && inst.simd.offset < num_vregs)
+               if (simd_offset_is_vreg(sub))
                   count_use(inst.simd.offset);
                break;
+            }
             default:
                // All opcode categories with vreg sources are handled above.
                // Unhandled opcodes (memory_fill, memory_copy, table ops, etc.)
@@ -291,8 +294,6 @@ namespace eosio { namespace vm {
          }
 
          // ── Phase 3: Dead code elimination ──
-         // Only eliminate pure instructions (no side effects, result never used).
-         // Conservative: skip control flow, calls, stores, memory ops, block markers.
          for (uint32_t i = 0; i < n; ++i) {
             auto& inst = func.insts[i];
             if (inst.flags & (IR_DEAD | IR_SIDE_EFFECT)) continue;
@@ -319,9 +320,6 @@ namespace eosio { namespace vm {
          }
 
          // ── Phase 4: Instruction fusion (cmp + branch) ──
-         // When a comparison/eqz has exactly one use and that use is the
-         // immediately next if_/br_if, mark the comparison for fusion.
-         // Codegen will emit cmp+jcc directly, skipping setcc+store.
          for (uint32_t i = 0; i + 1 < n; ++i) {
             auto& inst = func.insts[i];
             if (inst.flags & IR_DEAD) continue;

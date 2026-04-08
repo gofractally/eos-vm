@@ -78,16 +78,19 @@ add_spec_test_impl(e_module ${CMAKE_CURRENT_SOURCE_DIR}/spec/extra/module.wast)
 add_spec_test_impl(e_table ${CMAKE_CURRENT_SOURCE_DIR}/spec/extra/table.wast)
 add_spec_test_impl(e_simd ${CMAKE_CURRENT_SOURCE_DIR}/spec/extra/simd.wast)
 
-add_executable( eos_vm_spec_tests main.cpp ${SPEC_TESTS} )
+# Unity build: 72 core spec test files -> 9 TUs (8 batches + 1 extra)
+add_executable( eos_vm_spec_tests main.cpp
+    spec_unity_batch_1.cpp spec_unity_batch_2.cpp spec_unity_batch_3.cpp spec_unity_batch_4.cpp
+    spec_unity_batch_5.cpp spec_unity_batch_6.cpp spec_unity_batch_7.cpp spec_unity_batch_8.cpp
+    spec_unity_extra.cpp )
 target_link_libraries( eos_vm_spec_tests eos-vm Catch2::Catch2 )
 target_include_directories( eos_vm_spec_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} )
 target_include_directories( eos_vm_spec_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include )
 target_include_directories( eos_vm_spec_tests PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/spec )
-
 target_compile_definitions(eos_vm_spec_tests PUBLIC -DCATCH_CONFIG_NO_POSIX_SIGNALS)
-
 catch_discover_tests( eos_vm_spec_tests )
 
+# Unity build: 57 SIMD spec test files -> 8 TUs
 set(SPEC_TESTS)
 foreach(testcase
     simd_address simd_align simd_bit_shift simd_bitwise simd_boolean simd_const
@@ -109,7 +112,9 @@ foreach(testcase
     )
    add_spec_test(${testcase})
 endforeach()
-add_executable( eos_vm_simd_tests main.cpp ${SPEC_TESTS} )
+add_executable( eos_vm_simd_tests main.cpp
+    simd_unity_batch_1.cpp simd_unity_batch_2.cpp simd_unity_batch_3.cpp simd_unity_batch_4.cpp
+    simd_unity_batch_5.cpp simd_unity_batch_6.cpp simd_unity_batch_7.cpp simd_unity_batch_8.cpp )
 target_link_libraries( eos_vm_simd_tests eos-vm Catch2::Catch2 )
 target_include_directories( eos_vm_simd_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} )
 target_include_directories( eos_vm_simd_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include )

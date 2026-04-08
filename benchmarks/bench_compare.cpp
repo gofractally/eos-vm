@@ -531,14 +531,40 @@ static double run_wamr_compute(const std::vector<uint8_t>& wasm, const char* fun
 // Main
 // ============================================================================
 
-int main() {
+int main(int argc, char** argv) {
    register_eosvm_hosts();
 
    auto wasm_bytes = build_bench_wasm();
    wasm_code code(wasm_bytes.begin(), wasm_bytes.end());
    wasm_allocator wa;
 
-   const uint32_t N = 10'000'000;
+   // Defaults
+   uint32_t N = 10'000'000;
+   bool run_interp = true, run_jit = true, run_jit2 = true;
+   bool run_host = true, run_compute = true;
+
+   // Parse args: --no-interp, --no-jit, --no-host, --no-compute, --iters=N
+   for (int i = 1; i < argc; i++) {
+      std::string arg = argv[i];
+      if (arg == "--no-interp")   run_interp = false;
+      else if (arg == "--no-jit") run_jit = false;
+      else if (arg == "--no-jit2") run_jit2 = false;
+      else if (arg == "--no-host") run_host = false;
+      else if (arg == "--no-compute") run_compute = false;
+      else if (arg == "--jit2-only") { run_interp = false; run_jit = false; }
+      else if (arg.rfind("--iters=", 0) == 0) N = static_cast<uint32_t>(std::stoul(arg.substr(8)));
+      else if (arg == "--help" || arg == "-h") {
+         printf("Usage: bench-compare [options]\n"
+                "  --no-interp    Skip interpreter\n"
+                "  --no-jit       Skip JIT1\n"
+                "  --no-jit2      Skip JIT2\n"
+                "  --jit2-only    Only run JIT2\n"
+                "  --no-host      Skip host-call benchmarks\n"
+                "  --no-compute   Skip compute benchmarks\n"
+                "  --iters=N      Host-call iterations (default 10000000)\n");
+         return 0;
+      }
+   }
 
    struct bench_def {
       const char* label;
@@ -567,10 +593,10 @@ int main() {
 
    runtime_info runtimes[RT_COUNT] = {
       {"native",        false},  // enabled only for compute benchmarks
-      {"eos-vm interp", true},
+      {"eos-vm interp", run_interp},
 #ifdef __x86_64__
-      {"eos-vm JIT",    true},
-      {"eos-vm JIT2",   true},
+      {"eos-vm JIT",    run_jit},
+      {"eos-vm JIT2",   run_jit2},
 #else
       {"eos-vm JIT",    false},
       {"eos-vm JIT2",   false},
@@ -661,15 +687,21 @@ int main() {
    double host_results[6][RT_COUNT] = {};
    const char* host_labels[6];
 
-   for (int t = 0; t < num_host_tests; t++) {
+   for (int t = 0; t < num_host_tests && run_host; t++) {
       host_labels[t] = benches[t].label;
-      fprintf(stderr, "host[%d] interp...\n", t); fflush(stderr);
-      host_results[t][RT_INTERP] = run_eosvm<interpreter>(code, wa, benches[t].func, N);
+      if (run_interp) {
+         fprintf(stderr, "host[%d] interp...\n", t); fflush(stderr);
+         host_results[t][RT_INTERP] = run_eosvm<interpreter>(code, wa, benches[t].func, N);
+      }
 #ifdef __x86_64__
-      fprintf(stderr, "host[%d] jit...\n", t); fflush(stderr);
-      host_results[t][RT_JIT] = run_eosvm<jit>(code, wa, benches[t].func, N);
-      fprintf(stderr, "host[%d] jit2...\n", t); fflush(stderr);
-      host_results[t][RT_JIT2] = run_eosvm<jit2>(code, wa, benches[t].func, N);
+      if (run_jit) {
+         fprintf(stderr, "host[%d] jit...\n", t); fflush(stderr);
+         host_results[t][RT_JIT] = run_eosvm<jit>(code, wa, benches[t].func, N);
+      }
+      if (run_jit2) {
+         fprintf(stderr, "host[%d] jit2...\n", t); fflush(stderr);
+         host_results[t][RT_JIT2] = run_eosvm<jit2>(code, wa, benches[t].func, N);
+      }
 #endif
 #ifdef BENCH_HAS_WASM3
       host_results[t][RT_WASM3] = run_wasm3(wasm_bytes, benches[t].func, N);
@@ -685,16 +717,19 @@ int main() {
 #endif
    }
 
-   char host_title[128];
-   snprintf(host_title, sizeof(host_title),
-            "HOST-CALL BENCHMARK (%u iterations per test)", N);
-   print_table(host_title,
-               "Measures wasm-to-native call transition overhead.",
-               num_host_tests, host_labels, host_results);
+   if (run_host) {
+      char host_title[128];
+      snprintf(host_title, sizeof(host_title),
+               "HOST-CALL BENCHMARK (%u iterations per test)", N);
+      print_table(host_title,
+                  "Measures wasm-to-native call transition overhead.",
+                  num_host_tests, host_labels, host_results);
+   }
 
    fprintf(stderr, "host-call done, starting compute...\n"); fflush(stderr);
    // --- Compute benchmarks ---
 #ifdef BENCH_HAS_COMPUTE
+  if (run_compute) {
    // Enable native column for compute benchmarks
    runtimes[RT_NATIVE].enabled = true;
    num_active++;
@@ -743,14 +778,20 @@ int main() {
       dump_code_sizes<jit>(wasm, "jit1");
       dump_code_sizes<jit2>(wasm, "jit2");
 #endif
-      fprintf(stderr, "interp...\n"); fflush(stderr);
-      compute_results[t][RT_INTERP] = run_eosvm_compute<interpreter>(wasm, func, iters);
+      if (run_interp) {
+         fprintf(stderr, "interp...\n"); fflush(stderr);
+         compute_results[t][RT_INTERP] = run_eosvm_compute<interpreter>(wasm, func, iters);
+      }
 #ifdef __x86_64__
-      fprintf(stderr, "jit1...\n"); fflush(stderr);
-      compute_results[t][RT_JIT] = run_eosvm_compute<jit>(wasm, func, iters);
-      fprintf(stderr, "jit2...\n"); fflush(stderr);
-      compute_results[t][RT_JIT2] = run_eosvm_compute<jit2>(wasm, func, iters);
-      fprintf(stderr, "jit2 done\n"); fflush(stderr);
+      if (run_jit) {
+         fprintf(stderr, "jit1...\n"); fflush(stderr);
+         compute_results[t][RT_JIT] = run_eosvm_compute<jit>(wasm, func, iters);
+      }
+      if (run_jit2) {
+         fprintf(stderr, "jit2...\n"); fflush(stderr);
+         compute_results[t][RT_JIT2] = run_eosvm_compute<jit2>(wasm, func, iters);
+         fprintf(stderr, "jit2 done\n"); fflush(stderr);
+      }
 #endif
 #ifdef BENCH_HAS_WASM3
       compute_results[t][RT_WASM3] = run_wasm3_compute(wasm, func, iters);
@@ -773,6 +814,7 @@ int main() {
    // Disable native column again so it doesn't affect any further output
    runtimes[RT_NATIVE].enabled = false;
    num_active--;
+  } // if (run_compute)
 #endif
 
    printf("\n");
