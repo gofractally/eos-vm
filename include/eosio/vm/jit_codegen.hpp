@@ -1467,21 +1467,12 @@ namespace eosio { namespace vm {
       // For ge(a,b): ucomiss a,b then JAE (swap args)
       bool emit_float_fused_branch(ir_function& func, const ir_inst& inst,
                                     uint32_t idx, bool is_f64, bool swap, Jcc cc) {
-         // Load operands into xmm0, xmm1
          if (swap) {
-            load_vreg_rax(inst.rr.src1);
-            if (is_f64) this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0); // movq rax, xmm0
-            else        this->emit_vmovd(eax, xmm0);
-            load_vreg_rax(inst.rr.src2);
-            if (is_f64) this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8); // movq rax, xmm1
-            else        this->emit_vmovd(eax, xmm1);
+            load_float_to_xmm(inst.rr.src1, xmm0, is_f64);
+            load_float_to_xmm(inst.rr.src2, xmm1, is_f64);
          } else {
-            load_vreg_rax(inst.rr.src2);
-            if (is_f64) this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0); // movq rax, xmm0
-            else        this->emit_vmovd(eax, xmm0);
-            load_vreg_rax(inst.rr.src1);
-            if (is_f64) this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8); // movq rax, xmm1
-            else        this->emit_vmovd(eax, xmm1);
+            load_float_to_xmm(inst.rr.src2, xmm0, is_f64);
+            load_float_to_xmm(inst.rr.src1, xmm1, is_f64);
          }
          // ucomiss xmm1, xmm0 (compare xmm0 with xmm1, set EFLAGS)
          if (is_f64) this->emit_bytes(0x66, 0x0f, 0x2e, 0xc1); // ucomisd xmm1, xmm0
@@ -1614,6 +1605,16 @@ namespace eosio { namespace vm {
                   store_xmm_to_v128(xmm0, inst.dest);
                }
                return true;
+            }
+            // f32/f64 mov between XMM registers
+            if (inst.type == types::f32 || inst.type == types::f64) {
+               int8_t xr_src = get_xmm(inst.rr.src1);
+               int8_t xr_dest = get_xmm(inst.dest);
+               if (xr_src >= 0 || xr_dest >= 0) {
+                  load_float_to_xmm(inst.rr.src1, xmm0, inst.type == types::f64);
+                  store_xmm_to_float(xmm0, inst.dest, inst.type == types::f64);
+                  return true;
+               }
             }
             int8_t pr_dest = get_phys(inst.dest);
             int8_t pr_src  = get_phys(inst.rr.src1);
@@ -2223,15 +2224,35 @@ namespace eosio { namespace vm {
          case ir_op::const_f32: {
             uint32_t bits;
             memcpy(&bits, &inst.immf32, 4);
-            this->emit_mov(bits, eax);
-            store_rax_vreg(inst.dest);
+            int8_t xr = get_xmm(inst.dest);
+            if (xr >= 0) {
+               if (bits == 0) {
+                  this->emit_const_zero(static_cast<typename base::xmm_register>(xr));
+               } else {
+                  this->emit_mov(bits, eax);
+                  this->emit_vmovd(eax, static_cast<typename base::xmm_register>(xr));
+               }
+            } else {
+               this->emit_mov(bits, eax);
+               store_rax_vreg(inst.dest);
+            }
             return true;
          }
          case ir_op::const_f64: {
             uint64_t bits;
             memcpy(&bits, &inst.immf64, 8);
-            this->emit_mov(bits, rax);
-            store_rax_vreg(inst.dest);
+            int8_t xr = get_xmm(inst.dest);
+            if (xr >= 0) {
+               if (bits == 0) {
+                  this->emit_const_zero(static_cast<typename base::xmm_register>(xr));
+               } else {
+                  this->emit_mov(bits, rax);
+                  this->emit_vmovq(rax, static_cast<typename base::xmm_register>(xr));
+               }
+            } else {
+               this->emit_mov(bits, rax);
+               store_rax_vreg(inst.dest);
+            }
             return true;
          }
 
@@ -2363,39 +2384,29 @@ namespace eosio { namespace vm {
             store_rax_vreg(inst.dest);
             return true;
          case ir_op::f32_ceil:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
-            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x0a); // roundss $0x0a, xmm0, xmm0
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);  // movq xmm0, rax
-            store_rax_vreg(inst.dest);
+            load_float_to_xmm(inst.rr.src1, xmm0, false);
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x0a);
+            store_xmm_to_float(xmm0, inst.dest, false);
             return true;
          case ir_op::f32_floor:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x09); // roundss $0x09
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
-            store_rax_vreg(inst.dest);
+            load_float_to_xmm(inst.rr.src1, xmm0, false);
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x09);
+            store_xmm_to_float(xmm0, inst.dest, false);
             return true;
          case ir_op::f32_trunc:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x0b); // roundss $0x0b
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
-            store_rax_vreg(inst.dest);
+            load_float_to_xmm(inst.rr.src1, xmm0, false);
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x0b);
+            store_xmm_to_float(xmm0, inst.dest, false);
             return true;
          case ir_op::f32_nearest:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x08); // roundss $0x08
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
-            store_rax_vreg(inst.dest);
+            load_float_to_xmm(inst.rr.src1, xmm0, false);
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x08);
+            store_xmm_to_float(xmm0, inst.dest, false);
             return true;
          case ir_op::f32_sqrt:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf3, 0x0f, 0x51, 0xc0);             // sqrtss xmm0, xmm0
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
-            store_rax_vreg(inst.dest);
+            load_float_to_xmm(inst.rr.src1, xmm0, false);
+            this->emit_bytes(0xf3, 0x0f, 0x51, 0xc0);
+            store_xmm_to_float(xmm0, inst.dest, false);
             return true;
          case ir_op::f64_abs:
             load_vreg_rax(inst.rr.src1);
@@ -2408,39 +2419,29 @@ namespace eosio { namespace vm {
             store_rax_vreg(inst.dest);
             return true;
          case ir_op::f64_ceil:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x0a); // roundsd $0x0a
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
-            store_rax_vreg(inst.dest);
+            load_float_to_xmm(inst.rr.src1, xmm0, true);
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x0a);
+            store_xmm_to_float(xmm0, inst.dest, true);
             return true;
          case ir_op::f64_floor:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x09); // roundsd $0x09
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
-            store_rax_vreg(inst.dest);
+            load_float_to_xmm(inst.rr.src1, xmm0, true);
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x09);
+            store_xmm_to_float(xmm0, inst.dest, true);
             return true;
          case ir_op::f64_trunc:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x0b); // roundsd $0x0b
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
-            store_rax_vreg(inst.dest);
+            load_float_to_xmm(inst.rr.src1, xmm0, true);
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x0b);
+            store_xmm_to_float(xmm0, inst.dest, true);
             return true;
          case ir_op::f64_nearest:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x08); // roundsd $0x08
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
-            store_rax_vreg(inst.dest);
+            load_float_to_xmm(inst.rr.src1, xmm0, true);
+            this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x08);
+            store_xmm_to_float(xmm0, inst.dest, true);
             return true;
          case ir_op::f64_sqrt:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf2, 0x0f, 0x51, 0xc0);             // sqrtsd xmm0, xmm0
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
-            store_rax_vreg(inst.dest);
+            load_float_to_xmm(inst.rr.src1, xmm0, true);
+            this->emit_bytes(0xf2, 0x0f, 0x51, 0xc0);
+            store_xmm_to_float(xmm0, inst.dest, true);
             return true;
 
          // ── Float binary ops (register mode) ──
@@ -3333,37 +3334,63 @@ namespace eosio { namespace vm {
 
       // ──────── SSE float register-mode helpers ────────
       // Binary f32 op: xmm0 = src1, xmm1 = src2, OPss xmm1, xmm0 → result in rax
-      void emit_f32_binop(const ir_inst& inst, uint8_t op) {
-         load_vreg_rax(inst.rr.src1);
-         this->emit_vmovd(eax, xmm0);                      // movd eax, xmm0
-         load_vreg_rax(inst.rr.src2);
-         this->emit_vmovd(eax, xmm1);                      // movd eax, xmm1
-         this->emit_bytes(0xf3, 0x0f, op, 0xc1);           // OPss xmm1, xmm0
-         this->emit_bytes(0x66, 0x0f, 0x7e, 0xc0);         // movd xmm0, eax
-         store_rax_vreg(inst.dest);
+      // Load f32/f64 vreg into XMM scratch register.
+      // If vreg has XMM allocation, copies from there. Otherwise loads from GPR/spill.
+      // Load f32/f64 vreg into XMM scratch register.
+      // If vreg has XMM allocation, copies from allocated register.
+      // Otherwise loads from GPR/spill via rax.
+      void load_float_to_xmm(uint32_t vreg, typename base::xmm_register dest, bool is_f64) {
+         int8_t xr = get_xmm(vreg);
+         if (xr >= 0) {
+            auto src = static_cast<typename base::xmm_register>(xr);
+            if (src != dest)
+               this->emit(base::VMOVDQU_A, src, dest);
+            return;
+         }
+         load_vreg_rax(vreg);
+         if (is_f64) this->emit_vmovq(rax, dest);
+         else        this->emit_vmovd(eax, dest);
       }
-      // Binary f64 op
+
+      // Store XMM scratch register to f32/f64 vreg.
+      void store_xmm_to_float(typename base::xmm_register src, uint32_t vreg, bool is_f64) {
+         int8_t xr = get_xmm(vreg);
+         if (xr >= 0) {
+            auto dest = static_cast<typename base::xmm_register>(xr);
+            if (src != dest)
+               this->emit(base::VMOVDQU_B, dest, src);
+            return;
+         }
+         // movq xmm → rax (for f64) or movd xmm → eax (for f32)
+         if (is_f64) {
+            // movq xmm0 → rax: 66 48 0f 7e c0
+            this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, static_cast<uint8_t>(0xc0 | ((src & 7) << 3)));
+         } else {
+            this->emit_bytes(0x66, 0x0f, 0x7e, static_cast<uint8_t>(0xc0 | ((src & 7) << 3)));
+         }
+         store_rax_vreg(vreg);
+      }
+
+      void emit_f32_binop(const ir_inst& inst, uint8_t op) {
+         load_float_to_xmm(inst.rr.src1, xmm0, false);
+         load_float_to_xmm(inst.rr.src2, xmm1, false);
+         this->emit_bytes(0xf3, 0x0f, op, 0xc1);           // OPss xmm1, xmm0
+         store_xmm_to_float(xmm0, inst.dest, false);
+      }
       void emit_f64_binop(const ir_inst& inst, uint8_t op) {
-         load_vreg_rax(inst.rr.src1);
-         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
-         load_vreg_rax(inst.rr.src2);
-         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);  // movq rax, xmm1
+         load_float_to_xmm(inst.rr.src1, xmm0, true);
+         load_float_to_xmm(inst.rr.src2, xmm1, true);
          this->emit_bytes(0xf2, 0x0f, op, 0xc1);           // OPsd xmm1, xmm0
-         this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);  // movq xmm0, rax
-         store_rax_vreg(inst.dest);
+         store_xmm_to_float(xmm0, inst.dest, true);
       }
       // Float comparison: cmpss/cmpsd with predicate, result = 0 or 1
       void emit_f32_relop(const ir_inst& inst, uint8_t cmp_op, bool swap, bool flip) {
          if (swap) {
-            load_vreg_rax(inst.rr.src2);
-            this->emit_vmovd(eax, xmm0);
-            load_vreg_rax(inst.rr.src1);
-            this->emit_vmovd(eax, xmm1);
+            load_float_to_xmm(inst.rr.src2, xmm0, false);
+            load_float_to_xmm(inst.rr.src1, xmm1, false);
          } else {
-            load_vreg_rax(inst.rr.src1);
-            this->emit_vmovd(eax, xmm0);
-            load_vreg_rax(inst.rr.src2);
-            this->emit_vmovd(eax, xmm1);
+            load_float_to_xmm(inst.rr.src1, xmm0, false);
+            load_float_to_xmm(inst.rr.src2, xmm1, false);
          }
          this->emit_bytes(0xf3, 0x0f, 0xc2, 0xc1, cmp_op);   // cmpss $imm, xmm1, xmm0
          this->emit_bytes(0x66, 0x0f, 0x7e, 0xc0);            // movd xmm0, eax
@@ -3376,15 +3403,11 @@ namespace eosio { namespace vm {
       }
       void emit_f64_relop(const ir_inst& inst, uint8_t cmp_op, bool swap, bool flip) {
          if (swap) {
-            load_vreg_rax(inst.rr.src2);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);
+            load_float_to_xmm(inst.rr.src2, xmm0, true);
+            load_float_to_xmm(inst.rr.src1, xmm1, true);
          } else {
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            load_vreg_rax(inst.rr.src2);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);
+            load_float_to_xmm(inst.rr.src1, xmm0, true);
+            load_float_to_xmm(inst.rr.src2, xmm1, true);
          }
          this->emit_bytes(0xf2, 0x0f, 0xc2, 0xc1, cmp_op);   // cmpsd $imm, xmm1, xmm0
          this->emit_bytes(0x66, 0x0f, 0x7e, 0xc0);            // movd xmm0, eax
