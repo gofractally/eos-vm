@@ -1460,9 +1460,22 @@ namespace eosio { namespace vm {
          // Reject if the sign-extended value doesn't match the original i64 constant.
          if (!is32 && static_cast<int64_t>(imm) != static_cast<int64_t>(di.imm64))
             return false;
-         load_vreg_rax(inst.rr.src1);
-         op_imm(imm);
-         store_rax_vreg(inst.dest);
+         int8_t pr_d = get_phys(inst.dest);
+         int8_t pr_s1 = get_phys(inst.rr.src1);
+         if (pr_d >= 0 && pr_s1 >= 0) {
+            // Both in physical registers — operate directly
+            if (pr_d != pr_s1) {
+               if (is32) this->emit_mov(phys_to_reg32(pr_s1), phys_to_reg32(pr_d));
+               else      this->emit_mov(phys_to_reg64(pr_s1), phys_to_reg64(pr_d));
+            }
+            if (is32) op_imm(imm, phys_to_reg32(pr_d));
+            else      op_imm(imm, phys_to_reg64(pr_d));
+         } else {
+            load_vreg_rax(inst.rr.src1);
+            if (is32) op_imm(imm, eax);
+            else      op_imm(imm, rax);
+            store_rax_vreg(inst.dest);
+         }
          if (_func_use_count && _func_use_count[inst.rr.src2] == 1)
             di.flags |= IR_DEAD;
          return true;
@@ -1758,38 +1771,38 @@ namespace eosio { namespace vm {
 
          // Integer binary ops (with const-immediate for add/sub)
          case ir_op::i32_add:
-            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_add(imm, eax); }, true)) return true;
-            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_add(s, d); }, true);
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_add(imm, d); }, true)) return true;
+            return emit_binop(inst, [this](auto d, auto s){ this->emit_add(s, d); }, true);
          case ir_op::i32_sub:
-            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_sub(imm, eax); }, true)) return true;
-            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, true);
-         case ir_op::i32_mul: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, true);
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_sub(imm, d); }, true)) return true;
+            return emit_binop(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, true);
+         case ir_op::i32_mul: return emit_binop(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, true);
          case ir_op::i32_and:
-            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_and(imm, eax); }, true)) return true;
-            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, true);
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_and(imm, d); }, true)) return true;
+            return emit_binop(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, true);
          case ir_op::i32_or:
-            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_or(imm, eax); }, true)) return true;
-            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, true);
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_or(imm, d); }, true)) return true;
+            return emit_binop(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, true);
          case ir_op::i32_xor:
-            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_xor(imm, eax); }, true)) return true;
-            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, true);
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_xor(imm, d); }, true)) return true;
+            return emit_binop(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, true);
 
          case ir_op::i64_add:
-            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_add(imm, rax); }, false)) return true;
-            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_add(s, d); }, false);
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_add(imm, d); }, false)) return true;
+            return emit_binop(inst, [this](auto d, auto s){ this->emit_add(s, d); }, false);
          case ir_op::i64_sub:
-            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_sub(imm, rax); }, false)) return true;
-            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, false);
-         case ir_op::i64_mul: return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, false);
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_sub(imm, d); }, false)) return true;
+            return emit_binop(inst, [this](auto d, auto s){ this->emit_sub(s, d); }, false);
+         case ir_op::i64_mul: return emit_binop(inst, [this](auto d, auto s){ this->emit(base::IMUL, s, d); }, false);
          case ir_op::i64_and:
-            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_and(imm, rax); }, false)) return true;
-            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, false);
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_and(imm, d); }, false)) return true;
+            return emit_binop(inst, [this](auto d, auto s){ this->emit(base::AND_A, s, d); }, false);
          case ir_op::i64_or:
-            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_or(imm, rax); }, false)) return true;
-            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, false);
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_or(imm, d); }, false)) return true;
+            return emit_binop(inst, [this](auto d, auto s){ this->emit(base::OR_A, s, d); }, false);
          case ir_op::i64_xor:
-            if (emit_binop_imm(inst, [this](int32_t imm){ this->emit_xor(imm, rax); }, false)) return true;
-            return emit_binop_reg(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, false);
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_xor(imm, d); }, false)) return true;
+            return emit_binop(inst, [this](auto d, auto s){ this->emit(base::XOR_A, s, d); }, false);
 
          // Shifts/rotates with constant folding
          case ir_op::i32_shl:   return emit_shift_reg(func, inst, 4, true);
@@ -1824,16 +1837,16 @@ namespace eosio { namespace vm {
          }
 
          // Comparisons
-         case ir_op::i32_eq: return emit_relop_reg(func, inst, idx, base::JE, true);
-         case ir_op::i32_ne: return emit_relop_reg(func, inst, idx, base::JNE, true);
-         case ir_op::i32_lt_s: return emit_relop_reg(func, inst, idx, base::JL, true);
-         case ir_op::i32_lt_u: return emit_relop_reg(func, inst, idx, base::JB, true);
-         case ir_op::i32_gt_s: return emit_relop_reg(func, inst, idx, base::JG, true);
-         case ir_op::i32_gt_u: return emit_relop_reg(func, inst, idx, base::JA, true);
-         case ir_op::i32_le_s: return emit_relop_reg(func, inst, idx, base::JLE, true);
-         case ir_op::i32_le_u: return emit_relop_reg(func, inst, idx, base::JBE, true);
-         case ir_op::i32_ge_s: return emit_relop_reg(func, inst, idx, base::JGE, true);
-         case ir_op::i32_ge_u: return emit_relop_reg(func, inst, idx, base::JAE, true);
+         case ir_op::i32_eq: return emit_relop(func, inst, idx, base::JE, true);
+         case ir_op::i32_ne: return emit_relop(func, inst, idx, base::JNE, true);
+         case ir_op::i32_lt_s: return emit_relop(func, inst, idx, base::JL, true);
+         case ir_op::i32_lt_u: return emit_relop(func, inst, idx, base::JB, true);
+         case ir_op::i32_gt_s: return emit_relop(func, inst, idx, base::JG, true);
+         case ir_op::i32_gt_u: return emit_relop(func, inst, idx, base::JA, true);
+         case ir_op::i32_le_s: return emit_relop(func, inst, idx, base::JLE, true);
+         case ir_op::i32_le_u: return emit_relop(func, inst, idx, base::JBE, true);
+         case ir_op::i32_ge_s: return emit_relop(func, inst, idx, base::JGE, true);
+         case ir_op::i32_ge_u: return emit_relop(func, inst, idx, base::JAE, true);
 
          // Local access
          case ir_op::local_get: {
@@ -2011,16 +2024,16 @@ namespace eosio { namespace vm {
             return true;
 
          // i64 comparisons
-         case ir_op::i64_eq: return emit_relop_reg(func, inst, idx, base::JE, false);
-         case ir_op::i64_ne: return emit_relop_reg(func, inst, idx, base::JNE, false);
-         case ir_op::i64_lt_s: return emit_relop_reg(func, inst, idx, base::JL, false);
-         case ir_op::i64_lt_u: return emit_relop_reg(func, inst, idx, base::JB, false);
-         case ir_op::i64_gt_s: return emit_relop_reg(func, inst, idx, base::JG, false);
-         case ir_op::i64_gt_u: return emit_relop_reg(func, inst, idx, base::JA, false);
-         case ir_op::i64_le_s: return emit_relop_reg(func, inst, idx, base::JLE, false);
-         case ir_op::i64_le_u: return emit_relop_reg(func, inst, idx, base::JBE, false);
-         case ir_op::i64_ge_s: return emit_relop_reg(func, inst, idx, base::JGE, false);
-         case ir_op::i64_ge_u: return emit_relop_reg(func, inst, idx, base::JAE, false);
+         case ir_op::i64_eq: return emit_relop(func, inst, idx, base::JE, false);
+         case ir_op::i64_ne: return emit_relop(func, inst, idx, base::JNE, false);
+         case ir_op::i64_lt_s: return emit_relop(func, inst, idx, base::JL, false);
+         case ir_op::i64_lt_u: return emit_relop(func, inst, idx, base::JB, false);
+         case ir_op::i64_gt_s: return emit_relop(func, inst, idx, base::JG, false);
+         case ir_op::i64_gt_u: return emit_relop(func, inst, idx, base::JA, false);
+         case ir_op::i64_le_s: return emit_relop(func, inst, idx, base::JLE, false);
+         case ir_op::i64_le_u: return emit_relop(func, inst, idx, base::JBE, false);
+         case ir_op::i64_ge_s: return emit_relop(func, inst, idx, base::JGE, false);
+         case ir_op::i64_ge_u: return emit_relop(func, inst, idx, base::JAE, false);
 
          // Division/remainder
          case ir_op::i32_div_s:
@@ -2421,16 +2434,16 @@ namespace eosio { namespace vm {
             return true;
 
          // ── Float binary ops (register mode) ──
-         case ir_op::f32_add:      emit_f32_binop_reg(inst, 0x58); return true;
-         case ir_op::f32_sub:      emit_f32_binop_reg(inst, 0x5c); return true;
-         case ir_op::f32_mul:      emit_f32_binop_reg(inst, 0x59); return true;
-         case ir_op::f32_div:      emit_f32_binop_reg(inst, 0x5e); return true;
+         case ir_op::f32_add:      emit_f32_binop(inst, 0x58); return true;
+         case ir_op::f32_sub:      emit_f32_binop(inst, 0x5c); return true;
+         case ir_op::f32_mul:      emit_f32_binop(inst, 0x59); return true;
+         case ir_op::f32_div:      emit_f32_binop(inst, 0x5e); return true;
          case ir_op::f32_min:      emit_f32_min_reg(inst); return true;
          case ir_op::f32_max:      emit_f32_max_reg(inst); return true;
-         case ir_op::f64_add:      emit_f64_binop_reg(inst, 0x58); return true;
-         case ir_op::f64_sub:      emit_f64_binop_reg(inst, 0x5c); return true;
-         case ir_op::f64_mul:      emit_f64_binop_reg(inst, 0x59); return true;
-         case ir_op::f64_div:      emit_f64_binop_reg(inst, 0x5e); return true;
+         case ir_op::f64_add:      emit_f64_binop(inst, 0x58); return true;
+         case ir_op::f64_sub:      emit_f64_binop(inst, 0x5c); return true;
+         case ir_op::f64_mul:      emit_f64_binop(inst, 0x59); return true;
+         case ir_op::f64_div:      emit_f64_binop(inst, 0x5e); return true;
          case ir_op::f64_min:      emit_f64_min_reg(inst); return true;
          case ir_op::f64_max:      emit_f64_max_reg(inst); return true;
 
@@ -2464,18 +2477,18 @@ namespace eosio { namespace vm {
 
          // ── Float comparisons (register mode) ──
          // eq: cmpss $0, ne: cmpeqss + inc, lt: cmpss $1, gt: swap+cmpss $1, le: cmpss $2, ge: swap+cmpss $2
-         case ir_op::f32_eq: emit_f32_relop_reg(inst, 0x00, false, false); return true;
-         case ir_op::f32_ne: emit_f32_relop_reg(inst, 0x00, false, true);  return true;  // eq then inc
-         case ir_op::f32_lt: emit_f32_relop_reg(inst, 0x01, false, false); return true;
-         case ir_op::f32_gt: emit_f32_relop_reg(inst, 0x01, true,  false); return true;  // swap, use lt
-         case ir_op::f32_le: emit_f32_relop_reg(inst, 0x02, false, false); return true;
-         case ir_op::f32_ge: emit_f32_relop_reg(inst, 0x02, true,  false); return true;  // swap, use le
-         case ir_op::f64_eq: emit_f64_relop_reg(inst, 0x00, false, false); return true;
-         case ir_op::f64_ne: emit_f64_relop_reg(inst, 0x00, false, true);  return true;
-         case ir_op::f64_lt: emit_f64_relop_reg(inst, 0x01, false, false); return true;
-         case ir_op::f64_gt: emit_f64_relop_reg(inst, 0x01, true,  false); return true;
-         case ir_op::f64_le: emit_f64_relop_reg(inst, 0x02, false, false); return true;
-         case ir_op::f64_ge: emit_f64_relop_reg(inst, 0x02, true,  false); return true;
+         case ir_op::f32_eq: emit_f32_relop(inst, 0x00, false, false); return true;
+         case ir_op::f32_ne: emit_f32_relop(inst, 0x00, false, true);  return true;  // eq then inc
+         case ir_op::f32_lt: emit_f32_relop(inst, 0x01, false, false); return true;
+         case ir_op::f32_gt: emit_f32_relop(inst, 0x01, true,  false); return true;  // swap, use lt
+         case ir_op::f32_le: emit_f32_relop(inst, 0x02, false, false); return true;
+         case ir_op::f32_ge: emit_f32_relop(inst, 0x02, true,  false); return true;  // swap, use le
+         case ir_op::f64_eq: emit_f64_relop(inst, 0x00, false, false); return true;
+         case ir_op::f64_ne: emit_f64_relop(inst, 0x00, false, true);  return true;
+         case ir_op::f64_lt: emit_f64_relop(inst, 0x01, false, false); return true;
+         case ir_op::f64_gt: emit_f64_relop(inst, 0x01, true,  false); return true;
+         case ir_op::f64_le: emit_f64_relop(inst, 0x02, false, false); return true;
+         case ir_op::f64_ge: emit_f64_relop(inst, 0x02, true,  false); return true;
 
          // ── Float-to-int conversions (register mode) ──
          case ir_op::i32_trunc_s_f32:
@@ -2732,11 +2745,10 @@ namespace eosio { namespace vm {
 
       // Register-based binary op helper
       template<typename F>
-      bool emit_binop_reg(const ir_inst& inst, F op, bool is32) {
+      bool emit_binop(const ir_inst& inst, F op, bool is32) {
          int8_t pr_d = get_phys(inst.dest);
          int8_t pr_s1 = get_phys(inst.rr.src1);
          int8_t pr_s2 = get_phys(inst.rr.src2);
-
          if (pr_d >= 0 && pr_s1 >= 0 && pr_s2 >= 0) {
             // All in registers — optimal path
             if (pr_d == pr_s1) {
@@ -2760,7 +2772,7 @@ namespace eosio { namespace vm {
       }
 
       // Register-based comparison helper
-      bool emit_relop_reg(ir_function& func, const ir_inst& inst, uint32_t idx, Jcc cc, bool is32) {
+      bool emit_relop(ir_function& func, const ir_inst& inst, uint32_t idx, Jcc cc, bool is32) {
          int8_t pr_s1 = get_phys(inst.rr.src1);
          int8_t pr_s2 = get_phys(inst.rr.src2);
 
@@ -2813,29 +2825,44 @@ namespace eosio { namespace vm {
          return true;
       }
 
-      // Register-based shift with constant folding
+      // Register-based shift with constant folding (uses _func_def_inst, O(1))
       bool emit_shift_reg(ir_function& func, const ir_inst& inst, uint8_t reg_field, bool is32) {
-         // Check for constant shift amount
-         // Check for constant shift amount
          uint32_t src2_vreg = inst.rr.src2;
-         if (src2_vreg != ir_vreg_none) {
-            for (uint32_t j = func.inst_count; j > 0; --j) {
-               auto& prev = func.insts[j - 1];
-               if (prev.dest == src2_vreg) {
-                  if (prev.opcode == ir_op::const_i32 || prev.opcode == ir_op::const_i64) {
-                     uint8_t amt = static_cast<uint8_t>(prev.imm64 & (is32 ? 0x1f : 0x3f));
-                     prev.flags |= IR_DEAD;
+         if (_func_def_inst && src2_vreg != ir_vreg_none && src2_vreg < _num_vregs) {
+            uint32_t def = _func_def_inst[src2_vreg];
+            if (def < _func_inst_count) {
+               auto& di = _func_insts[def];
+               if (di.opcode == ir_op::const_i32 || di.opcode == ir_op::const_i64) {
+                  uint8_t amt = static_cast<uint8_t>(di.imm64 & (is32 ? 0x1f : 0x3f));
+                  if (_func_use_count && _func_use_count[src2_vreg] == 1)
+                     di.flags |= IR_DEAD;
+                  int8_t pr_d = get_phys(inst.dest);
+                  int8_t pr_s1 = get_phys(inst.rr.src1);
+                  if (pr_d >= 0 && pr_s1 >= 0) {
+                     if (pr_d != pr_s1) {
+                        if (is32) this->emit_mov(phys_to_reg32(pr_s1), phys_to_reg32(pr_d));
+                        else      this->emit_mov(phys_to_reg64(pr_s1), phys_to_reg64(pr_d));
+                     }
+                     auto rd = pr_d;
+                     uint8_t modrm = static_cast<uint8_t>(0xc0 | (reg_field << 3) | (phys_to_reg64(rd) & 7));
+                     if (is32) {
+                        if (phys_to_reg64(rd) & 8) this->emit_bytes(0x41);
+                        this->emit_bytes(0xc1, modrm, amt);
+                     } else {
+                        this->emit_bytes(static_cast<uint8_t>(0x48 | ((phys_to_reg64(rd) & 8) ? 1 : 0)),
+                                         0xc1, modrm, amt);
+                     }
+                  } else {
                      load_vreg_rax(inst.rr.src1);
                      if (is32) this->emit_bytes(0xc1, static_cast<uint8_t>(0xc0 | (reg_field << 3)), amt);
                      else      this->emit_bytes(0x48, 0xc1, static_cast<uint8_t>(0xc0 | (reg_field << 3)), amt);
                      store_rax_vreg(inst.dest);
-                     return true;
                   }
-                  break;
+                  return true;
                }
             }
          }
-         // Variable shift
+         // Variable shift — must use cl register
          load_vreg_rcx(inst.rr.src2);
          load_vreg_rax(inst.rr.src1);
          if (is32) this->emit_bytes(0xd3, static_cast<uint8_t>(0xc0 | (reg_field << 3)));
@@ -3243,7 +3270,7 @@ namespace eosio { namespace vm {
 
       // ──────── SSE float register-mode helpers ────────
       // Binary f32 op: xmm0 = src1, xmm1 = src2, OPss xmm1, xmm0 → result in rax
-      void emit_f32_binop_reg(const ir_inst& inst, uint8_t op) {
+      void emit_f32_binop(const ir_inst& inst, uint8_t op) {
          load_vreg_rax(inst.rr.src1);
          this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
          load_vreg_rax(inst.rr.src2);
@@ -3253,7 +3280,7 @@ namespace eosio { namespace vm {
          store_rax_vreg(inst.dest);
       }
       // Binary f64 op
-      void emit_f64_binop_reg(const ir_inst& inst, uint8_t op) {
+      void emit_f64_binop(const ir_inst& inst, uint8_t op) {
          load_vreg_rax(inst.rr.src1);
          this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
          load_vreg_rax(inst.rr.src2);
@@ -3263,7 +3290,7 @@ namespace eosio { namespace vm {
          store_rax_vreg(inst.dest);
       }
       // Float comparison: cmpss/cmpsd with predicate, result = 0 or 1
-      void emit_f32_relop_reg(const ir_inst& inst, uint8_t cmp_op, bool swap, bool flip) {
+      void emit_f32_relop(const ir_inst& inst, uint8_t cmp_op, bool swap, bool flip) {
          if (swap) {
             load_vreg_rax(inst.rr.src2);
             this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
@@ -3284,7 +3311,7 @@ namespace eosio { namespace vm {
          }
          store_rax_vreg(inst.dest);
       }
-      void emit_f64_relop_reg(const ir_inst& inst, uint8_t cmp_op, bool swap, bool flip) {
+      void emit_f64_relop(const ir_inst& inst, uint8_t cmp_op, bool swap, bool flip) {
          if (swap) {
             load_vreg_rax(inst.rr.src2);
             this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
