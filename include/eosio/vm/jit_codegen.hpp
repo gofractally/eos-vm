@@ -53,7 +53,11 @@
 //     calculations and redundant loads from the same memory location.
 //
 // [ ] Strength reduction for multiply by power-of-2: replace `imul $8, %rax`
-//     with `shl $3, %rax`.
+//     with `shl $3, %rax`. Must be done in the CODEGEN (emit_binop_imm for
+//     i32_mul/i64_mul), NOT in the optimizer. The previous IR-level
+//     implementation corrupted shared constant vregs. The codegen can safely
+//     emit shl when it sees mul-by-immediate-power-of-2 via the def_inst
+//     lookup, since it reads the const value without modifying it.
 //
 // --- Memory / allocator ---
 //
