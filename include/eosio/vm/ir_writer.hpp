@@ -981,18 +981,16 @@ namespace eosio { namespace vm {
 
       void emit_v128_const(v128_t v) {
          if (!_unreachable) {
-
-            // Emit const_v128 IR instruction with the v128 value in immv128
+            uint32_t dest = _func->alloc_vreg(types::v128);
+            uint32_t dest2 = _func->alloc_vreg(types::v128);
             ir_inst inst{};
             inst.opcode = ir_op::const_v128;
             inst.type = types::v128;
             inst.flags = IR_NONE;
-            inst.dest = ir_vreg_none;
+            inst.dest = dest; // v128 dest vreg for XMM register allocation
             inst.immv128 = v;
             _func->emit(inst);
-            uint32_t dest = _func->alloc_vreg(types::v128);
             _func->vpush(dest);
-            uint32_t dest2 = _func->alloc_vreg(types::v128);
             _func->vpush(dest2);
          }
       }
@@ -1534,19 +1532,37 @@ namespace eosio { namespace vm {
       void ir_simd_unop(simd_sub sub) {
          if (_unreachable) return;
          _func->has_simd = true;
-         _func->vpop(); _func->vpop();
-         ir_simd_emit(sub);
-         uint32_t d1 = _func->alloc_vreg(types::v128); _func->vpush(d1);
-         uint32_t d2 = _func->alloc_vreg(types::v128); _func->vpush(d2);
+         _func->vpop(); uint32_t s1 = _func->vpop(); // v128 src (low vreg)
+         uint32_t d1 = _func->alloc_vreg(types::v128);
+         uint32_t d2 = _func->alloc_vreg(types::v128);
+         ir_inst inst{};
+         inst.opcode = ir_op::v128_op;
+         inst.type = types::v128;
+         inst.flags = IR_SIDE_EFFECT;
+         inst.dest = static_cast<uint32_t>(sub);
+         inst.simd.v_src1 = static_cast<uint16_t>(s1);
+         inst.simd.v_src2 = 0xFFFF;
+         inst.simd.v_dest = static_cast<uint16_t>(d1);
+         _func->emit(inst);
+         _func->vpush(d1); _func->vpush(d2);
       }
       void ir_simd_binop(simd_sub sub) {
          if (_unreachable) return;
          _func->has_simd = true;
-         _func->vpop(); _func->vpop();
-         _func->vpop(); _func->vpop();
-         ir_simd_emit(sub);
-         uint32_t d1 = _func->alloc_vreg(types::v128); _func->vpush(d1);
-         uint32_t d2 = _func->alloc_vreg(types::v128); _func->vpush(d2);
+         _func->vpop(); uint32_t s2 = _func->vpop(); // v128 src2 (low vreg)
+         _func->vpop(); uint32_t s1 = _func->vpop(); // v128 src1 (low vreg)
+         uint32_t d1 = _func->alloc_vreg(types::v128);
+         uint32_t d2 = _func->alloc_vreg(types::v128);
+         ir_inst inst{};
+         inst.opcode = ir_op::v128_op;
+         inst.type = types::v128;
+         inst.flags = IR_SIDE_EFFECT;
+         inst.dest = static_cast<uint32_t>(sub);
+         inst.simd.v_src1 = static_cast<uint16_t>(s1);
+         inst.simd.v_src2 = static_cast<uint16_t>(s2);
+         inst.simd.v_dest = static_cast<uint16_t>(d1);
+         _func->emit(inst);
+         _func->vpush(d1); _func->vpush(d2);
       }
       void ir_simd_shift(simd_sub sub) {
          if (_unreachable) return;

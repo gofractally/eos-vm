@@ -1280,8 +1280,9 @@ namespace eosio { namespace vm {
          if (_use_regalloc) {
             if (func.type->return_count != 0 && func.vstack_top > 0) {
                if (func.type->return_type == types::v128) {
-                  // v128 return: load 16 bytes from x86 stack into xmm0
-                  this->emit_vmovdqu(*rsp, xmm0);
+                  // v128 return: load result into xmm0 from XMM reg or spill
+                  uint32_t ret_vreg = func.vstack[func.vstack_top - 2]; // low vreg
+                  load_v128_to_xmm(ret_vreg, xmm0);
                } else {
                   uint32_t result_vreg = func.vstack[func.vstack_top - 1];
                   load_vreg_rax(result_vreg);
@@ -1401,9 +1402,9 @@ namespace eosio { namespace vm {
          case ir_op::loop:
             return true;
          case ir_op::drop:
-            if (inst.type == types::v128) {
-               this->emit_add(16, rsp);
-            }
+            // v128 in XMM registers: no-op (register freed by regalloc)
+            // v128 on x86 stack (no XMM): need rsp adjustment
+            // Scalar: no-op (register freed by regalloc)
             return true;
          case ir_op::block_start:
             mark_block_start(inst.dest);
@@ -1415,8 +1416,17 @@ namespace eosio { namespace vm {
          // Mov (phi-node merge): dest = src1
          case ir_op::mov: {
             if (inst.type == types::v128) {
-               // v128 values live on x86 stack — mov is a no-op since both
-               // branches write to the same stack position
+               // v128 mov: copy between XMM registers or spill slots
+               int8_t xr_src = get_xmm(inst.rr.src1);
+               int8_t xr_dest = get_xmm(inst.dest);
+               if (xr_src >= 0 && xr_dest >= 0) {
+                  if (xr_src != xr_dest)
+                     this->emit(base::VMOVDQU_A, static_cast<typename base::xmm_register>(xr_src),
+                                static_cast<typename base::xmm_register>(xr_dest));
+               } else {
+                  load_v128_to_xmm(inst.rr.src1, xmm0);
+                  store_xmm_to_v128(xmm0, inst.dest);
+               }
                return true;
             }
             int8_t pr_dest = get_phys(inst.dest);
@@ -1519,13 +1529,31 @@ namespace eosio { namespace vm {
          // arg: push a vreg value to the x86 stack (for upcoming call)
          // For v128, the value is already on the x86 stack — no-op.
          case ir_op::arg: {
-            if (inst.rr.src1 != ir_vreg_none && inst.rr.src1 < _num_vregs &&
-                _vreg_map && _vreg_map[inst.rr.src1] < 0 &&
-                _spill_map && _spill_map[inst.rr.src1] < 0) {
-               // v128 vreg: no GPR, no spill slot — value is on x86 stack already
+            uint32_t src = inst.rr.src1;
+            // Check if this is a v128 vreg with an XMM register
+            if (src != ir_vreg_none && src < _num_vregs && get_xmm(src) >= 0) {
+               // Push v128 from XMM register to x86 stack for callee
+               load_v128_to_xmm(src, xmm0);
+               this->emit_sub(16, rsp);
+               this->emit_vmovdqu(xmm0, *rsp);
                return true;
             }
-            load_vreg_rax(inst.rr.src1);
+            if (src != ir_vreg_none && src < _num_vregs &&
+                _vreg_map && _vreg_map[src] < 0 &&
+                _spill_map && _spill_map[src] < 0) {
+               // v128 vreg: no GPR, no XMM, no spill — on x86 stack already
+               return true;
+            }
+            // v128 in spill slot — push to x86 stack
+            if (src != ir_vreg_none && src < _num_vregs &&
+                _spill_map && _spill_map[src] >= 0 &&
+                _vreg_map && _vreg_map[src] < 0 && get_xmm(src) < 0) {
+               load_v128_to_xmm(src, xmm0);
+               this->emit_sub(16, rsp);
+               this->emit_vmovdqu(xmm0, *rsp);
+               return true;
+            }
+            load_vreg_rax(src);
             this->emit_push_raw(rax);
             return true;
          }
@@ -1547,9 +1575,8 @@ namespace eosio { namespace vm {
             // Store result
             if (ft.return_count > 0 && inst.dest != ir_vreg_none) {
                if (ft.return_type == types::v128) {
-                  // v128 return: callee put result in xmm0, push 16 bytes to x86 stack
-                  this->emit_sub(16, rsp);
-                  this->emit_vmovdqu(xmm0, *rsp);
+                  // v128 return: callee put result in xmm0, store to dest XMM/spill
+                  store_xmm_to_v128(xmm0, inst.dest);
                } else {
                   store_rax_vreg(inst.dest);
                }
@@ -1601,8 +1628,7 @@ namespace eosio { namespace vm {
             auto loc = emit_global_loc(inst.local.index);
             if (inst.type == types::v128) {
                this->emit_vmovdqu(loc, xmm0);
-               this->emit_sub(16, rsp);
-               this->emit_vmovdqu(xmm0, *rsp);
+               store_xmm_to_v128(xmm0, inst.dest);
             } else {
                this->emit_mov(loc, rax);
                store_rax_vreg(inst.dest);
@@ -1611,8 +1637,7 @@ namespace eosio { namespace vm {
          }
          case ir_op::global_set: {
             if (inst.type == types::v128) {
-               this->emit_vmovdqu(*rsp, xmm0);
-               this->emit_add(16, rsp);
+               load_v128_to_xmm(inst.local.src1, xmm0);
                auto loc = emit_global_loc(inst.local.index);
                this->emit_vmovdqu(xmm0, loc);
             } else {
@@ -1731,11 +1756,18 @@ namespace eosio { namespace vm {
          case ir_op::local_get: {
             int32_t offset = get_frame_offset(func, inst.local.index);
             if (inst.type == types::v128) {
-               // Load 16-byte v128 from frame and push to x86 stack
-               auto addr = *(rbp + offset);
-               this->emit_vmovdqu(addr, xmm0);
-               this->emit_sub(16, rsp);
-               this->emit_vmovdqu(xmm0, *rsp);
+               int8_t xr = get_xmm(inst.dest);
+               if (xr >= 0) {
+                  this->emit_vmovdqu(*(rbp + offset), static_cast<typename base::xmm_register>(xr));
+               } else if (_spill_map && inst.dest < _num_vregs && _spill_map[inst.dest] >= 0) {
+                  this->emit_vmovdqu(*(rbp + offset), xmm0);
+                  this->emit_vmovdqu(xmm0, *(rbp + get_spill_offset(_spill_map[inst.dest] + 1)));
+               } else {
+                  // No XMM reg, no spill — push to x86 stack (fallback)
+                  this->emit_vmovdqu(*(rbp + offset), xmm0);
+                  this->emit_sub(16, rsp);
+                  this->emit_vmovdqu(xmm0, *rsp);
+               }
             } else {
                int8_t pr = get_phys(inst.dest);
                if (pr >= 0) {
@@ -1750,11 +1782,9 @@ namespace eosio { namespace vm {
          case ir_op::local_set: {
             int32_t offset = get_frame_offset(func, inst.local.index);
             if (inst.type == types::v128) {
-               // Pop 16-byte v128 from x86 stack and store to frame
-               this->emit_vmovdqu(*rsp, xmm0);
-               this->emit_add(16, rsp);
-               auto addr = *(rbp + offset);
-               this->emit_vmovdqu(xmm0, addr);
+               // Load v128 from XMM reg or spill, store to frame
+               load_v128_to_xmm(inst.local.src1, xmm0);
+               this->emit_vmovdqu(xmm0, *(rbp + offset));
             } else {
                int8_t pr = get_phys(inst.local.src1);
                if (pr >= 0) {
@@ -1769,14 +1799,11 @@ namespace eosio { namespace vm {
          case ir_op::local_tee: {
             int32_t offset = get_frame_offset(func, inst.local.index);
             if (inst.type == types::v128) {
-               // Copy TOS v128 (16 bytes) to frame without popping
-               this->emit_vmovdqu(*rsp, xmm0);
-               auto addr = *(rbp + offset);
-               this->emit_vmovdqu(xmm0, addr);
+               load_v128_to_xmm(inst.local.src1, xmm0);
+               this->emit_vmovdqu(xmm0, *(rbp + offset));
             } else {
                load_vreg_rax(inst.local.src1);
                this->emit_mov(rax, *(rbp + offset));
-               // Value stays in src register (tee doesn't consume)
             }
             return true;
          }
@@ -1798,8 +1825,7 @@ namespace eosio { namespace vm {
          case ir_op::return_: {
             if (inst.rr.src1 != ir_vreg_none) {
                if (inst.type == types::v128) {
-                  // v128 return: load into xmm0 from x86 stack
-                  this->emit_vmovdqu(*rsp, xmm0);
+                  load_v128_to_xmm(inst.rr.src1, xmm0);
                } else {
                   load_vreg_rax(inst.rr.src1);
                }
@@ -2044,23 +2070,43 @@ namespace eosio { namespace vm {
             uint64_t low, high;
             memcpy(&high, reinterpret_cast<const char*>(&inst.immv128) + 8, 8);
             memcpy(&low, &inst.immv128, 8);
-            this->emit_mov(high, rax);
-            this->emit_push_raw(rax);
-            this->emit_mov(low, rax);
-            this->emit_push_raw(rax);
+            int8_t xr = get_xmm(inst.dest);
+            if (xr >= 0 || (_spill_map && inst.dest < _num_vregs && _spill_map[inst.dest] >= 0)) {
+               // Load constant into XMM register or spill slot
+               if (low == 0 && high == 0) {
+                  this->emit_const_zero(xmm0);
+               } else {
+                  this->emit_mov(low, rax);
+                  this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0); // movq rax, xmm0
+                  this->emit_mov(high, rax);
+                  this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8); // movq rax, xmm1
+                  this->emit_bytes(0x66, 0x0f, 0x62, 0xc1);       // vpunpcklqdq xmm1, xmm0, xmm0
+               }
+               store_xmm_to_v128(xmm0, inst.dest);
+            } else {
+               // Fallback: push to x86 stack
+               this->emit_mov(high, rax);
+               this->emit_push_raw(rax);
+               this->emit_mov(low, rax);
+               this->emit_push_raw(rax);
+            }
             return true;
          }
 
-         // v128 SIMD operations: operands/results live on x86 stack
-         case ir_op::v128_op:
+         // v128 SIMD operations
+         case ir_op::v128_op: {
+            auto sub = static_cast<simd_sub>(inst.dest);
+            // Try XMM-register path for binops/unops
+            if (emit_simd_op_xmm(inst, sub))
+               return true;
+            // Fallback: stack-based path
             emit_simd_op(inst);
-            // For scalar-producing ops (extract_lane, bitmask, any_true, all_true),
-            // the result was pushed to the x86 stack — pop it into the dest vreg.
-            if (simd_produces_scalar(static_cast<simd_sub>(inst.dest))) {
+            if (simd_produces_scalar(sub)) {
                this->emit_pop_raw(rax);
                store_rax_vreg(inst.simd.addr);
             }
             return true;
+         }
 
          // ── Bulk memory ops — inline with guard-page probes ──
          case ir_op::memory_fill: {
@@ -3014,35 +3060,37 @@ namespace eosio { namespace vm {
          return _xmm_map[vreg];
       }
 
-      // Convert XMM register index to xmm_register enum value
-      static xmm_register idx_to_xmm(int8_t idx) {
-         return static_cast<xmm_register>(idx);
-      }
-
-      // Load a v128 vreg into xmm0. Reads from XMM register or spill slot.
-      void load_v128_xmm0(uint32_t vreg) {
-         if (vreg == ir_vreg_none) return;
+      // Load a v128 vreg into the specified XMM temp register.
+      void load_v128_to_xmm(uint32_t vreg, typename base::xmm_register dest) {
+         if (vreg == ir_vreg_none || vreg == 0xFFFF) return;
          int8_t xr = get_xmm(vreg);
          if (xr >= 0) {
-            if (xr != 0) // xmm0 → xmm0 is a no-op
-               this->emit_bytes(0x66, 0x0f, 0x28, 0xc0 | (xr & 7) | ((xr & 8) ? 0x44 : 0)); // movapd xmmN, xmm0
-               // Actually, VEX movapd is simpler:
-            this->emit(base::VMOVDQU_A, idx_to_xmm(xr), xmm0);
+            auto src = static_cast<typename base::xmm_register>(xr);
+            if (src != dest)
+               this->emit(base::VMOVDQU_A, src, dest);
          } else if (_spill_map && vreg < _num_vregs && _spill_map[vreg] >= 0) {
-            this->emit_vmovdqu(*(rbp + get_spill_offset(_spill_map[vreg])), xmm0);
+            // v128 spill uses 2 consecutive 8-byte slots. Use slot+1 (lower addr)
+            // so 16-byte vmovdqu extends upward through both slots.
+            this->emit_vmovdqu(*(rbp + get_spill_offset(_spill_map[vreg] + 1)), dest);
          }
       }
 
-      // Store xmm0 to a v128 vreg's XMM register or spill slot.
-      void store_xmm0_v128(uint32_t vreg) {
-         if (vreg == ir_vreg_none) return;
+      // Store from an XMM temp register to a v128 vreg's location.
+      void store_xmm_to_v128(typename base::xmm_register src, uint32_t vreg) {
+         if (vreg == ir_vreg_none || vreg == 0xFFFF) return;
          int8_t xr = get_xmm(vreg);
          if (xr >= 0) {
-            if (xr != 0)
-               this->emit(base::VMOVDQU_B, idx_to_xmm(xr), xmm0);
+            auto dest = static_cast<typename base::xmm_register>(xr);
+            if (src != dest)
+               this->emit(base::VMOVDQU_B, dest, src);
          } else if (_spill_map && vreg < _num_vregs && _spill_map[vreg] >= 0) {
-            this->emit_vmovdqu(xmm0, *(rbp + get_spill_offset(_spill_map[vreg])));
+            this->emit_vmovdqu(src, *(rbp + get_spill_offset(_spill_map[vreg] + 1)));
          }
+      }
+
+      // Check if a v128 vreg has an XMM register (not spilled to stack)
+      bool v128_has_xmm(uint32_t vreg) const {
+         return vreg != ir_vreg_none && vreg != 0xFFFF && get_xmm(vreg) >= 0;
       }
 
       // Find the spill slot for a vreg (search intervals)
@@ -3426,6 +3474,102 @@ namespace eosio { namespace vm {
                offset -= static_cast<int32_t>(locals[g].count * size);
             }
             return offset; // shouldn't reach here
+         }
+      }
+
+      // ──────── XMM-register SIMD fast path ────────
+      // Handles v128 binops/unops directly in XMM registers when all
+      // operands have XMM registers assigned. Returns false to fall back
+      // to the stack-based path.
+      bool emit_simd_op_xmm(const ir_inst& inst, simd_sub sub) {
+         uint16_t vs1 = inst.simd.v_src1;
+         uint16_t vs2 = inst.simd.v_src2;
+         uint16_t vd  = inst.simd.v_dest;
+         // Only handle ops where all v128 vregs have XMM registers or spill slots
+         if (vd == 0xFFFF) return false;
+         if (!_xmm_map) return false;
+
+         // Map common binops to their VEX opcode
+         // Format: emit(OP, src2_xmm, src1_xmm, dest_xmm)
+         auto try_binop = [&](auto op) -> bool {
+            if (vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            load_v128_to_xmm(vs1, xmm0);
+            load_v128_to_xmm(vs2, xmm1);
+            this->emit(op, xmm1, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         };
+
+         auto try_unop = [&](auto op) -> bool {
+            if (vs1 == 0xFFFF) return false;
+            load_v128_to_xmm(vs1, xmm0);
+            this->emit(op, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         };
+
+         switch (sub) {
+         // Integer add/sub
+         case simd_sub::i8x16_add: return try_binop(base::VPADDB);
+         case simd_sub::i16x8_add: return try_binop(base::VPADDW);
+         case simd_sub::i32x4_add: return try_binop(base::VPADDD);
+         case simd_sub::i64x2_add: return try_binop(base::VPADDQ);
+         case simd_sub::i8x16_sub: return try_binop(base::VPSUBB);
+         case simd_sub::i16x8_sub: return try_binop(base::VPSUBW);
+         case simd_sub::i32x4_sub: return try_binop(base::VPSUBD);
+         case simd_sub::i64x2_sub: return try_binop(base::VPSUBQ);
+         // Integer mul
+         case simd_sub::i16x8_mul: return try_binop(base::VPMULLW);
+         case simd_sub::i32x4_mul: return try_binop(base::VPMULLD);
+         // Float add/sub/mul/div
+         case simd_sub::f32x4_add: return try_binop(base::VADDPS);
+         case simd_sub::f32x4_sub: return try_binop(base::VSUBPS);
+         case simd_sub::f32x4_mul: return try_binop(base::VMULPS);
+         case simd_sub::f32x4_div: return try_binop(base::VDIVPS);
+         case simd_sub::f64x2_add: return try_binop(base::VADDPD);
+         case simd_sub::f64x2_sub: return try_binop(base::VSUBPD);
+         case simd_sub::f64x2_mul: return try_binop(base::VMULPD);
+         case simd_sub::f64x2_div: return try_binop(base::VDIVPD);
+         // Logical
+         case simd_sub::v128_and: return try_binop(base::VPAND);
+         case simd_sub::v128_or:  return try_binop(base::VPOR);
+         case simd_sub::v128_xor: return try_binop(base::VPXOR);
+         case simd_sub::v128_andnot: return try_binop(base::VPANDN);
+         // Comparisons
+         case simd_sub::i8x16_eq: return try_binop(base::VPCMPEQB);
+         case simd_sub::i16x8_eq: return try_binop(base::VPCMPEQW);
+         case simd_sub::i32x4_eq: return try_binop(base::VPCMPEQD);
+         // Saturating add/sub
+         case simd_sub::i8x16_add_sat_s: return try_binop(base::VPADDSB);
+         case simd_sub::i8x16_add_sat_u: return try_binop(base::VPADDUSB);
+         case simd_sub::i8x16_sub_sat_s: return try_binop(base::VPSUBSB);
+         case simd_sub::i8x16_sub_sat_u: return try_binop(base::VPSUBUSB);
+         case simd_sub::i16x8_add_sat_s: return try_binop(base::VPADDSW);
+         case simd_sub::i16x8_add_sat_u: return try_binop(base::VPADDUSW);
+         case simd_sub::i16x8_sub_sat_s: return try_binop(base::VPSUBSW);
+         case simd_sub::i16x8_sub_sat_u: return try_binop(base::VPSUBUSW);
+         // Min/max
+         case simd_sub::i8x16_min_s: return try_binop(base::VPMINSB);
+         case simd_sub::i8x16_min_u: return try_binop(base::VPMINUB);
+         case simd_sub::i8x16_max_s: return try_binop(base::VPMAXSB);
+         case simd_sub::i8x16_max_u: return try_binop(base::VPMAXUB);
+         case simd_sub::i16x8_min_s: return try_binop(base::VPMINSW);
+         case simd_sub::i16x8_min_u: return try_binop(base::VPMINUW);
+         case simd_sub::i16x8_max_s: return try_binop(base::VPMAXSW);
+         case simd_sub::i16x8_max_u: return try_binop(base::VPMAXUW);
+         case simd_sub::i32x4_min_s: return try_binop(base::VPMINSD);
+         case simd_sub::i32x4_min_u: return try_binop(base::VPMINUD);
+         case simd_sub::i32x4_max_s: return try_binop(base::VPMAXSD);
+         case simd_sub::i32x4_max_u: return try_binop(base::VPMAXUD);
+         // Avgr
+         case simd_sub::i8x16_avgr_u: return try_binop(base::VPAVGB);
+         case simd_sub::i16x8_avgr_u: return try_binop(base::VPAVGW);
+         // Abs (unop)
+         case simd_sub::i8x16_abs: return try_unop(base::VPABSB);
+         case simd_sub::i16x8_abs: return try_unop(base::VPABSW);
+         case simd_sub::i32x4_abs: return try_unop(base::VPABSD);
+         default:
+            return false; // fall back to stack-based path
          }
       }
 

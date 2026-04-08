@@ -108,6 +108,27 @@ namespace eosio { namespace vm {
                   iv.type = types::i32; // scalar result
                }
             }
+            // v128 operand/result vregs for XMM register allocation
+            if (is_v128_op) {
+               auto def_v128 = [&](uint16_t vreg) {
+                  if (vreg != 0xFFFF && vreg < num_vregs) {
+                     auto& iv = func.intervals[vreg];
+                     if (i < iv.start) iv.start = i;
+                     if (i > iv.end) iv.end = i;
+                     iv.type = types::v128;
+                  }
+               };
+               auto use_v128 = [&](uint16_t vreg) {
+                  if (vreg != 0xFFFF && vreg < num_vregs) {
+                     auto& iv = func.intervals[vreg];
+                     if (i < iv.start) iv.start = i;
+                     if (i > iv.end) iv.end = i;
+                  }
+               };
+               use_v128(inst.simd.v_src1);
+               use_v128(inst.simd.v_src2);
+               def_v128(inst.simd.v_dest);
+            }
 
             // Source vregs: must check per-opcode which union fields are vregs.
             // rr.src1/src2 are ONLY vregs for arithmetic/comparison/select ops.
