@@ -1750,9 +1750,15 @@ namespace eosio { namespace vm {
             uint32_t val = static_cast<uint32_t>(inst.imm64);
             int8_t pr = get_phys(inst.dest);
             if (pr >= 0) {
-               this->emit_mov(val, phys_to_reg32(pr));
+               if (val == 0)
+                  this->emit_xor(phys_to_reg32(pr), phys_to_reg32(pr));
+               else
+                  this->emit_mov(val, phys_to_reg32(pr));
             } else {
-               this->emit_mov(val, eax);
+               if (val == 0)
+                  this->emit_xor(eax, eax);
+               else
+                  this->emit_mov(val, eax);
                store_rax_vreg(inst.dest);
             }
             return true;
@@ -1761,9 +1767,15 @@ namespace eosio { namespace vm {
             uint64_t val = static_cast<uint64_t>(inst.imm64);
             int8_t pr = get_phys(inst.dest);
             if (pr >= 0) {
-               this->emit_mov(val, phys_to_reg64(pr));
+               if (val == 0)
+                  this->emit_xor(phys_to_reg32(pr), phys_to_reg32(pr));
+               else
+                  this->emit_mov(val, phys_to_reg64(pr));
             } else {
-               this->emit_mov(val, rax);
+               if (val == 0)
+                  this->emit_xor(eax, eax);
+               else
+                  this->emit_mov(val, rax);
                store_rax_vreg(inst.dest);
             }
             return true;
