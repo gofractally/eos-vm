@@ -3640,6 +3640,215 @@ namespace eosio { namespace vm {
             return true;
          }
 
+         // ── Load lane — load v128 from XMM, insert byte/word/dword/qword from memory ──
+         case simd_sub::v128_load8_lane: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            simd_load_address(inst.simd.offset, inst.simd.addr);
+            this->emit_add(rsi, rax);
+            this->emit(base::VPINSRB, typename base::imm8{inst.simd.lane}, *rax, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::v128_load16_lane: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            simd_load_address(inst.simd.offset, inst.simd.addr);
+            this->emit_add(rsi, rax);
+            this->emit(base::VPINSRW, typename base::imm8{inst.simd.lane}, *rax, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::v128_load32_lane: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            simd_load_address(inst.simd.offset, inst.simd.addr);
+            this->emit_add(rsi, rax);
+            this->emit(base::VPINSRD, typename base::imm8{inst.simd.lane}, *rax, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::v128_load64_lane: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            simd_load_address(inst.simd.offset, inst.simd.addr);
+            this->emit_add(rsi, rax);
+            this->emit(base::VPINSRQ, typename base::imm8{inst.simd.lane}, *rax, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+
+         // ── Store lane — extract byte/word/dword/qword from XMM to memory ──
+         case simd_sub::v128_store8_lane: {
+            if (vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            simd_load_address(inst.simd.offset, inst.simd.addr);
+            this->emit_add(rsi, rax);
+            this->emit(base::VPEXTRB, typename base::imm8{inst.simd.lane}, *rax, xmm0);
+            return true;
+         }
+         case simd_sub::v128_store16_lane: {
+            if (vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            simd_load_address(inst.simd.offset, inst.simd.addr);
+            this->emit_add(rsi, rax);
+            this->emit(base::VPEXTRW, typename base::imm8{inst.simd.lane}, *rax, xmm0);
+            return true;
+         }
+         case simd_sub::v128_store32_lane: {
+            if (vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            simd_load_address(inst.simd.offset, inst.simd.addr);
+            this->emit_add(rsi, rax);
+            this->emit(base::VPEXTRD, typename base::imm8{inst.simd.lane}, *rax, xmm0);
+            return true;
+         }
+         case simd_sub::v128_store64_lane: {
+            if (vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            simd_load_address(inst.simd.offset, inst.simd.addr);
+            this->emit_add(rsi, rax);
+            this->emit(base::VPEXTRQ, typename base::imm8{inst.simd.lane}, *rax, xmm0);
+            return true;
+         }
+
+         // ── Splat — broadcast scalar to all lanes ──
+         case simd_sub::i8x16_splat: case simd_sub::i16x8_splat:
+         case simd_sub::i32x4_splat: case simd_sub::f32x4_splat:
+         case simd_sub::i64x2_splat: case simd_sub::f64x2_splat: {
+            if (vd == 0xFFFF) return false;
+            uint32_t scalar_vreg = inst.simd.addr;
+            if (scalar_vreg == ir_vreg_none) return false;
+            if (!has_reg(scalar_vreg) &&
+                !(_spill_map && scalar_vreg < _num_vregs && _spill_map[scalar_vreg] >= 0))
+               return false;
+            load_vreg_rax(scalar_vreg);
+            this->emit_vmovq(rax, xmm0);
+            auto bcast = (sub == simd_sub::i8x16_splat) ? base::VPBROADCASTB :
+                         (sub == simd_sub::i16x8_splat) ? base::VPBROADCASTW :
+                         (sub == simd_sub::i32x4_splat || sub == simd_sub::f32x4_splat) ? base::VPBROADCASTD :
+                         base::VPBROADCASTQ;
+            this->emit(bcast, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+
+         // ── Replace lane — insert scalar into v128 ──
+         case simd_sub::i8x16_replace_lane: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            uint32_t scalar_vreg = inst.simd.offset;
+            if (scalar_vreg == ir_vreg_none) return false;
+            if (!has_reg(scalar_vreg) &&
+                !(_spill_map && scalar_vreg < _num_vregs && _spill_map[scalar_vreg] >= 0))
+               return false;
+            load_vreg_rax(scalar_vreg);
+            this->emit(base::VPINSRB, typename base::imm8{inst.simd.lane}, rax, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i16x8_replace_lane: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            uint32_t scalar_vreg = inst.simd.offset;
+            if (scalar_vreg == ir_vreg_none) return false;
+            if (!has_reg(scalar_vreg) &&
+                !(_spill_map && scalar_vreg < _num_vregs && _spill_map[scalar_vreg] >= 0))
+               return false;
+            load_vreg_rax(scalar_vreg);
+            this->emit(base::VPINSRW, typename base::imm8{inst.simd.lane}, rax, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i32x4_replace_lane: case simd_sub::f32x4_replace_lane: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            uint32_t scalar_vreg = inst.simd.offset;
+            if (scalar_vreg == ir_vreg_none) return false;
+            if (!has_reg(scalar_vreg) &&
+                !(_spill_map && scalar_vreg < _num_vregs && _spill_map[scalar_vreg] >= 0))
+               return false;
+            load_vreg_rax(scalar_vreg);
+            this->emit(base::VPINSRD, typename base::imm8{inst.simd.lane}, rax, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+         case simd_sub::i64x2_replace_lane: case simd_sub::f64x2_replace_lane: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            uint32_t scalar_vreg = inst.simd.offset;
+            if (scalar_vreg == ir_vreg_none) return false;
+            if (!has_reg(scalar_vreg) &&
+                !(_spill_map && scalar_vreg < _num_vregs && _spill_map[scalar_vreg] >= 0))
+               return false;
+            load_vreg_rax(scalar_vreg);
+            this->emit(base::VPINSRQ, typename base::imm8{inst.simd.lane}, rax, xmm0, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+
+         // ── Extract lane — extract scalar from v128 (produces scalar result) ──
+         case simd_sub::i8x16_extract_lane_s: {
+            if (vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit_vpextrb(inst.simd.lane, xmm0, rax);
+            this->emit(base::MOVSXB, al, eax);
+            store_rax_vreg(inst.simd.addr);
+            return true;
+         }
+         case simd_sub::i8x16_extract_lane_u: {
+            if (vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit_vpextrb(inst.simd.lane, xmm0, rax);
+            store_rax_vreg(inst.simd.addr);
+            return true;
+         }
+         case simd_sub::i16x8_extract_lane_s: {
+            if (vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit_vpextrw(inst.simd.lane, xmm0, rax);
+            this->emit(base::MOVSXW, this->ax, eax);
+            store_rax_vreg(inst.simd.addr);
+            return true;
+         }
+         case simd_sub::i16x8_extract_lane_u: {
+            if (vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit_vpextrw(inst.simd.lane, xmm0, rax);
+            store_rax_vreg(inst.simd.addr);
+            return true;
+         }
+         case simd_sub::i32x4_extract_lane: case simd_sub::f32x4_extract_lane: {
+            if (vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit(base::VPEXTRD, typename base::imm8{inst.simd.lane}, rax, xmm0);
+            store_rax_vreg(inst.simd.addr);
+            return true;
+         }
+         case simd_sub::i64x2_extract_lane: case simd_sub::f64x2_extract_lane: {
+            if (vs1 == 0xFFFF) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            this->emit(base::VPEXTRQ, typename base::imm8{inst.simd.lane}, rax, xmm0);
+            store_rax_vreg(inst.simd.addr);
+            return true;
+         }
+
+         // ── Bitselect ──
+         case simd_sub::v128_bitselect: {
+            if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            uint32_t mask_vreg = inst.simd.addr;
+            if (mask_vreg == ir_vreg_none) return false;
+            if (!load_v128_to_xmm(static_cast<uint16_t>(mask_vreg), xmm2)) return false;
+            if (!load_v128_to_xmm(vs1, xmm0)) return false;
+            if (!load_v128_to_xmm(vs2, xmm1)) return false;
+            // bitselect(v1, v2, mask) = (v1 & mask) | (v2 & ~mask)
+            this->emit(base::VPAND, xmm0, xmm2, xmm0);
+            this->emit(base::VPANDN, xmm1, xmm2, xmm1);
+            this->emit(base::VPOR, xmm0, xmm1, xmm0);
+            store_xmm_to_v128(xmm0, vd);
+            return true;
+         }
+
          // ── Integer add/sub ──
          case simd_sub::i8x16_add: return try_binop(base::VPADDB);
          case simd_sub::i16x8_add: return try_binop(base::VPADDW);
