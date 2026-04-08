@@ -3163,15 +3163,21 @@ namespace eosio { namespace vm {
       }
 
       void emit_f64_max_sse() {
-         this->emit_bytes(0xf2, 0x0f, 0x10, 0x44, 0x24, 0x08);  // movsd 8(%rsp), xmm0
-         this->emit_bytes(0xf2, 0x0f, 0x10, 0x0c, 0x24);        // movsd (%rsp), xmm1
-         // maxsd xmm1, xmm0
-         this->emit_bytes(0xf2, 0x0f, 0x5f, 0xc1);
-         this->emit_bytes(0xf2, 0x0f, 0x10, 0x54, 0x24, 0x08);  // movsd 8(%rsp), xmm2
-         this->emit_bytes(0xf2, 0x0f, 0x10, 0x0c, 0x24);        // movsd (%rsp), xmm1
-         this->emit_bytes(0xf2, 0x0f, 0x5f, 0xca);              // maxsd xmm2, xmm1
-         // AND the two results: handles -0 vs +0 (AND clears sign when one is +0)
-         this->emit_bytes(0x66, 0x0f, 0x54, 0xc1);              // andpd xmm1, xmm0
+         // max(a,b) = -min(-a,-b): negate both, do min trick, negate result
+         this->emit_bytes(0xf2, 0x0f, 0x10, 0x44, 0x24, 0x08);  // movsd 8(%rsp), xmm0 (lhs)
+         this->emit_bytes(0xf2, 0x0f, 0x10, 0x0c, 0x24);        // movsd (%rsp), xmm1 (rhs)
+         // Negate both via xorpd with sign mask
+         this->emit_bytes(0x48, 0xb8); this->emit_operand64(0x8000000000000000ull);
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xd8);        // movq rax, xmm3 (sign mask)
+         this->emit_bytes(0x66, 0x0f, 0x57, 0xc3);              // xorpd xmm3, xmm0 (-lhs)
+         this->emit_bytes(0x66, 0x0f, 0x57, 0xcb);              // xorpd xmm3, xmm1 (-rhs)
+         // double-min + OR
+         this->emit_bytes(0x66, 0x0f, 0x28, 0xd0);              // movapd xmm0, xmm2 (save -lhs)
+         this->emit_bytes(0xf2, 0x0f, 0x5d, 0xc1);              // minsd xmm1, xmm0
+         this->emit_bytes(0xf2, 0x0f, 0x5d, 0xca);              // minsd xmm2, xmm1
+         this->emit_bytes(0x66, 0x0f, 0x56, 0xc1);              // orpd xmm1, xmm0
+         // Negate result back
+         this->emit_bytes(0x66, 0x0f, 0x57, 0xc3);              // xorpd xmm3, xmm0
          emit_f64_canonicalize_nan();
          this->emit_bytes(0x48, 0x8d, 0x64, 0x24, 0x08);
          this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
@@ -3191,13 +3197,18 @@ namespace eosio { namespace vm {
       }
 
       void emit_f32_max_sse() {
-         this->emit_bytes(0xf3, 0x0f, 0x10, 0x44, 0x24, 0x08);  // movss 8(%rsp), xmm0
-         this->emit_bytes(0xf3, 0x0f, 0x10, 0x0c, 0x24);        // movss (%rsp), xmm1
-         this->emit_bytes(0xf3, 0x0f, 0x5f, 0xc1);              // maxss xmm1, xmm0
-         this->emit_bytes(0xf3, 0x0f, 0x10, 0x54, 0x24, 0x08);  // movss 8(%rsp), xmm2
-         this->emit_bytes(0xf3, 0x0f, 0x10, 0x0c, 0x24);        // movss (%rsp), xmm1
-         this->emit_bytes(0xf3, 0x0f, 0x5f, 0xca);              // maxss xmm2, xmm1
-         this->emit_bytes(0x0f, 0x54, 0xc1);                    // andps xmm1, xmm0
+         // max(a,b) = -min(-a,-b)
+         this->emit_bytes(0xf3, 0x0f, 0x10, 0x44, 0x24, 0x08);  // movss 8(%rsp), xmm0 (lhs)
+         this->emit_bytes(0xf3, 0x0f, 0x10, 0x0c, 0x24);        // movss (%rsp), xmm1 (rhs)
+         this->emit_mov(0x80000000u, eax);
+         this->emit_bytes(0x66, 0x0f, 0x6e, 0xd8);              // movd eax, xmm3 (sign mask)
+         this->emit_bytes(0x0f, 0x57, 0xc3);                    // xorps xmm3, xmm0
+         this->emit_bytes(0x0f, 0x57, 0xcb);                    // xorps xmm3, xmm1
+         this->emit_bytes(0x0f, 0x28, 0xd0);                    // movaps xmm0, xmm2
+         this->emit_bytes(0xf3, 0x0f, 0x5d, 0xc1);              // minss xmm1, xmm0
+         this->emit_bytes(0xf3, 0x0f, 0x5d, 0xca);              // minss xmm2, xmm1
+         this->emit_bytes(0x0f, 0x56, 0xc1);                    // orps xmm1, xmm0
+         this->emit_bytes(0x0f, 0x57, 0xc3);                    // xorps xmm3, xmm0
          emit_f32_canonicalize_nan();
          this->emit_bytes(0x48, 0x8d, 0x64, 0x24, 0x08);
          this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
@@ -3219,16 +3230,22 @@ namespace eosio { namespace vm {
       }
 
       void emit_f64_max_reg(const ir_inst& inst) {
+         // max(a,b) = -min(-a,-b)
          load_vreg_rax(inst.rr.src1);
          this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
          load_vreg_rax(inst.rr.src2);
          this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);  // movq rax, xmm1
-         this->emit_bytes(0x66, 0x0f, 0x28, 0xd0);        // movapd xmm0, xmm2
-         this->emit_bytes(0xf2, 0x0f, 0x5f, 0xc1);        // maxsd xmm1, xmm0
-         this->emit_bytes(0xf2, 0x0f, 0x5f, 0xca);        // maxsd xmm2, xmm1
-         this->emit_bytes(0x66, 0x0f, 0x54, 0xc1);        // andpd xmm1, xmm0
+         this->emit_bytes(0x48, 0xb8); this->emit_operand64(0x8000000000000000ull);
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xd8);  // movq rax, xmm3 (sign mask)
+         this->emit_bytes(0x66, 0x0f, 0x57, 0xc3);         // xorpd xmm3, xmm0
+         this->emit_bytes(0x66, 0x0f, 0x57, 0xcb);         // xorpd xmm3, xmm1
+         this->emit_bytes(0x66, 0x0f, 0x28, 0xd0);         // movapd xmm0, xmm2
+         this->emit_bytes(0xf2, 0x0f, 0x5d, 0xc1);         // minsd xmm1, xmm0
+         this->emit_bytes(0xf2, 0x0f, 0x5d, 0xca);         // minsd xmm2, xmm1
+         this->emit_bytes(0x66, 0x0f, 0x56, 0xc1);         // orpd xmm1, xmm0
+         this->emit_bytes(0x66, 0x0f, 0x57, 0xc3);         // xorpd xmm3, xmm0
          emit_f64_canonicalize_nan();
-         this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);  // movq xmm0, rax
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
          store_rax_vreg(inst.dest);
       }
 
@@ -3247,16 +3264,22 @@ namespace eosio { namespace vm {
       }
 
       void emit_f32_max_reg(const ir_inst& inst) {
+         // max(a,b) = -min(-a,-b)
          load_vreg_rax(inst.rr.src1);
-         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
          load_vreg_rax(inst.rr.src2);
-         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);  // movq rax, xmm1
-         this->emit_bytes(0x0f, 0x28, 0xd0);              // movaps xmm0, xmm2
-         this->emit_bytes(0xf3, 0x0f, 0x5f, 0xc1);        // maxss xmm1, xmm0
-         this->emit_bytes(0xf3, 0x0f, 0x5f, 0xca);        // maxss xmm2, xmm1
-         this->emit_bytes(0x0f, 0x54, 0xc1);              // andps xmm1, xmm0
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc8);
+         this->emit_mov(0x80000000u, eax);
+         this->emit_bytes(0x66, 0x0f, 0x6e, 0xd8);         // movd eax, xmm3
+         this->emit_bytes(0x0f, 0x57, 0xc3);                // xorps xmm3, xmm0
+         this->emit_bytes(0x0f, 0x57, 0xcb);                // xorps xmm3, xmm1
+         this->emit_bytes(0x0f, 0x28, 0xd0);                // movaps xmm0, xmm2
+         this->emit_bytes(0xf3, 0x0f, 0x5d, 0xc1);         // minss xmm1, xmm0
+         this->emit_bytes(0xf3, 0x0f, 0x5d, 0xca);         // minss xmm2, xmm1
+         this->emit_bytes(0x0f, 0x56, 0xc1);                // orps xmm1, xmm0
+         this->emit_bytes(0x0f, 0x57, 0xc3);                // xorps xmm3, xmm0
          emit_f32_canonicalize_nan();
-         this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);  // movq xmm0, rax
+         this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
          store_rax_vreg(inst.dest);
       }
 
