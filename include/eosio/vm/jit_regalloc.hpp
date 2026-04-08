@@ -531,11 +531,21 @@ namespace eosio { namespace vm {
          }
 
          // ── Second pass: XMM register allocation for v128/f32/f64 vregs ──
-         // Integer spills may occupy some XMMs. The second pass tracks them
-         // alongside float XMMs via the same active/expire mechanism.
+         // Integer spills may occupy some XMMs. Pre-populate xmm_used so
+         // float intervals processed before integer intervals see the conflict.
          bool xmm_used[NUM_XMM] = {};
          uint32_t xmm_active[NUM_XMM];
          int num_xmm_active = 0;
+
+         // Pre-scan: mark all integer XMM assignments as initially used.
+         // They'll be expired normally during the pass as their intervals end.
+         for (uint32_t i = 0; i < func.interval_count; ++i) {
+            auto& iv = func.intervals[i];
+            if (iv.phys_xmm >= XMM_BASE && iv.type != types::v128
+                && iv.type != types::f32 && iv.type != types::f64) {
+               xmm_used[iv.phys_xmm - XMM_BASE] = true;
+            }
+         }
 
          // Re-sort intervals (may have been modified by GPR pass)
          std::sort(func.intervals, func.intervals + func.interval_count,
