@@ -311,6 +311,40 @@ namespace eosio { namespace vm {
       static uint32_t allocate_registers(ir_function& func) {
          if (func.interval_count == 0) return 0;
 
+         // ── Compute spill weights: use_count * loop_weight / range_length ──
+         // Scan IR to find max loop depth for each vreg.
+         uint8_t loop_depth_stack[512];
+         uint8_t* vreg_loop_depth = (func.next_vreg <= 512) ? loop_depth_stack : new uint8_t[func.next_vreg];
+         std::memset(vreg_loop_depth, 0, func.next_vreg);
+         {
+            uint32_t cur_depth = 0;
+            for (uint32_t i = 0; i < func.inst_count; ++i) {
+               auto& inst = func.insts[i];
+               if (inst.opcode == ir_op::block_start) {
+                  if (func.blocks && inst.dest < func.block_count && func.blocks[inst.dest].is_loop)
+                     cur_depth++;
+               } else if (inst.opcode == ir_op::block_end) {
+                  if (func.blocks && inst.dest < func.block_count && func.blocks[inst.dest].is_loop && cur_depth > 0)
+                     cur_depth--;
+               }
+               // Tag all vregs touched at this instruction with the max loop depth
+               auto tag = [&](uint32_t v) {
+                  if (v != ir_vreg_none && v < func.next_vreg && cur_depth > vreg_loop_depth[v])
+                     vreg_loop_depth[v] = static_cast<uint8_t>(cur_depth);
+               };
+               if (inst.dest != ir_vreg_none) tag(inst.dest);
+               tag(inst.rr.src1);
+               tag(inst.rr.src2);
+            }
+         }
+         // Compute weight: higher = more important to keep in register
+         auto spill_weight = [&](const ir_live_interval& iv) -> uint32_t {
+            uint32_t uses = func.use_count ? func.use_count[iv.vreg] : 1;
+            uint32_t range = (iv.end > iv.start) ? (iv.end - iv.start) : 1;
+            uint32_t loop_w = 1u << std::min<uint8_t>(vreg_loop_depth[iv.vreg], 10);
+            return (uses * loop_w * 1024) / range;
+         };
+
          // Build call bitmap for branchless crosses_call check
          const uint32_t bmp_words = (func.inst_count + 63) / 64;
          uint64_t call_bmp_stack[64]; // stack-allocate for small functions
@@ -446,26 +480,53 @@ namespace eosio { namespace vm {
                   func.callee_saved_used |= (1 << (assigned - static_cast<int>(phys_reg::caller_saved_count)));
                }
             } else {
-               // No GPR available — try XMM as integer spill register.
-               // XMM spill avoids memory: movq rax↔xmm is 2-3 cycle latency
-               // vs 4-5 for L1 cache. Also frees load/store ports.
-               // Track XMM usage for integer spills in a separate bitmap.
-               int xmm_assigned = -1;
-               for (int x = 0; x < NUM_XMM; ++x) {
-                  if (!int_xmm_used[x]) {
-                     xmm_assigned = x;
-                     break;
+               // No free GPR. Evict lowest-weight active interval if new one is hotter.
+               uint32_t new_weight = spill_weight(interval);
+               int evict_idx = -1;
+               uint32_t min_weight = new_weight;
+               for (int j = 0; j < num_active; ++j) {
+                  auto& aiv = func.intervals[active[j]];
+                  uint32_t w = spill_weight(aiv);
+                  if (w < min_weight) {
+                     int r = aiv.phys_reg;
+                     // Don't evict to a caller-saved reg if we cross a call
+                     if (crosses_call && r < static_cast<int>(phys_reg::caller_saved_count))
+                        continue;
+                     min_weight = w;
+                     evict_idx = j;
                   }
                }
-               if (xmm_assigned >= 0) {
-                  interval.phys_reg = -1;
-                  interval.phys_xmm = static_cast<int8_t>(xmm_assigned + XMM_BASE);
-                  interval.spill_slot = -1;
-                  int_xmm_used[xmm_assigned] = true;
-                  int_xmm_active[num_int_xmm_active++] = i;
+               if (evict_idx >= 0) {
+                  // Evict cold interval: take its GPR, spill it to XMM or memory
+                  auto& victim = func.intervals[active[evict_idx]];
+                  assigned = victim.phys_reg;
+                  victim.phys_reg = -1;
+                  int xmm_v = -1;
+                  for (int x = 0; x < NUM_XMM; ++x)
+                     if (!int_xmm_used[x]) { xmm_v = x; break; }
+                  if (xmm_v >= 0) {
+                     victim.phys_xmm = static_cast<int8_t>(xmm_v + XMM_BASE);
+                     int_xmm_used[xmm_v] = true;
+                     int_xmm_active[num_int_xmm_active++] = active[evict_idx];
+                  } else {
+                     victim.spill_slot = static_cast<int16_t>(next_spill_slot++);
+                  }
+                  interval.phys_reg = static_cast<int8_t>(assigned);
+                  active[evict_idx] = i;
                } else {
+                  // New interval is colder — spill it to XMM or memory
                   interval.phys_reg = -1;
-                  interval.spill_slot = static_cast<int16_t>(next_spill_slot++);
+                  int xmm_assigned = -1;
+                  for (int x = 0; x < NUM_XMM; ++x)
+                     if (!int_xmm_used[x]) { xmm_assigned = x; break; }
+                  if (xmm_assigned >= 0) {
+                     interval.phys_xmm = static_cast<int8_t>(xmm_assigned + XMM_BASE);
+                     interval.spill_slot = -1;
+                     int_xmm_used[xmm_assigned] = true;
+                     int_xmm_active[num_int_xmm_active++] = i;
+                  } else {
+                     interval.spill_slot = static_cast<int16_t>(next_spill_slot++);
+                  }
                }
             }
          }
@@ -533,6 +594,7 @@ namespace eosio { namespace vm {
          }
 
          if (bmp_words > 64) delete[] call_bmp;
+         if (func.next_vreg > 512) delete[] vreg_loop_depth;
          func.num_spill_slots = next_spill_slot;
 
          return next_spill_slot;
