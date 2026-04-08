@@ -1935,11 +1935,19 @@ namespace eosio { namespace vm {
                   this->emit_vmovdqu(*(rbp + offset), xmm0);
                   this->emit_vmovdqu(xmm0, *(rbp + get_spill_offset(_spill_map[inst.dest] + 1)));
                } else {
-                  // No XMM reg, no spill — push to x86 stack (fallback)
                   this->emit_vmovdqu(*(rbp + offset), xmm0);
                   this->emit_sub(16, rsp);
                   this->emit_vmovdqu(xmm0, *rsp);
                }
+            } else if ((inst.type == types::f32 || inst.type == types::f64) && get_xmm(inst.dest) >= 0) {
+               // f32/f64 with XMM allocation: load from frame to XMM via rax
+               // Can't use vmovdqu (16 bytes) — frame slots are only 8 bytes
+               auto xr = static_cast<typename base::xmm_register>(get_xmm(inst.dest));
+               this->emit_mov(*(rbp + offset), rax);
+               if (inst.type == types::f32)
+                  this->emit_vmovd(eax, xr);
+               else
+                  this->emit_vmovq(rax, xr);
             } else {
                int8_t pr = get_phys(inst.dest);
                if (pr >= 0) {
@@ -1954,9 +1962,13 @@ namespace eosio { namespace vm {
          case ir_op::local_set: {
             int32_t offset = get_frame_offset(func, inst.local.index);
             if (inst.type == types::v128) {
-               // Load v128 from XMM reg or spill, store to frame
                load_v128_to_xmm(inst.local.src1, xmm0);
                this->emit_vmovdqu(xmm0, *(rbp + offset));
+            } else if ((inst.type == types::f32 || inst.type == types::f64) && get_xmm(inst.local.src1) >= 0) {
+               // f32/f64 with XMM allocation: store from XMM to frame via rax
+               auto xr = static_cast<typename base::xmm_register>(get_xmm(inst.local.src1));
+               this->emit(base::VMOVQ_B, rax, xr);
+               this->emit_mov(rax, *(rbp + offset));
             } else {
                int8_t pr = get_phys(inst.local.src1);
                if (pr >= 0) {
@@ -1973,6 +1985,10 @@ namespace eosio { namespace vm {
             if (inst.type == types::v128) {
                load_v128_to_xmm(inst.local.src1, xmm0);
                this->emit_vmovdqu(xmm0, *(rbp + offset));
+            } else if ((inst.type == types::f32 || inst.type == types::f64) && get_xmm(inst.local.src1) >= 0) {
+               auto xr = static_cast<typename base::xmm_register>(get_xmm(inst.local.src1));
+               this->emit(base::VMOVQ_B, rax, xr);
+               this->emit_mov(rax, *(rbp + offset));
             } else {
                load_vreg_rax(inst.local.src1);
                this->emit_mov(rax, *(rbp + offset));
@@ -2371,18 +2387,39 @@ namespace eosio { namespace vm {
             return true;
 
          // ── Float unary ops (register mode) ──
-         case ir_op::f32_abs:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x25);                       // and $0x7fffffff, eax
-            this->emit_operand32(0x7fffffff);
-            store_rax_vreg(inst.dest);
+         case ir_op::f32_abs: {
+            int8_t xr_src = get_xmm(inst.rr.src1);
+            int8_t xr_dest = get_xmm(inst.dest);
+            if (xr_src >= 0 || xr_dest >= 0) {
+               // XMM path: move to rax, clear sign bit, move back
+               load_float_to_xmm(inst.rr.src1, xmm0, false);
+               this->emit_bytes(0x66, 0x0f, 0x7e, 0xc0); // movd xmm0, eax
+               this->emit_bytes(0x25); this->emit_operand32(0x7fffffff);
+               this->emit_vmovd(eax, xmm0);
+               store_xmm_to_float(xmm0, inst.dest, false);
+            } else {
+               load_vreg_rax(inst.rr.src1);
+               this->emit_bytes(0x25); this->emit_operand32(0x7fffffff);
+               store_rax_vreg(inst.dest);
+            }
             return true;
-         case ir_op::f32_neg:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x35);                       // xor $0x80000000, eax
-            this->emit_operand32(0x80000000);
-            store_rax_vreg(inst.dest);
+         }
+         case ir_op::f32_neg: {
+            int8_t xr_src = get_xmm(inst.rr.src1);
+            int8_t xr_dest = get_xmm(inst.dest);
+            if (xr_src >= 0 || xr_dest >= 0) {
+               load_float_to_xmm(inst.rr.src1, xmm0, false);
+               this->emit_bytes(0x66, 0x0f, 0x7e, 0xc0);
+               this->emit_bytes(0x35); this->emit_operand32(0x80000000);
+               this->emit_vmovd(eax, xmm0);
+               store_xmm_to_float(xmm0, inst.dest, false);
+            } else {
+               load_vreg_rax(inst.rr.src1);
+               this->emit_bytes(0x35); this->emit_operand32(0x80000000);
+               store_rax_vreg(inst.dest);
+            }
             return true;
+         }
          case ir_op::f32_ceil:
             load_float_to_xmm(inst.rr.src1, xmm0, false);
             this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x0a);
@@ -3228,12 +3265,14 @@ namespace eosio { namespace vm {
          if (pr >= 0) {
             this->emit_mov(phys_to_reg64(pr), rax);
          } else if (_spill_map && vreg < _num_vregs && _spill_map[vreg] >= 0) {
-            int32_t off = get_spill_offset(_spill_map[vreg]);
-            this->emit_mov(*(rbp + off), rax);
+            this->emit_mov(*(rbp + get_spill_offset(_spill_map[vreg])), rax);
+         } else {
+            // XMM-resident f32/f64: movq xmm → rax
+            int8_t xr = get_xmm(vreg);
+            if (xr >= 0) this->emit(base::VMOVQ_B, rax, static_cast<typename base::xmm_register>(xr));
          }
       }
 
-      // Load a vreg value into rcx (second temp)
       void load_vreg_rcx(uint32_t vreg) {
          if (vreg == ir_vreg_none) return;
          int8_t pr = get_phys(vreg);
@@ -3241,10 +3280,15 @@ namespace eosio { namespace vm {
             this->emit_mov(phys_to_reg64(pr), rcx);
          } else if (_spill_map && vreg < _num_vregs && _spill_map[vreg] >= 0) {
             this->emit_mov(*(rbp + get_spill_offset(_spill_map[vreg])), rcx);
+         } else {
+            int8_t xr = get_xmm(vreg);
+            if (xr >= 0) {
+               this->emit(base::VMOVQ_B, rax, static_cast<typename base::xmm_register>(xr));
+               this->emit_mov(rax, rcx);
+            }
          }
       }
 
-      // Store rax value to a vreg's home (register or spill slot)
       void store_rax_vreg(uint32_t vreg) {
          if (vreg == ir_vreg_none) return;
          int8_t pr = get_phys(vreg);
@@ -3252,6 +3296,10 @@ namespace eosio { namespace vm {
             this->emit_mov(rax, phys_to_reg64(pr));
          } else if (_spill_map && vreg < _num_vregs && _spill_map[vreg] >= 0) {
             this->emit_mov(rax, *(rbp + get_spill_offset(_spill_map[vreg])));
+         } else {
+            // XMM-resident f32/f64: movq rax → xmm
+            int8_t xr = get_xmm(vreg);
+            if (xr >= 0) this->emit_vmovq(rax, static_cast<typename base::xmm_register>(xr));
          }
       }
 

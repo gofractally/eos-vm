@@ -343,9 +343,9 @@ namespace eosio { namespace vm {
          for (uint32_t i = 0; i < func.interval_count; ++i) {
             auto& interval = func.intervals[i];
             if (interval.start == UINT32_MAX) continue;
-            // v128/f32 vregs get XMM registers, not GPRs — handled in second pass
-            // f64 stays in GPR for now (XMM f64 has encoding issues to debug)
-            if (interval.type == types::v128 || interval.type == types::f32) continue;
+            // v128/f32/f64 vregs get XMM registers, not GPRs — handled in second pass
+            if (interval.type == types::v128 || interval.type == types::f32
+                || interval.type == types::f64) continue;
 
             // Branchless bitmap check: any call in (start, end)?
             bool crosses_call = false;
@@ -452,9 +452,10 @@ namespace eosio { namespace vm {
          for (uint32_t i = 0; i < func.interval_count; ++i) {
             auto& interval = func.intervals[i];
             if (interval.start == UINT32_MAX) continue;
-            // Assign XMM registers to v128 and f32 vregs.
-            // f32 in XMM eliminates GPR↔XMM transfers on every float op.
-            if (interval.type != types::v128 && interval.type != types::f32) continue;
+            // Assign XMM registers to v128, f32, and f64 vregs.
+            // Float in XMM eliminates GPR↔XMM transfers on every float op.
+            if (interval.type != types::v128 && interval.type != types::f32
+                && interval.type != types::f64) continue;
 
             // Expire old XMM intervals
             for (int j = 0; j < num_xmm_active; ) {
