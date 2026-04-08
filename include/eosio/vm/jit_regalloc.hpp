@@ -313,8 +313,7 @@ namespace eosio { namespace vm {
 
          // ── Compute spill weights: use_count * loop_weight / range_length ──
          // Scan IR to find max loop depth for each vreg.
-         uint8_t loop_depth_stack[512];
-         uint8_t* vreg_loop_depth = (func.next_vreg <= 512) ? loop_depth_stack : new uint8_t[func.next_vreg];
+         uint8_t* vreg_loop_depth = new uint8_t[func.next_vreg];
          std::memset(vreg_loop_depth, 0, func.next_vreg);
          {
             uint32_t cur_depth = 0;
@@ -347,8 +346,8 @@ namespace eosio { namespace vm {
 
          // Build call bitmap for branchless crosses_call check
          const uint32_t bmp_words = (func.inst_count + 63) / 64;
-         uint64_t call_bmp_stack[64]; // stack-allocate for small functions
-         uint64_t* call_bmp = (bmp_words <= 64) ? call_bmp_stack : new uint64_t[bmp_words];
+         uint64_t call_bmp_stack[256]; // stack-allocate for small functions (up to 16K instructions)
+         uint64_t* call_bmp = (bmp_words <= 256) ? call_bmp_stack : new uint64_t[bmp_words];
          std::memset(call_bmp, 0, bmp_words * sizeof(uint64_t));
          bool has_calls = false;
          for (uint32_t i = 0; i < func.inst_count; ++i) {
@@ -593,8 +592,8 @@ namespace eosio { namespace vm {
             }
          }
 
-         if (bmp_words > 64) delete[] call_bmp;
-         if (func.next_vreg > 512) delete[] vreg_loop_depth;
+         if (bmp_words > 256) delete[] call_bmp;
+         delete[] vreg_loop_depth;
          func.num_spill_slots = next_spill_slot;
 
          return next_spill_slot;
