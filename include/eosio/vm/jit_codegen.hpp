@@ -3635,9 +3635,19 @@ namespace eosio { namespace vm {
          uint16_t vd  = inst.simd.v_dest;
          if (!_xmm_map) return false;
 
-         // Helper: v128 binop — load both sources to XMM, apply op, store to dest
+         // Helper: v128 binop — operate directly on allocated XMM registers
+         // VEX 3-operand: emit(op, src2, src1, dest) — all can be any XMM reg
          auto try_binop = [&](auto op) -> bool {
             if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
+            int8_t xd = get_xmm(vd), x1 = get_xmm(vs1), x2 = get_xmm(vs2);
+            if (xd >= 0 && x1 >= 0 && x2 >= 0) {
+               // All in XMM registers — single instruction, no moves
+               this->emit(op, static_cast<typename base::xmm_register>(x2),
+                              static_cast<typename base::xmm_register>(x1),
+                              static_cast<typename base::xmm_register>(xd));
+               return true;
+            }
+            // Fallback: use scratch xmm0/xmm1 for any spilled operands
             if (!load_v128_to_xmm(vs1, xmm0)) return false;
             if (!load_v128_to_xmm(vs2, xmm1)) return false;
             this->emit(op, xmm1, xmm0, xmm0);
@@ -3645,9 +3655,15 @@ namespace eosio { namespace vm {
             return true;
          };
 
-         // Helper: v128 unop — load source to XMM, apply 2-operand op, store
+         // Helper: v128 unop — operate directly on allocated XMM registers
          auto try_unop = [&](auto op) -> bool {
             if (vd == 0xFFFF || vs1 == 0xFFFF) return false;
+            int8_t xd = get_xmm(vd), x1 = get_xmm(vs1);
+            if (xd >= 0 && x1 >= 0) {
+               this->emit(op, static_cast<typename base::xmm_register>(x1),
+                              static_cast<typename base::xmm_register>(xd));
+               return true;
+            }
             if (!load_v128_to_xmm(vs1, xmm0)) return false;
             this->emit(op, xmm0, xmm0);
             store_xmm_to_v128(xmm0, vd);
