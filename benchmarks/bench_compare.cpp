@@ -26,6 +26,7 @@ extern "C" {
    int64_t bench_sort(int32_t iterations);
    int64_t bench_crc32(int32_t iterations);
    int64_t bench_matmul(int32_t iterations);
+   int64_t bench_matmul_simd(int32_t iterations);
 }
 #endif
 
@@ -755,6 +756,7 @@ int main(int argc, char** argv) {
       {"Bubble sort (64, 1K)", BENCH_MISC_WASM,   "bench_sort",         bench_sort,         1'000},
       {"CRC32 (256B, 10K)",    BENCH_MISC_WASM,   "bench_crc32",        bench_crc32,        10'000},
       {"MatMul 8x8 (10K)",     BENCH_MISC_WASM,   "bench_matmul",       bench_matmul,       10'000},
+      {"MatMul SIMD 8x8 (10K)",BENCH_MISC_WASM,   "bench_matmul_simd",  bench_matmul_simd,  10'000},
    };
    const int num_compute = sizeof(compute_tests) / sizeof(compute_tests[0]);
    double compute_results[16][RT_COUNT] = {};

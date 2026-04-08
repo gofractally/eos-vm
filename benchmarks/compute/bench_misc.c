@@ -62,6 +62,7 @@ EXPORT int64_t bench_crc32(int32_t iterations) {
 }
 
 // 4. Mixed integer: matrix multiply 8x8 (tests nested loops, register pressure)
+//    Scalar version for baseline comparison.
 EXPORT int64_t bench_matmul(int32_t iterations) {
    int32_t A[64], B[64], C[64];
    int64_t checksum = 0;
@@ -80,4 +81,55 @@ EXPORT int64_t bench_matmul(int32_t iterations) {
       checksum += C[0] + C[63];
    }
    return checksum;
+}
+
+#ifdef __wasm_simd128__
+#include <wasm_simd128.h>
+#endif
+
+// 5. SIMD matrix multiply 8x8 using v128 intrinsics
+//    Each row of A is loaded as two v128 (4 i32 each).
+//    B is transposed so columns become contiguous rows.
+//    Dot product via i32x4 multiply + horizontal add.
+EXPORT int64_t bench_matmul_simd(int32_t iterations) {
+#ifdef __wasm_simd128__
+   int32_t A[64], B[64], BT[64], C[64];
+   int64_t checksum = 0;
+   for (int32_t iter = 0; iter < iterations; iter++) {
+      for (int i = 0; i < 64; i++) {
+         A[i] = (i * 7 + iter) & 0xFF;
+         B[i] = (i * 13 + iter) & 0xFF;
+      }
+      // Transpose B so column j becomes row j in BT
+      for (int i = 0; i < 8; i++)
+         for (int j = 0; j < 8; j++)
+            BT[j * 8 + i] = B[i * 8 + j];
+      // SIMD matmul: dot product of A rows with BT rows
+      for (int i = 0; i < 8; i++) {
+         v128_t a_lo = wasm_v128_load(&A[i * 8]);
+         v128_t a_hi = wasm_v128_load(&A[i * 8 + 4]);
+         for (int j = 0; j < 8; j++) {
+            v128_t b_lo = wasm_v128_load(&BT[j * 8]);
+            v128_t b_hi = wasm_v128_load(&BT[j * 8 + 4]);
+            // Multiply and accumulate: sum of element-wise products
+            v128_t prod_lo = wasm_i32x4_mul(a_lo, b_lo);
+            v128_t prod_hi = wasm_i32x4_mul(a_hi, b_hi);
+            v128_t sum = wasm_i32x4_add(prod_lo, prod_hi);
+            // Horizontal sum of 4 lanes
+            // sum = [s0, s1, s2, s3]
+            // shuffle to get [s2, s3, s0, s1] and add
+            v128_t shuf1 = wasm_i32x4_shuffle(sum, sum, 2, 3, 0, 1);
+            v128_t sum2 = wasm_i32x4_add(sum, shuf1);
+            // shuffle to get [s1, s0, s3, s2] and add
+            v128_t shuf2 = wasm_i32x4_shuffle(sum2, sum2, 1, 0, 3, 2);
+            v128_t sum4 = wasm_i32x4_add(sum2, shuf2);
+            C[i * 8 + j] = wasm_i32x4_extract_lane(sum4, 0);
+         }
+      }
+      checksum += C[0] + C[63];
+   }
+   return checksum;
+#else
+   return bench_matmul(iterations);
+#endif
 }
