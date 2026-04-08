@@ -1940,14 +1940,12 @@ namespace eosio { namespace vm {
                   this->emit_vmovdqu(xmm0, *rsp);
                }
             } else if ((inst.type == types::f32 || inst.type == types::f64) && get_xmm(inst.dest) >= 0) {
-               // f32/f64 with XMM allocation: load from frame to XMM via rax
-               // Can't use vmovdqu (16 bytes) — frame slots are only 8 bytes
+               // f32/f64 with XMM allocation: load from frame to XMM
+               // Use mov [rbp+offset] → rax → xmm (2 instructions but safe —
+               // vmovups loads 16 bytes which could read adjacent locals' garbage)
                auto xr = static_cast<typename base::xmm_register>(get_xmm(inst.dest));
                this->emit_mov(*(rbp + offset), rax);
-               if (inst.type == types::f32)
-                  this->emit_vmovd(eax, xr);
-               else
-                  this->emit_vmovq(rax, xr);
+               this->emit_vmovq(rax, xr);
             } else {
                int8_t pr = get_phys(inst.dest);
                if (pr >= 0) {
@@ -1966,6 +1964,7 @@ namespace eosio { namespace vm {
                this->emit_vmovdqu(xmm0, *(rbp + offset));
             } else if ((inst.type == types::f32 || inst.type == types::f64) && get_xmm(inst.local.src1) >= 0) {
                // f32/f64 with XMM allocation: store from XMM to frame via rax
+               // (vmovups writes 16 bytes, corrupting adjacent frame slot)
                auto xr = static_cast<typename base::xmm_register>(get_xmm(inst.local.src1));
                this->emit(base::VMOVQ_B, rax, xr);
                this->emit_mov(rax, *(rbp + offset));
