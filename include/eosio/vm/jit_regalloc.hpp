@@ -306,7 +306,7 @@ namespace eosio { namespace vm {
          for (uint32_t i = 0; i < func.interval_count; ++i) {
             auto& interval = func.intervals[i];
             if (interval.start == UINT32_MAX) continue;
-            // Skip v128-typed vregs — they use the x86 stack, not GPR registers
+            // v128 vregs get XMM registers, not GPRs — handled in second pass below
             if (interval.type == types::v128) continue;
 
             // Branchless bitmap check: any call in (start, end)?
@@ -394,6 +394,57 @@ namespace eosio { namespace vm {
             } else {
                interval.phys_reg = -1;
                interval.spill_slot = static_cast<int16_t>(next_spill_slot++);
+            }
+         }
+
+         // ── Second pass: XMM register allocation for v128 vregs ──
+         // xmm0-xmm3 reserved as temps, xmm4-xmm15 available (12 registers)
+         static constexpr int NUM_XMM = 12;
+         static constexpr int XMM_BASE = 4; // first allocatable = xmm4
+         bool xmm_used[NUM_XMM] = {};
+         uint32_t xmm_active[NUM_XMM];
+         int num_xmm_active = 0;
+
+         // Re-sort intervals (may have been modified by GPR pass)
+         std::sort(func.intervals, func.intervals + func.interval_count,
+                   [](const ir_live_interval& a, const ir_live_interval& b) {
+                      return a.start < b.start;
+                   });
+
+         for (uint32_t i = 0; i < func.interval_count; ++i) {
+            auto& interval = func.intervals[i];
+            if (interval.start == UINT32_MAX) continue;
+            if (interval.type != types::v128) continue;
+
+            // Expire old XMM intervals
+            for (int j = 0; j < num_xmm_active; ) {
+               auto& active_iv = func.intervals[xmm_active[j]];
+               if (active_iv.end < interval.start) {
+                  xmm_used[active_iv.phys_xmm - XMM_BASE] = false;
+                  xmm_active[j] = xmm_active[--num_xmm_active];
+               } else {
+                  ++j;
+               }
+            }
+
+            // Assign XMM register
+            int assigned = -1;
+            for (int r = 0; r < NUM_XMM; ++r) {
+               if (!xmm_used[r]) {
+                  assigned = r;
+                  break;
+               }
+            }
+
+            if (assigned >= 0) {
+               interval.phys_xmm = static_cast<int8_t>(assigned + XMM_BASE);
+               xmm_used[assigned] = true;
+               xmm_active[num_xmm_active++] = i;
+            } else {
+               // Spill: v128 spill slots use 16 bytes (2 x 8-byte slots)
+               interval.phys_xmm = -1;
+               interval.spill_slot = static_cast<int16_t>(next_spill_slot);
+               next_spill_slot += 2; // 16 bytes
             }
          }
 

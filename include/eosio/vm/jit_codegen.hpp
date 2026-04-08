@@ -142,20 +142,24 @@ namespace eosio { namespace vm {
          }
 
          _vreg_map = nullptr;
+         _xmm_map = nullptr;
          _num_vregs = 0;
          _num_spill_slots = 0;
          if (func.interval_count > 0 && func.intervals) {
             _num_vregs = func.next_vreg;
             _vreg_map = scratch.alloc<int8_t>(_num_vregs);
+            _xmm_map = scratch.alloc<int8_t>(_num_vregs);
             _spill_map = scratch.alloc<int16_t>(_num_vregs);
             for (uint32_t v = 0; v < _num_vregs; ++v) {
                _vreg_map[v] = -1;
+               _xmm_map[v] = -1;
                _spill_map[v] = -1;
             }
             for (uint32_t iv = 0; iv < func.interval_count; ++iv) {
                auto& interval = func.intervals[iv];
                if (interval.vreg < _num_vregs) {
                   _vreg_map[interval.vreg] = interval.phys_reg;
+                  _xmm_map[interval.vreg] = interval.phys_xmm;
                   _spill_map[interval.vreg] = interval.spill_slot;
                }
             }
@@ -3004,6 +3008,43 @@ namespace eosio { namespace vm {
          return -static_cast<int32_t>((_body_locals + static_cast<uint32_t>(slot) + 1) * 8);
       }
 
+      // Get the XMM register assigned to a v128 vreg (-1 if spilled/none)
+      int8_t get_xmm(uint32_t vreg) const {
+         if (!_xmm_map || vreg >= _num_vregs) return -1;
+         return _xmm_map[vreg];
+      }
+
+      // Convert XMM register index to xmm_register enum value
+      static xmm_register idx_to_xmm(int8_t idx) {
+         return static_cast<xmm_register>(idx);
+      }
+
+      // Load a v128 vreg into xmm0. Reads from XMM register or spill slot.
+      void load_v128_xmm0(uint32_t vreg) {
+         if (vreg == ir_vreg_none) return;
+         int8_t xr = get_xmm(vreg);
+         if (xr >= 0) {
+            if (xr != 0) // xmm0 → xmm0 is a no-op
+               this->emit_bytes(0x66, 0x0f, 0x28, 0xc0 | (xr & 7) | ((xr & 8) ? 0x44 : 0)); // movapd xmmN, xmm0
+               // Actually, VEX movapd is simpler:
+            this->emit(base::VMOVDQU_A, idx_to_xmm(xr), xmm0);
+         } else if (_spill_map && vreg < _num_vregs && _spill_map[vreg] >= 0) {
+            this->emit_vmovdqu(*(rbp + get_spill_offset(_spill_map[vreg])), xmm0);
+         }
+      }
+
+      // Store xmm0 to a v128 vreg's XMM register or spill slot.
+      void store_xmm0_v128(uint32_t vreg) {
+         if (vreg == ir_vreg_none) return;
+         int8_t xr = get_xmm(vreg);
+         if (xr >= 0) {
+            if (xr != 0)
+               this->emit(base::VMOVDQU_B, idx_to_xmm(xr), xmm0);
+         } else if (_spill_map && vreg < _num_vregs && _spill_map[vreg] >= 0) {
+            this->emit_vmovdqu(xmm0, *(rbp + get_spill_offset(_spill_map[vreg])));
+         }
+      }
+
       // Find the spill slot for a vreg (search intervals)
       int16_t get_spill_slot(uint32_t vreg) const {
          // Linear search — could be optimized with a vreg→spill_slot map
@@ -4631,7 +4672,8 @@ namespace eosio { namespace vm {
       uint32_t _br_table_case = 0;
       uint32_t _br_table_size = 0;
       // Register allocation mapping
-      int8_t* _vreg_map = nullptr;    // vreg → phys_reg (-1 = spilled)
+      int8_t* _vreg_map = nullptr;    // vreg → phys_reg (-1 = spilled/none)
+      int8_t* _xmm_map = nullptr;    // vreg → phys_xmm (-1 = spilled/none)
       int16_t* _spill_map = nullptr;  // vreg → spill_slot (-1 = in register)
       uint32_t _num_vregs = 0;
       uint32_t _num_spill_slots = 0;

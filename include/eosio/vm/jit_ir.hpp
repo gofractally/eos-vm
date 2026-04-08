@@ -314,8 +314,12 @@ namespace eosio { namespace vm {
          struct { uint16_t val1; uint16_t val2; uint16_t cond; uint16_t _pad; } sel;
          v128_t   immv128;
          // For v128_op: sub-opcode goes in dest field (cast from simd_sub).
-         // This struct carries load/store offset and lane index.
-         struct { uint32_t offset; uint32_t addr; uint8_t lane; uint8_t _pad2[7]; } simd;
+         // offset: memarg offset or scalar vreg (shifts/replace_lane)
+         // addr: address vreg (loads/stores) or scalar result vreg (test/extract)
+         // v_src1/v_src2: v128 operand vregs (for XMM register lookup)
+         // v_dest: v128 result vreg (for XMM register store)
+         struct { uint32_t offset; uint32_t addr; uint8_t lane; uint8_t _pad2;
+                  uint16_t v_src1; uint16_t v_src2; uint16_t v_dest; } simd;
       };
    };
    static_assert(std::is_trivially_copyable_v<ir_inst>);
