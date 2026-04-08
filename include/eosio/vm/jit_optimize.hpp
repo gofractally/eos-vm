@@ -279,6 +279,8 @@ namespace eosio { namespace vm {
             case ir_op::v128_op:
                if (inst.simd.addr != ir_vreg_none)
                   count_use(inst.simd.addr);
+               if (inst.simd.offset != 0 && inst.simd.offset < num_vregs)
+                  count_use(inst.simd.offset);
                break;
             default:
                // All opcode categories with vreg sources are handled above.

@@ -1561,17 +1561,17 @@ namespace eosio { namespace vm {
       void ir_simd_replace(simd_sub sub, uint8_t lane) {
          if (_unreachable) return;
          _func->has_simd = true;
-         _func->vpop();
-         _func->vpop(); _func->vpop();
-         ir_simd_emit_with_lane(sub, lane);
+         uint32_t scalar = _func->vpop();  // scalar value vreg
+         _func->vpop(); _func->vpop();     // v128 (2 vregs)
+         ir_simd_emit_with_offset_lane(sub, scalar, lane);  // store scalar vreg in offset field
          uint32_t d1 = _func->alloc_vreg(types::v128); _func->vpush(d1);
          uint32_t d2 = _func->alloc_vreg(types::v128); _func->vpush(d2);
       }
       void ir_simd_splat(simd_sub sub) {
          if (_unreachable) return;
          _func->has_simd = true;
-         _func->vpop();
-         ir_simd_emit(sub);
+         uint32_t scalar = _func->vpop();  // scalar value vreg
+         ir_simd_emit_with_offset(sub, 0, scalar);  // store scalar vreg in addr field
          uint32_t d1 = _func->alloc_vreg(types::v128); _func->vpush(d1);
          uint32_t d2 = _func->alloc_vreg(types::v128); _func->vpush(d2);
       }

@@ -230,10 +230,13 @@ namespace eosio { namespace vm {
                use_vreg(inst.rr.src1);
                break;
 
-            // v128_op: addr field may reference a GPR vreg (for loads/stores)
+            // v128_op: addr and offset fields may reference GPR vregs
             case ir_op::v128_op:
                if (inst.simd.addr != ir_vreg_none)
                   use_vreg(inst.simd.addr);
+               // offset field used as scalar vreg for replace_lane/splat
+               if (inst.simd.offset != 0 && inst.simd.offset < num_vregs)
+                  use_vreg(inst.simd.offset);
                break;
 
             // No source vregs

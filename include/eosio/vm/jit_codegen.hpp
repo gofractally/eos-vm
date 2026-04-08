@@ -3241,16 +3241,24 @@ namespace eosio { namespace vm {
 
       // v128 replace lane: pop scalar, load v128 from TOS, insert, store back
       template<typename Op>
-      void simd_replace_laneop(Op op, uint8_t lane) {
-         this->emit_pop_raw(rax);
+      void simd_replace_laneop(Op op, uint8_t lane, uint32_t scalar_vreg = ir_vreg_none) {
+         if (scalar_vreg != ir_vreg_none) {
+            load_vreg_rax(scalar_vreg);  // scalar from GPR
+         } else {
+            this->emit_pop_raw(rax);     // scalar from stack
+         }
          this->emit_vmovdqu(*rsp, xmm0);
          this->emit(op, typename base::imm8{lane}, rax, xmm0, xmm0);
          this->emit_vmovdqu(xmm0, *rsp);
       }
 
-      // v128 splat: pop scalar, broadcast to v128, push v128
+      // v128 splat: load scalar from vreg, broadcast to v128, push v128
       template<typename Op>
-      void simd_splatop(Op op) {
+      void simd_splatop(Op op, uint32_t scalar_vreg = ir_vreg_none) {
+         if (scalar_vreg != ir_vreg_none) {
+            load_vreg_rax(scalar_vreg);
+            this->emit_push_raw(rax);  // put on stack for broadcast
+         }
          this->emit(op, *rsp, xmm0);
          this->emit_sub(8, rsp);
          this->emit_vmovdqu(xmm0, *rsp);
@@ -3481,7 +3489,7 @@ namespace eosio { namespace vm {
             break;
          }
          case simd_sub::i8x16_extract_lane_u: simd_extract_laneop(base::VPEXTRB, inst.simd.lane); break;
-         case simd_sub::i8x16_replace_lane: simd_replace_laneop(base::VPINSRB, inst.simd.lane); break;
+         case simd_sub::i8x16_replace_lane: simd_replace_laneop(base::VPINSRB, inst.simd.lane, inst.simd.offset); break;
          case simd_sub::i16x8_extract_lane_s: {
             this->emit_vmovdqu(*rsp, xmm0);
             this->emit_add(16, rsp);
@@ -3491,23 +3499,23 @@ namespace eosio { namespace vm {
             break;
          }
          case simd_sub::i16x8_extract_lane_u: simd_extract_laneop(base::VPEXTRW, inst.simd.lane); break;
-         case simd_sub::i16x8_replace_lane: simd_replace_laneop(base::VPINSRW, inst.simd.lane); break;
+         case simd_sub::i16x8_replace_lane: simd_replace_laneop(base::VPINSRW, inst.simd.lane, inst.simd.offset); break;
          case simd_sub::i32x4_extract_lane: simd_extract_laneop(base::VPEXTRD, inst.simd.lane); break;
-         case simd_sub::i32x4_replace_lane: simd_replace_laneop(base::VPINSRD, inst.simd.lane); break;
+         case simd_sub::i32x4_replace_lane: simd_replace_laneop(base::VPINSRD, inst.simd.lane, inst.simd.offset); break;
          case simd_sub::i64x2_extract_lane: simd_extract_laneop(base::VPEXTRQ, inst.simd.lane); break;
-         case simd_sub::i64x2_replace_lane: simd_replace_laneop(base::VPINSRQ, inst.simd.lane); break;
+         case simd_sub::i64x2_replace_lane: simd_replace_laneop(base::VPINSRQ, inst.simd.lane, inst.simd.offset); break;
          case simd_sub::f32x4_extract_lane: simd_extract_laneop(base::VPEXTRD, inst.simd.lane); break;
-         case simd_sub::f32x4_replace_lane: simd_replace_laneop(base::VPINSRD, inst.simd.lane); break;
+         case simd_sub::f32x4_replace_lane: simd_replace_laneop(base::VPINSRD, inst.simd.lane, inst.simd.offset); break;
          case simd_sub::f64x2_extract_lane: simd_extract_laneop(base::VPEXTRQ, inst.simd.lane); break;
-         case simd_sub::f64x2_replace_lane: simd_replace_laneop(base::VPINSRQ, inst.simd.lane); break;
+         case simd_sub::f64x2_replace_lane: simd_replace_laneop(base::VPINSRQ, inst.simd.lane, inst.simd.offset); break;
 
          // ── Splat ──
-         case simd_sub::i8x16_splat: simd_splatop(base::VPBROADCASTB); break;
-         case simd_sub::i16x8_splat: simd_splatop(base::VPBROADCASTW); break;
-         case simd_sub::i32x4_splat: simd_splatop(base::VPBROADCASTD); break;
-         case simd_sub::i64x2_splat: simd_splatop(base::VPBROADCASTQ); break;
-         case simd_sub::f32x4_splat: simd_splatop(base::VPBROADCASTD); break;
-         case simd_sub::f64x2_splat: simd_splatop(base::VPBROADCASTQ); break;
+         case simd_sub::i8x16_splat: simd_splatop(base::VPBROADCASTB, inst.simd.addr); break;
+         case simd_sub::i16x8_splat: simd_splatop(base::VPBROADCASTW, inst.simd.addr); break;
+         case simd_sub::i32x4_splat: simd_splatop(base::VPBROADCASTD, inst.simd.addr); break;
+         case simd_sub::i64x2_splat: simd_splatop(base::VPBROADCASTQ, inst.simd.addr); break;
+         case simd_sub::f32x4_splat: simd_splatop(base::VPBROADCASTD, inst.simd.addr); break;
+         case simd_sub::f64x2_splat: simd_splatop(base::VPBROADCASTQ, inst.simd.addr); break;
 
          // ── i8x16 comparisons ──
          case simd_sub::i8x16_eq: simd_v128_irelop_cmp(base::VPCMPEQB, true, false); break;
