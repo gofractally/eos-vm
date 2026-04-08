@@ -1461,13 +1461,14 @@ namespace eosio { namespace vm {
       void emit_branch_cc_to_block(ir_function& func, uint32_t block_idx,
                                     uint32_t depth_change, uint8_t rt, Jcc cc) {
          if (block_idx >= _num_blocks) return;
-         // For fused br_if, no multipop needed (handled by the IR's depth_change)
-         if (_block_addrs[block_idx] != nullptr) {
-            // Backward branch (loop)
+         // For loop blocks, _block_addrs has the loop header (backward branch).
+         // For non-loop blocks, _block_addrs has the block start which is WRONG
+         // for br — non-loop br should target the block END (forward fixup).
+         bool is_loop = func.blocks && func.blocks[block_idx].is_loop;
+         if (is_loop && _block_addrs[block_idx] != nullptr) {
             void* branch = this->emit_branchcc32(cc);
             base::fix_branch(branch, _block_addrs[block_idx]);
          } else {
-            // Forward branch
             void* branch = this->emit_branchcc32(cc);
             auto* fixup = _scratch->alloc<block_fixup>(1);
             fixup->branch = branch;
@@ -1641,19 +1642,7 @@ namespace eosio { namespace vm {
          case ir_op::br_if: {
             load_vreg_rax(inst.br.src1); // condition
             this->emit(base::TEST, eax, eax);
-            // Branch to target block if nonzero
-            if (inst.br.target < _num_blocks) {
-               if (_block_addrs[inst.br.target] != nullptr) {
-                  void* branch = this->emit_branchcc32(base::JNZ);
-                  base::fix_branch(branch, _block_addrs[inst.br.target]);
-               } else {
-                  void* branch = this->emit_branchcc32(base::JNZ);
-                  auto* fixup = _scratch->alloc<block_fixup>(1);
-                  fixup->branch = branch;
-                  fixup->next = _block_fixups[inst.br.target];
-                  _block_fixups[inst.br.target] = fixup;
-               }
-            }
+            emit_branch_cc_to_block(func, inst.br.target, inst.dest, inst.type, base::JNZ);
             return true;
          }
          case ir_op::br_table: {
@@ -3001,15 +2990,14 @@ namespace eosio { namespace vm {
       // For non-loops: jump to block end (forward, may need fixup).
       void emit_branch_to_block(ir_function& func, uint32_t block_idx, uint32_t depth_change, uint8_t rt) {
          if (block_idx >= _num_blocks) return;
-         // Multipop: adjust stack for the branch
          emit_branch_multipop(depth_change, rt);
-         // Check if target address is already known
-         if (_block_addrs[block_idx] != nullptr) {
-            // Address known — emit direct jump (backward branch to loop)
+         // Only use recorded address for loop blocks (backward jump to header).
+         // Non-loop blocks use forward fixup (resolved at block_end).
+         bool is_loop = func.blocks && func.blocks[block_idx].is_loop;
+         if (is_loop && _block_addrs[block_idx] != nullptr) {
             void* branch = emit_jmp32();
             base::fix_branch(branch, _block_addrs[block_idx]);
          } else {
-            // Forward branch — emit placeholder and record fixup
             void* branch = emit_jmp32();
             auto* fixup = _scratch->alloc<block_fixup>(1);
             fixup->branch = branch;
@@ -3027,7 +3015,8 @@ namespace eosio { namespace vm {
          // If no stack adjustment needed, emit simple conditional branch
          bool needs_multipop = (depth_change > 0);
          if (!needs_multipop) {
-            if (_block_addrs[block_idx] != nullptr) {
+            bool is_loop = func.blocks && func.blocks[block_idx].is_loop;
+            if (is_loop && _block_addrs[block_idx] != nullptr) {
                void* branch = this->emit_branchcc32(base::JNZ);
                base::fix_branch(branch, _block_addrs[block_idx]);
             } else {
