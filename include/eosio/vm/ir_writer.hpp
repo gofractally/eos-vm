@@ -42,7 +42,7 @@ namespace eosio { namespace vm {
 
       ir_writer(growable_allocator& alloc, std::size_t source_bytes, module& mod)
          : _allocator(alloc), _source_bytes(source_bytes), _mod(mod),
-           _scratch(alloc) {
+           _scratch_alloc(source_bytes), _scratch(_scratch_alloc) {
          _num_functions = mod.code.size();
          _functions = _scratch.alloc<ir_function>(_num_functions);
          for (uint32_t i = 0; i < _num_functions; ++i) {
@@ -58,9 +58,9 @@ namespace eosio { namespace vm {
          }
 
          // Pass 2: Register allocation + code generation (fused per-function).
-         // Processing each function's regalloc immediately before codegen keeps
-         // the IR data hot in cache.
-         codegen_t codegen(_allocator, _mod);
+         // _scratch_alloc holds IR/regalloc/optimizer data (transient, non-executable).
+         // _allocator holds only native code (executable, tightly packed).
+         codegen_t codegen(_allocator, _mod, _scratch_alloc);
          codegen.emit_entry_and_error_handlers();
          for (uint32_t i = 0; i < _num_functions; ++i) {
             jit_optimizer::optimize(_functions[i], _scratch);
@@ -69,11 +69,6 @@ namespace eosio { namespace vm {
             codegen.compile_function(_functions[i], _mod.code[i]);
          }
          codegen.finalize_code();
-         // Disarm the scratch allocator so its destructor won't restore the
-         // watermark after we reset. Then reset to reclaim all pre-code memory.
-         // The native code has been copied to the jit_allocator by end_code<true>().
-         _scratch.disarm();
-         _allocator.reset();
       }
 
       static constexpr uint32_t get_depth_for_type(uint8_t type) {
@@ -1691,10 +1686,11 @@ namespace eosio { namespace vm {
       }
 
       // ──── State ────
-      growable_allocator& _allocator;
+      growable_allocator& _allocator;       // Code only (executable, permanent)
       std::size_t _source_bytes;
       module& _mod;
-      jit_scratch_allocator _scratch;       // All transient data (IR, regalloc, codegen aux)
+      growable_allocator _scratch_alloc;    // Scratch data (IR, regalloc, codegen aux — non-executable)
+      jit_scratch_allocator _scratch;       // Watermark wrapper for _scratch_alloc
       ir_function* _functions = nullptr;
       uint32_t _num_functions = 0;
       ir_function* _func = nullptr;

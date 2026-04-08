@@ -62,8 +62,8 @@ namespace eosio { namespace vm {
          false;
 #endif
 
-      jit_codegen_a64(growable_allocator& alloc, module& mod, void* code_segment_base = nullptr)
-         : _allocator(alloc), _mod(mod) {
+      jit_codegen_a64(growable_allocator& alloc, module& mod, growable_allocator& scratch_alloc, void* code_segment_base = nullptr)
+         : _allocator(alloc), _scratch_alloc(scratch_alloc), _mod(mod) {
          init_relocations();
          _code_segment_base = code_segment_base ? code_segment_base : _allocator.start_code();
       }
@@ -106,13 +106,10 @@ namespace eosio { namespace vm {
       // ──────── Compile one function from IR to ARM64 ────────
 
       void compile_function(ir_function& func, function_body& body) {
-         const std::size_t est_size = static_cast<std::size_t>(func.inst_count) * 64 + 512;
-         auto* buf = _allocator.alloc<unsigned char>(est_size);
-         auto* code_start = buf;
-         code = buf;
+         jit_scratch_allocator scratch(_scratch_alloc);
 
-         _block_addrs = _allocator.alloc<void*>(func.block_count);
-         _block_fixups = _allocator.alloc<block_fixup*>(func.block_count);
+         _block_addrs = scratch.alloc<void*>(func.block_count);
+         _block_fixups = scratch.alloc<block_fixup*>(func.block_count);
          _num_blocks = func.block_count;
          for (uint32_t i = 0; i < func.block_count; ++i) {
             _block_addrs[i] = nullptr;
@@ -126,8 +123,8 @@ namespace eosio { namespace vm {
          _num_spill_slots = 0;
          if (func.interval_count > 0 && func.intervals) {
             _num_vregs = func.next_vreg;
-            _vreg_map = _allocator.alloc<int8_t>(_num_vregs);
-            _spill_map = _allocator.alloc<int16_t>(_num_vregs);
+            _vreg_map = scratch.alloc<int8_t>(_num_vregs);
+            _spill_map = scratch.alloc<int16_t>(_num_vregs);
             for (uint32_t v = 0; v < _num_vregs; ++v) {
                _vreg_map[v] = -1;
                _spill_map[v] = -1;
@@ -150,6 +147,12 @@ namespace eosio { namespace vm {
          _func_insts = func.insts;
          _func_inst_count = func.inst_count;
 
+         // Code buffer from code allocator (tightly packed, no scratch interleaved)
+         const std::size_t est_size = static_cast<std::size_t>(func.inst_count) * 64 + 512;
+         auto* buf = _allocator.alloc<unsigned char>(est_size);
+         auto* code_start = buf;
+         code = buf;
+
          start_function(code, func.func_index + _mod.get_imported_functions_size());
 
          emit_function_prologue(func);
@@ -161,6 +164,11 @@ namespace eosio { namespace vm {
          emit_function_epilogue(func);
 
          body.jit_code_offset = code_start - static_cast<unsigned char*>(_code_segment_base);
+         body.jit_code_size = static_cast<uint32_t>(code - code_start);
+
+         // Reclaim unused code buffer tail
+         _allocator.reclaim(code, est_size - static_cast<std::size_t>(code - code_start));
+         // scratch destructor reclaims transient data from _scratch_alloc
 
          _block_addrs = nullptr;
          _block_fixups = nullptr;
@@ -1917,6 +1925,7 @@ namespace eosio { namespace vm {
 
       unsigned char* code = nullptr;
       growable_allocator& _allocator;
+      growable_allocator& _scratch_alloc;
       module& _mod;
       void* _code_segment_base = nullptr;
       void* fpe_handler = nullptr;

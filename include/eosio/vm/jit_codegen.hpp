@@ -52,8 +52,8 @@ namespace eosio { namespace vm {
       using typename base::imm32;
 
     public:
-      jit_codegen(growable_allocator& alloc, module& mod, void* code_segment_base = nullptr)
-         : _allocator(alloc), _mod(mod) {
+      jit_codegen(growable_allocator& alloc, module& mod, growable_allocator& scratch_alloc, void* code_segment_base = nullptr)
+         : _allocator(alloc), _scratch_alloc(scratch_alloc), _mod(mod) {
          // Allocate relocation table BEFORE starting the code region.
          // _code_base[0] must be the SysV ABI entry point.
          init_relocations();
@@ -127,12 +127,13 @@ namespace eosio { namespace vm {
 
       // Compile one function from IR to x86_64
       void compile_function(ir_function& func, function_body& body) {
-         // Scratch allocator: metadata first, then code buffer.
-         // Scratch reclaims metadata; code buffer tail is reclaimed manually.
-         jit_scratch_allocator scratch(_allocator);
+         // Use separate scratch allocator for transient per-function data.
+         // This keeps the code allocator clean — no scratch data interleaved
+         // between function code buffers.
+         jit_scratch_allocator scratch(_scratch_alloc);
          _scratch = &scratch;
 
-         // Allocate transient metadata from scratch (will be reclaimed)
+         // Allocate transient metadata from scratch (reclaimed after codegen)
          _block_addrs = scratch.alloc<void*>(func.block_count);
          _block_fixups = scratch.alloc<block_fixup*>(func.block_count);
          _num_blocks = func.block_count;
@@ -174,11 +175,7 @@ namespace eosio { namespace vm {
          _func_insts = func.insts;
          _func_inst_count = func.inst_count;
 
-         // Disarm scratch BEFORE allocating code buffer — we'll manage
-         // the reclaim manually so code buffer stays permanent.
-         scratch.disarm();
-
-         // Code buffer (permanent — NOT reclaimed by scratch)
+         // Code buffer — allocated from the code allocator (tightly packed)
          const std::size_t bytes_per_inst = func.has_simd ? 128 : 64;
          const std::size_t est_size = static_cast<std::size_t>(func.inst_count) * bytes_per_inst + 256;
          auto* buf = _allocator.alloc<unsigned char>(est_size);
@@ -197,10 +194,9 @@ namespace eosio { namespace vm {
          emit_function_epilogue(func);
 
          body.jit_code_offset = code_start - static_cast<unsigned char*>(_code_segment_base);
-
-         // Record actual emitted code size.
          body.jit_code_size = static_cast<uint32_t>(code - code_start);
 
+         // scratch destructor reclaims all transient data from _scratch_alloc
          _scratch = nullptr;
          _block_addrs = nullptr;
          _block_fixups = nullptr;
@@ -5436,7 +5432,8 @@ namespace eosio { namespace vm {
       static void on_stack_overflow() { vm::throw_<wasm_interpreter_exception>("stack overflow"); }
 
       // ──────── State ────────
-      growable_allocator& _allocator;
+      growable_allocator& _allocator;        // code only (executable, permanent)
+      growable_allocator& _scratch_alloc;    // transient per-function data (reused)
       module& _mod;
       void* _code_segment_base;
       void* fpe_handler = nullptr;
