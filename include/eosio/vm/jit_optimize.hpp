@@ -145,8 +145,13 @@ namespace eosio { namespace vm {
 
          // ── Phase 2: Count vreg uses ──
          // Count the function return value as a use (read by epilogue, not by any IR instruction)
+         // For v128 returns, the low vreg (vstack_top-2) is the actual value.
          if (func.vstack_top > 0) {
-            uint32_t ret_vreg = func.vstack[func.vstack_top - 1];
+            bool is_v128_ret = func.type && func.type->return_count > 0
+                               && func.type->return_type == types::v128;
+            uint32_t ret_idx = is_v128_ret && func.vstack_top >= 2
+                               ? func.vstack_top - 2 : func.vstack_top - 1;
+            uint32_t ret_vreg = func.vstack[ret_idx];
             if (ret_vreg != ir_vreg_none && ret_vreg < num_vregs)
                use_count[ret_vreg]++;
          }
@@ -278,8 +283,10 @@ namespace eosio { namespace vm {
                break;
             case ir_op::v128_op: {
                auto sub = static_cast<simd_sub>(inst.dest);
-               // For scalar-producing ops, addr is a DEST vreg, not a source
-               if (!simd_produces_scalar(sub) && inst.simd.addr != ir_vreg_none)
+               // For scalar-producing ops, addr is a DEST vreg, not a source.
+               // For bitselect, addr holds a v128 mask vreg (not a GP use).
+               if (!simd_produces_scalar(sub) && sub != simd_sub::v128_bitselect
+                   && inst.simd.addr != ir_vreg_none)
                   count_use(inst.simd.addr);
                if (simd_offset_is_vreg(sub))
                   count_use(inst.simd.offset);

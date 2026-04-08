@@ -73,8 +73,13 @@ namespace eosio { namespace vm {
          // Extend the return value vreg's interval to the end of the function.
          // The vstack's last entry holds the return value, which is read by
          // the epilogue but not by any IR instruction.
+         // For v128 returns, the low vreg (vstack_top-2) is the actual value.
          if (func.vstack_top > 0) {
-            uint32_t ret_vreg = func.vstack[func.vstack_top - 1];
+            bool is_v128_ret = func.type && func.type->return_count > 0
+                               && func.type->return_type == types::v128;
+            uint32_t ret_idx = is_v128_ret && func.vstack_top >= 2
+                               ? func.vstack_top - 2 : func.vstack_top - 1;
+            uint32_t ret_vreg = func.vstack[ret_idx];
             if (ret_vreg < num_vregs) {
                func.intervals[ret_vreg].end = func.inst_count;
             }
@@ -96,7 +101,10 @@ namespace eosio { namespace vm {
                auto& iv = func.intervals[inst.dest];
                if (i < iv.start) iv.start = i;
                if (i > iv.end) iv.end = i;
-               iv.type = inst.type;
+               // Don't downgrade v128 type once set (prevents conflict between
+               // const_v128 type and nop marker type for the same vreg)
+               if (iv.type != types::v128)
+                  iv.type = inst.type;
             }
             // Scalar-producing v128_ops store their result vreg in simd.addr
             if (is_v128_op && simd_produces_scalar(static_cast<simd_sub>(inst.dest))) {
@@ -109,7 +117,8 @@ namespace eosio { namespace vm {
                }
             }
             // v128 operand/result vregs for XMM register allocation
-            if (is_v128_op) {
+            // Skip i8x16_shuffle: its immv128 union member overlaps v_src/v_dest fields
+            if (is_v128_op && static_cast<simd_sub>(inst.dest) != simd_sub::i8x16_shuffle) {
                auto def_v128 = [&](uint16_t vreg) {
                   if (vreg != 0xFFFF && vreg < num_vregs) {
                      auto& iv = func.intervals[vreg];
@@ -128,6 +137,10 @@ namespace eosio { namespace vm {
                use_v128(inst.simd.v_src1);
                use_v128(inst.simd.v_src2);
                def_v128(inst.simd.v_dest);
+               // Bitselect's 3rd v128 source (mask) is stored in addr field
+               if (static_cast<simd_sub>(inst.dest) == simd_sub::v128_bitselect) {
+                  use_v128(static_cast<uint16_t>(inst.simd.addr));
+               }
             }
 
             // Source vregs: must check per-opcode which union fields are vregs.
@@ -269,7 +282,10 @@ namespace eosio { namespace vm {
             // For scalar-producing ops, addr is a DEST vreg (not a source).
             case ir_op::v128_op: {
                auto sub = static_cast<simd_sub>(inst.dest);
-               if (!simd_produces_scalar(sub) && inst.simd.addr != ir_vreg_none)
+               // addr is a GP vreg for memory ops and scalar-dest ops, but
+               // for bitselect it holds a v128 mask vreg (handled above)
+               if (!simd_produces_scalar(sub) && sub != simd_sub::v128_bitselect
+                   && inst.simd.addr != ir_vreg_none)
                   use_vreg(inst.simd.addr);
                if (simd_offset_is_vreg(sub))
                   use_vreg(inst.simd.offset);
