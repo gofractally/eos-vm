@@ -121,6 +121,15 @@ namespace eosio { namespace vm {
                      inst.imm64 = 0;
                      if (inst.dest < num_vregs) { const_val[inst.dest] = 0; is_const[inst.dest] = 1; }
                      reduced = true;
+                  } else if (c > 0 && (c & (c - 1)) == 0) { // x * power-of-2 → x << log2(c)
+                     bool is32 = (inst.opcode == ir_op::i32_mul);
+                     inst.opcode = is32 ? ir_op::i32_shl : ir_op::i64_shl;
+                     // Replace src2 constant with shift amount
+                     int shift = 0;
+                     int64_t tmp = c;
+                     while (tmp > 1) { tmp >>= 1; shift++; }
+                     const_val[inst.rr.src2] = shift;
+                     reduced = true;
                   }
                   break;
                case ir_op::i32_and: case ir_op::i64_and:

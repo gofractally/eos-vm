@@ -2761,7 +2761,22 @@ namespace eosio { namespace vm {
                if (is32) { this->emit_mov(phys_to_reg32(pr_s1), phys_to_reg32(pr_d)); op(phys_to_reg32(pr_d), phys_to_reg32(pr_s2)); }
                else      { this->emit_mov(phys_to_reg64(pr_s1), phys_to_reg64(pr_d)); op(phys_to_reg64(pr_d), phys_to_reg64(pr_s2)); }
             }
+         } else if (pr_d >= 0 && pr_s1 >= 0) {
+            // dest+src1 in registers, src2 spilled — load src2, operate in dest
+            if (pr_d != pr_s1) {
+               if (is32) this->emit_mov(phys_to_reg32(pr_s1), phys_to_reg32(pr_d));
+               else      this->emit_mov(phys_to_reg64(pr_s1), phys_to_reg64(pr_d));
+            }
+            load_vreg_rcx(inst.rr.src2);
+            if (is32) op(phys_to_reg32(pr_d), ecx);
+            else      op(phys_to_reg64(pr_d), rcx);
+         } else if (pr_d >= 0 && pr_s2 >= 0) {
+            // dest+src2 in registers, src1 spilled — load src1 to rax, operate, store to dest
+            load_vreg_rax(inst.rr.src1);
+            if (is32) { op(eax, phys_to_reg32(pr_s2)); this->emit_mov(eax, phys_to_reg32(pr_d)); }
+            else      { op(rax, phys_to_reg64(pr_s2)); this->emit_mov(rax, phys_to_reg64(pr_d)); }
          } else {
+            // Generic: both through rax/rcx
             load_vreg_rcx(inst.rr.src2);
             load_vreg_rax(inst.rr.src1);
             if (is32) op(eax, ecx);
