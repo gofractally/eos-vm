@@ -335,9 +335,15 @@ namespace eosio { namespace vm {
                    });
 
          static constexpr int NUM_REGS = static_cast<int>(phys_reg::count);
+         static constexpr int NUM_XMM = 12;
+         static constexpr int XMM_BASE = 4; // first allocatable = xmm4
          uint32_t active[NUM_REGS];
          bool reg_used[NUM_REGS] = {};
          int num_active = 0;
+         // XMM registers used as integer spill (when GPRs exhausted)
+         bool int_xmm_used[NUM_XMM] = {};
+         uint32_t int_xmm_active[NUM_XMM];
+         int num_int_xmm_active = 0;
          uint32_t next_spill_slot = 0;
 
          for (uint32_t i = 0; i < func.interval_count; ++i) {
@@ -368,12 +374,22 @@ namespace eosio { namespace vm {
                }
             }
 
-            // Expire old intervals
+            // Expire old intervals (GPR)
             for (int j = 0; j < num_active; ) {
                auto& active_iv = func.intervals[active[j]];
                if (active_iv.end < interval.start) {
                   reg_used[active_iv.phys_reg] = false;
                   active[j] = active[--num_active];
+               } else {
+                  ++j;
+               }
+            }
+            // Expire old intervals (integer XMM spills)
+            for (int j = 0; j < num_int_xmm_active; ) {
+               auto& active_iv = func.intervals[int_xmm_active[j]];
+               if (active_iv.end < interval.start) {
+                  int_xmm_used[active_iv.phys_xmm - XMM_BASE] = false;
+                  int_xmm_active[j] = int_xmm_active[--num_int_xmm_active];
                } else {
                   ++j;
                }
@@ -430,15 +446,33 @@ namespace eosio { namespace vm {
                   func.callee_saved_used |= (1 << (assigned - static_cast<int>(phys_reg::caller_saved_count)));
                }
             } else {
-               interval.phys_reg = -1;
-               interval.spill_slot = static_cast<int16_t>(next_spill_slot++);
+               // No GPR available — try XMM as integer spill register.
+               // XMM spill avoids memory: movq rax↔xmm is 2-3 cycle latency
+               // vs 4-5 for L1 cache. Also frees load/store ports.
+               // Track XMM usage for integer spills in a separate bitmap.
+               int xmm_assigned = -1;
+               for (int x = 0; x < NUM_XMM; ++x) {
+                  if (!int_xmm_used[x]) {
+                     xmm_assigned = x;
+                     break;
+                  }
+               }
+               if (xmm_assigned >= 0) {
+                  interval.phys_reg = -1;
+                  interval.phys_xmm = static_cast<int8_t>(xmm_assigned + XMM_BASE);
+                  interval.spill_slot = -1;
+                  int_xmm_used[xmm_assigned] = true;
+                  int_xmm_active[num_int_xmm_active++] = i;
+               } else {
+                  interval.phys_reg = -1;
+                  interval.spill_slot = static_cast<int16_t>(next_spill_slot++);
+               }
             }
          }
 
-         // ── Second pass: XMM register allocation for v128 vregs ──
-         // xmm0-xmm3 reserved as temps, xmm4-xmm15 available (12 registers)
-         static constexpr int NUM_XMM = 12;
-         static constexpr int XMM_BASE = 4; // first allocatable = xmm4
+         // ── Second pass: XMM register allocation for v128/f32/f64 vregs ──
+         // Integer spills may occupy some XMMs. The second pass tracks them
+         // alongside float XMMs via the same active/expire mechanism.
          bool xmm_used[NUM_XMM] = {};
          uint32_t xmm_active[NUM_XMM];
          int num_xmm_active = 0;
@@ -452,8 +486,17 @@ namespace eosio { namespace vm {
          for (uint32_t i = 0; i < func.interval_count; ++i) {
             auto& interval = func.intervals[i];
             if (interval.start == UINT32_MAX) continue;
-            // Assign XMM registers to v128, f32, and f64 vregs.
-            // Float in XMM eliminates GPR↔XMM transfers on every float op.
+
+            // Integer vregs with XMM spill: track in active set for expiry
+            if (interval.phys_xmm >= XMM_BASE && interval.type != types::v128
+                && interval.type != types::f32 && interval.type != types::f64) {
+               // Already assigned XMM from integer pass — just track it
+               int xmm_idx = interval.phys_xmm - XMM_BASE;
+               xmm_used[xmm_idx] = true;
+               xmm_active[num_xmm_active++] = i;
+               continue;
+            }
+
             if (interval.type != types::v128 && interval.type != types::f32
                 && interval.type != types::f64) continue;
 
