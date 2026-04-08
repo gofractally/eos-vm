@@ -44,6 +44,12 @@ namespace eosio { namespace vm {
             bool is_store_op = (inst.opcode >= ir_op::i32_store && inst.opcode <= ir_op::i64_store32);
             bool is_block_mk = (inst.opcode == ir_op::block_start || inst.opcode == ir_op::block_end);
             if (!is_store_op && !is_block_mk && inst.dest != ir_vreg_none && inst.dest < num_vregs) {
+               // If this vreg was already defined, it's a phi merge from different
+               // control flow paths. Kill constant status — the value depends on
+               // which branch was taken at runtime.
+               if (def_inst[inst.dest] != UINT32_MAX) {
+                  is_const[inst.dest] = 0;
+               }
                def_inst[inst.dest] = i;
             }
 
@@ -129,6 +135,11 @@ namespace eosio { namespace vm {
                      int64_t tmp = c;
                      while (tmp > 1) { tmp >>= 1; shift++; }
                      const_val[inst.rr.src2] = shift;
+                     // Also update the actual const instruction so codegen uses the shift amount
+                     uint32_t src2_def = def_inst[inst.rr.src2];
+                     if (src2_def < n) {
+                        func.insts[src2_def].imm64 = shift;
+                     }
                      reduced = true;
                   }
                   break;

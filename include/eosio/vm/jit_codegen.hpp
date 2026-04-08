@@ -2848,26 +2848,41 @@ namespace eosio { namespace vm {
          };
 
          if (pr_d >= 0 && pr_s1 >= 0) {
-            // dest+src1 in registers
-            if (pr_d != pr_s1) {
+            if (pr_d == pr_s1) {
+               // dest == src1: just apply op src2
+               if (is32) emit_op(phys_to_reg32(pr_d), inst.rr.src2);
+               else      emit_op(phys_to_reg64(pr_d), inst.rr.src2);
+            } else if (pr_s2 >= 0 && pr_d == pr_s2) {
+               // dest == src2: mov src1→dest would clobber src2, use rax as temp
+               if (is32) { this->emit_mov(phys_to_reg32(pr_s1), eax); emit_op(eax, inst.rr.src2); this->emit_mov(eax, phys_to_reg32(pr_d)); }
+               else      { this->emit_mov(phys_to_reg64(pr_s1), rax); emit_op(rax, inst.rr.src2); this->emit_mov(rax, phys_to_reg64(pr_d)); }
+            } else {
+               // dest != src1 && dest != src2: safe to mov src1→dest first
                if (is32) this->emit_mov(phys_to_reg32(pr_s1), phys_to_reg32(pr_d));
                else      this->emit_mov(phys_to_reg64(pr_s1), phys_to_reg64(pr_d));
+               if (is32) emit_op(phys_to_reg32(pr_d), inst.rr.src2);
+               else      emit_op(phys_to_reg64(pr_d), inst.rr.src2);
             }
-            if (is32) emit_op(phys_to_reg32(pr_d), inst.rr.src2);
-            else      emit_op(phys_to_reg64(pr_d), inst.rr.src2);
          } else if (pr_d >= 0) {
-            // dest in register, src1 spilled — load src1 to dest, then op src2
-            int16_t sp1 = get_vreg_spill(inst.rr.src1);
-            if (sp1 >= 0) {
-               if (is32) this->emit_mov(*(rbp + get_spill_offset(sp1)), phys_to_reg32(pr_d));
-               else      this->emit_mov(*(rbp + get_spill_offset(sp1)), phys_to_reg64(pr_d));
-            } else {
+            if (pr_s2 >= 0 && pr_d == pr_s2) {
+               // dest == src2: load src1 into rax to avoid clobbering src2
                load_vreg_rax(inst.rr.src1);
-               if (is32) this->emit_mov(eax, phys_to_reg32(pr_d));
-               else      this->emit_mov(rax, phys_to_reg64(pr_d));
+               if (is32) { emit_op(eax, inst.rr.src2); this->emit_mov(eax, phys_to_reg32(pr_d)); }
+               else      { emit_op(rax, inst.rr.src2); this->emit_mov(rax, phys_to_reg64(pr_d)); }
+            } else {
+               // dest != src2: safe to load src1 into dest first
+               int16_t sp1 = get_vreg_spill(inst.rr.src1);
+               if (sp1 >= 0) {
+                  if (is32) this->emit_mov(*(rbp + get_spill_offset(sp1)), phys_to_reg32(pr_d));
+                  else      this->emit_mov(*(rbp + get_spill_offset(sp1)), phys_to_reg64(pr_d));
+               } else {
+                  load_vreg_rax(inst.rr.src1);
+                  if (is32) this->emit_mov(eax, phys_to_reg32(pr_d));
+                  else      this->emit_mov(rax, phys_to_reg64(pr_d));
+               }
+               if (is32) emit_op(phys_to_reg32(pr_d), inst.rr.src2);
+               else      emit_op(phys_to_reg64(pr_d), inst.rr.src2);
             }
-            if (is32) emit_op(phys_to_reg32(pr_d), inst.rr.src2);
-            else      emit_op(phys_to_reg64(pr_d), inst.rr.src2);
          } else {
             // dest spilled — use rax as accumulator, op src2 (possibly from memory)
             load_vreg_rax(inst.rr.src1);
@@ -3015,23 +3030,21 @@ namespace eosio { namespace vm {
          int8_t pr_addr = get_phys(addr_vreg);
          int8_t pr_dest = get_phys(inst.dest);
 
-         // Use addr physical register as SIB index when available
-         general_register64 addr = rax;
-         if (pr_addr >= 0 && phys_to_reg64(pr_addr) != rax) {
-            addr = phys_to_reg64(pr_addr);
+         // Load WASM address and zero-extend from i32 to 64-bit.
+         // i32 vregs may have garbage upper bits from register reuse.
+         if (pr_addr >= 0) {
+            this->emit_mov(phys_to_reg32(pr_addr), ecx); // mov r32→ecx zero-extends
          } else {
             load_vreg_rax(addr_vreg);
+            this->emit_mov(eax, ecx); // zero-extend
          }
 
          // WASM effective address = base + offset. Use 64-bit add so overflow
          // lands in guard pages instead of wrapping to a valid address.
          if (uoffset != 0) {
-            if (addr != rcx) this->emit_mov(addr, rcx);
             emit_addr_offset_add(rcx, uoffset);
-            this->emit(instr, *(rcx + rsi + 0), reg);
-         } else {
-            this->emit(instr, *(addr + rsi + 0), reg);
          }
+         this->emit(instr, *(rcx + rsi + 0), reg);
 
          // Move result from reg (eax/rax) to dest physical register if different
          if (pr_dest >= 0 && phys_to_reg64(pr_dest) != rax) {
@@ -3047,31 +3060,22 @@ namespace eosio { namespace vm {
       template<class I, class R>
       bool emit_store_reg(const ir_inst& inst, I instr, R reg) {
          uint32_t uoffset = static_cast<uint32_t>(inst.ri.imm);
-         uint32_t addr_vreg = inst.ri.src1; // stores: no folding (addr may be shared)
+         uint32_t addr_vreg = inst.ri.src1;
          int8_t pr_addr = get_phys(addr_vreg);
 
-         // If addr is in rax, load it to rcx BEFORE loading value into rax
-         // (otherwise loading value to rax would destroy the address)
-         general_register64 addr = rcx;
-         if (pr_addr >= 0 && phys_to_reg64(pr_addr) == rax) {
-            load_vreg_rcx(addr_vreg);  // save addr to rcx before rax is overwritten
-            load_vreg_rax(inst.dest);  // then load value to rax
+         // Load value to rax and address to rdx (zero-extended from i32)
+         load_vreg_rax(inst.dest);  // value to rax
+         if (pr_addr >= 0) {
+            this->emit_mov(phys_to_reg32(pr_addr), edx); // zero-extend i32 addr
          } else {
-            load_vreg_rax(inst.dest);  // value to rax
-            if (pr_addr >= 0) {
-               addr = phys_to_reg64(pr_addr);
-            } else {
-               load_vreg_rcx(addr_vreg);
-            }
+            load_vreg_rcx(addr_vreg);
+            this->emit_mov(ecx, edx); // zero-extend i32 addr
          }
 
          if (uoffset != 0) {
-            this->emit_mov(addr, rdx);
             emit_addr_offset_add(rdx, uoffset);
-            this->emit(instr, *(rdx + rsi + 0), reg);
-         } else {
-            this->emit(instr, *(addr + rsi + 0), reg);
          }
+         this->emit(instr, *(rdx + rsi + 0), reg);
          return true;
       }
 
@@ -3297,11 +3301,9 @@ namespace eosio { namespace vm {
          } else if (_spill_map && vreg < _num_vregs && _spill_map[vreg] >= 0) {
             this->emit_mov(*(rbp + get_spill_offset(_spill_map[vreg])), rcx);
          } else {
+            // XMM-resident integer: vmovq xmm → rcx directly (avoids clobbering rax)
             int8_t xr = get_xmm(vreg);
-            if (xr >= 0) {
-               this->emit(base::VMOVQ_B, rax, static_cast<typename base::xmm_register>(xr));
-               this->emit_mov(rax, rcx);
-            }
+            if (xr >= 0) this->emit(base::VMOVQ_B, rcx, static_cast<typename base::xmm_register>(xr));
          }
       }
 
@@ -4511,7 +4513,8 @@ namespace eosio { namespace vm {
       template<class I, class R>
       void emit_load(int32_t offset, I instr, R reg) {
          uint32_t uoffset = static_cast<uint32_t>(offset);
-         this->emit_pop_raw(rax);  // WASM address
+         this->emit_pop_raw(rax);  // WASM address (i32, may have garbage upper bits)
+         this->emit_mov(eax, eax); // zero-extend i32 address to 64-bit
          if (uoffset != 0) {
             emit_addr_offset_add(rax, uoffset);
          }
@@ -4523,7 +4526,8 @@ namespace eosio { namespace vm {
       void emit_store(int32_t offset, I instr, R reg) {
          uint32_t uoffset = static_cast<uint32_t>(offset);
          this->emit_pop_raw(rax);  // value
-         this->emit_pop_raw(rcx);  // WASM address
+         this->emit_pop_raw(rcx);  // WASM address (i32, may have garbage upper bits)
+         this->emit_mov(ecx, ecx); // zero-extend i32 address to 64-bit
          if (uoffset != 0) {
             emit_addr_offset_add(rcx, uoffset);
          }

@@ -130,15 +130,7 @@ int main() {
     g_memory = bkend.get_context().linear_memory();
     printf("Linear memory: %p\n", (void*)g_memory);
 
-    // Initialize WASI + C++ constructors (Botan EC group tables)
-    printf("Running _initialize...\n"); fflush(stdout);
-    try {
-        bkend.call_with_return("env", "_initialize");
-        printf("_initialize OK\n");
-    } catch (const std::exception& e) {
-        printf("_initialize failed: %s\n", e.what());
-        fflush(stdout); _exit(1);
-    }
+    // No _initialize export — the WASM uses lazy init in bench_verify
 
     // Warmup
     printf("Running warmup...\n"); fflush(stdout);
