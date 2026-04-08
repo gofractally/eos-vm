@@ -3575,17 +3575,23 @@ namespace eosio { namespace vm {
             return true;
          };
 
-         // Helper: unsigned comparison via min/max — minmax(a,b)==a means a<=b
+         // Helper: unsigned comparison via min/max.
+         // Stack path checks: minmax(a,b)==b, then optionally inverts.
+         // For lt_u (VPMIN, EQ, flip=false): min(a,b)==b → b<=a, invert → a<b
+         // For gt_u (VPMAX, EQ, flip=false): max(a,b)==b → b>=a, invert → a>b  (hmm, actually b>=a)
+         // Match the stack-based semantics exactly.
          auto try_cmp_minmax = [&](auto minmax_op, auto eq_op, bool flip) -> bool {
             if (vd == 0xFFFF || vs1 == 0xFFFF || vs2 == 0xFFFF) return false;
-            if (!load_v128_to_xmm(vs1, xmm0)) return false;
-            if (!load_v128_to_xmm(vs2, xmm1)) return false;
-            this->emit(minmax_op, xmm1, xmm0, xmm1); // xmm1 = minmax(src1, src2)
-            this->emit(eq_op, xmm1, xmm0, xmm0);     // xmm0 = (src1 == minmax_result)
+            if (!load_v128_to_xmm(vs1, xmm0)) return false; // a
+            if (!load_v128_to_xmm(vs2, xmm1)) return false; // b
+            // xmm0 = minmax(a, b) — min/max is symmetric so operand order doesn't matter
+            this->emit(minmax_op, xmm1, xmm0, xmm0);
+            // Compare with b (xmm1): result = (b == minmax(a,b))
+            this->emit(eq_op, xmm0, xmm1, xmm0);
             if (!flip) {
-               // Invert: we got "eq" but want "ne" of the eq
-               this->emit_const_zero(xmm1);
-               this->emit(base::VPCMPEQB, xmm1, xmm0, xmm0);
+               // Invert result
+               this->emit_const_ones(xmm1);
+               this->emit(base::VPXOR, xmm1, xmm0, xmm0);
             }
             store_xmm_to_v128(xmm0, vd);
             return true;
