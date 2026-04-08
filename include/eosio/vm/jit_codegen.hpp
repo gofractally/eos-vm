@@ -127,19 +127,17 @@ namespace eosio { namespace vm {
 
       // Compile one function from IR to x86_64
       void compile_function(ir_function& func, function_body& body) {
-         // Code buffer is permanent (stays in _allocator)
+         // Estimate output size: each IR instruction emits at most ~64 bytes
+         // SIMD ops can emit up to ~128 bytes each (softfloat calls, shuffle, etc.)
          const std::size_t bytes_per_inst = func.has_simd ? 128 : 64;
          const std::size_t est_size = static_cast<std::size_t>(func.inst_count) * bytes_per_inst + 256;
          auto* buf = _allocator.alloc<unsigned char>(est_size);
          auto* code_start = buf;
          code = buf;
 
-         // Transient metadata uses scratch allocator (reclaimed after this function)
-         jit_scratch_allocator scratch(_allocator);
-         _scratch = &scratch;
-
-         _block_addrs = scratch.alloc<void*>(func.block_count);
-         _block_fixups = scratch.alloc<block_fixup*>(func.block_count);
+         // Allocate block address tracking (one entry per basic block)
+         _block_addrs = _allocator.alloc<void*>(func.block_count);
+         _block_fixups = _allocator.alloc<block_fixup*>(func.block_count);
          _num_blocks = func.block_count;
          for (uint32_t i = 0; i < func.block_count; ++i) {
             _block_addrs[i] = nullptr;
@@ -152,8 +150,8 @@ namespace eosio { namespace vm {
          _num_spill_slots = 0;
          if (func.interval_count > 0 && func.intervals) {
             _num_vregs = func.next_vreg;
-            _vreg_map = scratch.alloc<int8_t>(_num_vregs);
-            _spill_map = scratch.alloc<int16_t>(_num_vregs);
+            _vreg_map = _allocator.alloc<int8_t>(_num_vregs);
+            _spill_map = _allocator.alloc<int16_t>(_num_vregs);
             for (uint32_t v = 0; v < _num_vregs; ++v) {
                _vreg_map[v] = -1;
                _spill_map[v] = -1;
@@ -194,12 +192,12 @@ namespace eosio { namespace vm {
          // Emit function epilogue (return)
          emit_function_epilogue(func);
 
-         // Record code offset. Transient metadata (block_addrs, vreg_map, etc.)
-         // is reclaimed by the scratch allocator destructor at scope exit.
+         // Record code offset. Don't reclaim unused code buffer space —
+         // block fixup nodes may be allocated after the code buffer.
+         // All memory is reclaimed in bulk by end_code<true>().
          body.jit_code_offset = code_start - static_cast<unsigned char*>(_code_segment_base);
 
-         // Clear per-function state (scratch destructor reclaims metadata)
-         _scratch = nullptr;
+         // Clear per-function state
          _block_addrs = nullptr;
          _block_fixups = nullptr;
          _num_blocks = 0;
@@ -537,7 +535,7 @@ namespace eosio { namespace vm {
             // Then-block: emit jump to end (forward fixup to block end)
             if (target_block < _num_blocks) {
                void* jmp = emit_jmp32();
-               auto* fixup = _scratch->alloc<block_fixup>(1);
+               auto* fixup = _allocator.alloc<block_fixup>(1);
                fixup->branch = jmp;
                fixup->next = _block_fixups[target_block];
                _block_fixups[target_block] = fixup;
@@ -1357,7 +1355,7 @@ namespace eosio { namespace vm {
          } else {
             // Forward branch
             void* branch = this->emit_branchcc32(cc);
-            auto* fixup = _scratch->alloc<block_fixup>(1);
+            auto* fixup = _allocator.alloc<block_fixup>(1);
             fixup->branch = branch;
             fixup->next = _block_fixups[block_idx];
             _block_fixups[block_idx] = fixup;
@@ -1454,7 +1452,7 @@ namespace eosio { namespace vm {
             uint32_t target_block = inst.br.target;
             if (target_block < _num_blocks) {
                void* jmp = emit_jmp32();
-               auto* fixup = _scratch->alloc<block_fixup>(1);
+               auto* fixup = _allocator.alloc<block_fixup>(1);
                fixup->branch = jmp;
                fixup->next = _block_fixups[target_block];
                _block_fixups[target_block] = fixup;
@@ -1496,7 +1494,7 @@ namespace eosio { namespace vm {
                   base::fix_branch(branch, _block_addrs[inst.br.target]);
                } else {
                   void* branch = this->emit_branchcc32(base::JNZ);
-                  auto* fixup = _scratch->alloc<block_fixup>(1);
+                  auto* fixup = _allocator.alloc<block_fixup>(1);
                   fixup->branch = branch;
                   fixup->next = _block_fixups[inst.br.target];
                   _block_fixups[inst.br.target] = fixup;
@@ -2829,7 +2827,7 @@ namespace eosio { namespace vm {
          } else {
             // Forward branch — emit placeholder and record fixup
             void* branch = emit_jmp32();
-            auto* fixup = _scratch->alloc<block_fixup>(1);
+            auto* fixup = _allocator.alloc<block_fixup>(1);
             fixup->branch = branch;
             fixup->next = _block_fixups[block_idx];
             _block_fixups[block_idx] = fixup;
@@ -2850,7 +2848,7 @@ namespace eosio { namespace vm {
                base::fix_branch(branch, _block_addrs[block_idx]);
             } else {
                void* branch = this->emit_branchcc32(base::JNZ);
-               auto* fixup = _scratch->alloc<block_fixup>(1);
+               auto* fixup = _allocator.alloc<block_fixup>(1);
                fixup->branch = branch;
                fixup->next = _block_fixups[block_idx];
                _block_fixups[block_idx] = fixup;
@@ -4624,8 +4622,6 @@ namespace eosio { namespace vm {
       void* memory_handler = nullptr;
       func_reloc* _relocs = nullptr;
       uint32_t _num_relocs = 0;
-      // Scratch allocator for per-function transient data (reclaimed after each function)
-      jit_scratch_allocator* _scratch = nullptr;
       // Per-function block address tracking (set during compile_function)
       void** _block_addrs = nullptr;
       block_fixup** _block_fixups = nullptr;
