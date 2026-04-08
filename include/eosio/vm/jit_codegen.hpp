@@ -215,7 +215,7 @@ namespace eosio { namespace vm {
          // (single allocator mode) or a separate allocator.
          _scratch = &scratch;
          _cur_func = &func;
-         _debug_trace = (func.block_count > 4 && func.type && func.type->param_types.size() == 2);
+         _debug_trace = false;
 
          // Allocate transient metadata from scratch (reclaimed after codegen)
          _block_addrs = scratch.alloc<void*>(func.block_count);
