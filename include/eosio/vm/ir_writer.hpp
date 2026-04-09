@@ -754,7 +754,14 @@ namespace eosio { namespace vm {
       void emit_current_memory() {
          if (!_unreachable) {
             uint32_t dest = _func->alloc_vreg(types::i32);
-            ir_emit_nullary(ir_op::memory_size, types::i32);
+            ir_inst inst{};
+            inst.opcode = ir_op::memory_size;
+            inst.type = types::i32;
+            inst.flags = IR_SIDE_EFFECT;
+            inst.dest = dest;
+            inst.rr.src1 = ir_vreg_none;
+            inst.rr.src2 = ir_vreg_none;
+            _func->emit(inst);
             _func->vpush(dest);
          }
       }
