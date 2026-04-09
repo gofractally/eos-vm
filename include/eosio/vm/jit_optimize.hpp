@@ -418,7 +418,11 @@ namespace eosio { namespace vm {
             if (inst.dest == ir_vreg_none || inst.dest >= num_vregs) continue;
             if (use_count[inst.dest] != 1) continue;
 
-            auto& next = func.insts[i + 1];
+            // Skip past dead instructions to find the consumer
+            uint32_t j = i + 1;
+            while (j < n && (func.insts[j].flags & IR_DEAD)) ++j;
+            if (j >= n) continue;
+            auto& next = func.insts[j];
             if (next.opcode == ir_op::if_ && next.br.src1 == inst.dest) {
                // OK — fuse with if_
             } else if (next.opcode == ir_op::br_if && next.br.src1 == inst.dest
