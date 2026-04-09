@@ -30,9 +30,11 @@ namespace eosio { namespace vm {
          auto* use_count = func.use_count;
          auto* def_inst  = func.def_inst;
 
-         // Allocate scratch-only arrays
-         auto* const_val = scratch.alloc<int64_t>(num_vregs);
-         auto* is_const  = scratch.alloc<uint8_t>(num_vregs);
+         // Allocate constant tracking arrays (persisted on ir_function for codegen)
+         func.const_val = scratch.alloc<int64_t>(num_vregs);
+         func.is_const  = scratch.alloc<uint8_t>(num_vregs);
+         auto* const_val = func.const_val;
+         auto* is_const  = func.is_const;
          std::memset(is_const, 0, num_vregs);
 
          // ── Phase 1: Constant propagation + folding ──
@@ -370,7 +372,6 @@ namespace eosio { namespace vm {
             if (use_count[inst.dest] != 1) continue;
 
             auto& next = func.insts[i + 1];
-            if (next.flags & IR_DEAD) continue;
             if (next.opcode == ir_op::if_ && next.br.src1 == inst.dest) {
                // OK — fuse with if_
             } else if (next.opcode == ir_op::br_if && next.br.src1 == inst.dest

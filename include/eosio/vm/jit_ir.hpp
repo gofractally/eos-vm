@@ -395,6 +395,12 @@ namespace eosio { namespace vm {
       uint16_t*       use_count   = nullptr;
       uint32_t*       def_inst    = nullptr;
 
+      // Compile-time constant info (allocated by optimizer Phase 1, count = next_vreg).
+      // is_const[v] = 1 if vreg v is a known compile-time constant.
+      // const_val[v] = the constant value (only valid when is_const[v] == 1).
+      uint8_t*        is_const    = nullptr;
+      int64_t*        const_val   = nullptr;
+
       uint32_t        next_vreg   = 0;
       uint32_t        num_params  = 0;
       uint32_t        num_locals  = 0;
