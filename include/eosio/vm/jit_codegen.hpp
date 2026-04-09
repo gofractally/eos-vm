@@ -3495,6 +3495,12 @@ namespace eosio { namespace vm {
                this->emit(base::VMOVDQU_A, src, dest);
             return;
          }
+         // For f64 with spill slot: load directly from spill to XMM (1 instruction)
+         if (is_f64 && _spill_map && vreg < _num_vregs && _spill_map[vreg] >= 0) {
+            this->emit(base::VMOVQ_A, *(rbp + get_spill_offset(_spill_map[vreg])), dest);
+            return;
+         }
+         // Fallback: load to rax, then vmovq/vmovd to XMM
          load_vreg_rax(vreg);
          if (is_f64) this->emit_vmovq(rax, dest);
          else        this->emit_vmovd(eax, dest);
@@ -3509,9 +3515,13 @@ namespace eosio { namespace vm {
                this->emit(base::VMOVDQU_B, dest, src);
             return;
          }
-         // movq xmm → rax (for f64) or movd xmm → eax (for f32)
+         // For f64 with spill slot: store directly from XMM to spill (1 instruction)
+         if (is_f64 && _spill_map && vreg < _num_vregs && _spill_map[vreg] >= 0) {
+            this->emit(base::VMOVQ_B, *(rbp + get_spill_offset(_spill_map[vreg])), src);
+            return;
+         }
+         // Fallback: movq/movd xmm → rax, then store rax to vreg
          if (is_f64) {
-            // movq xmm0 → rax: 66 48 0f 7e c0
             this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, static_cast<uint8_t>(0xc0 | ((src & 7) << 3)));
          } else {
             this->emit_bytes(0x66, 0x0f, 0x7e, static_cast<uint8_t>(0xc0 | ((src & 7) << 3)));
