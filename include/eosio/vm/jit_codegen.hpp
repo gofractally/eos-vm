@@ -1150,42 +1150,15 @@ namespace eosio { namespace vm {
          case ir_op::f64_le: emit_f64_relop_sse(0x02, false, false); break;
          case ir_op::f64_ge: emit_f64_relop_sse(0x02, true, false); break;
 
-         // ── Float-to-int conversions ──
-         case ir_op::i32_trunc_s_f32:
-            // cvttss2si (%rsp), %eax; mov %rax, (%rsp)
-            this->emit_bytes(0xf3, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
-         case ir_op::i32_trunc_u_f32:
-            // cvttss2si (%rsp), %rax (64-bit to catch unsigned range)
-            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
-         case ir_op::i32_trunc_s_f64:
-            this->emit_bytes(0xf2, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
-         case ir_op::i32_trunc_u_f64:
-            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
-         case ir_op::i64_trunc_s_f32:
-            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
-         case ir_op::i64_trunc_u_f32:
-            // TODO: handle unsigned i64 range (>= 2^63)
-            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
-         case ir_op::i64_trunc_s_f64:
-            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
-         case ir_op::i64_trunc_u_f64:
-            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
+         // ── Float-to-int conversions (trapping, via softfloat) ──
+         case ir_op::i32_trunc_s_f32:  emit_trunc_call(&trunc_f32_i32s); break;
+         case ir_op::i32_trunc_u_f32:  emit_trunc_call(&trunc_f32_i32u); break;
+         case ir_op::i32_trunc_s_f64:  emit_trunc_call(&trunc_f64_i32s); break;
+         case ir_op::i32_trunc_u_f64:  emit_trunc_call(&trunc_f64_i32u); break;
+         case ir_op::i64_trunc_s_f32:  emit_trunc_call(&trunc_f32_i64s); break;
+         case ir_op::i64_trunc_u_f32:  emit_trunc_call(&trunc_f32_i64u); break;
+         case ir_op::i64_trunc_s_f64:  emit_trunc_call(&trunc_f64_i64s); break;
+         case ir_op::i64_trunc_u_f64:  emit_trunc_call(&trunc_f64_i64u); break;
 
          // Saturating truncations (same as above for now — TODO: clamp)
          case ir_op::i32_trunc_sat_f32_s:
@@ -2611,58 +2584,15 @@ namespace eosio { namespace vm {
          case ir_op::f64_eq: emit_f64_relop(inst, 0x00, false, false); return true;
          case ir_op::f64_ne: emit_f64_relop(inst, 0x00, false, true);  return true;
 
-         // ── Float-to-int conversions (register mode) ──
-         case ir_op::i32_trunc_s_f32:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
-            this->emit_bytes(0xf3, 0x0f, 0x2c, 0xc0);         // cvttss2si eax, xmm0
-            store_rax_vreg(inst.dest);
-            return true;
-         case ir_op::i32_trunc_u_f32:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0xc0);  // cvttss2si rax, xmm0 (64-bit to handle unsigned range)
-            this->emit_bytes(0x89, 0xc0);                      // mov eax, eax (zero-extend)
-            store_rax_vreg(inst.dest);
-            return true;
-         case ir_op::i32_trunc_s_f64:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf2, 0x0f, 0x2c, 0xc0);         // cvttsd2si eax, xmm0
-            store_rax_vreg(inst.dest);
-            return true;
-         case ir_op::i32_trunc_u_f64:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0xc0);  // cvttsd2si rax, xmm0
-            this->emit_bytes(0x89, 0xc0);                      // mov eax, eax
-            store_rax_vreg(inst.dest);
-            return true;
-         case ir_op::i64_trunc_s_f32:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0xc0);  // cvttss2si rax, xmm0
-            store_rax_vreg(inst.dest);
-            return true;
-         case ir_op::i64_trunc_u_f32:
-            // For unsigned i64, handle values >= 2^63 specially
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);  // movq rax, xmm0
-            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0xc0);  // cvttss2si rax, xmm0
-            store_rax_vreg(inst.dest);
-            return true;
-         case ir_op::i64_trunc_s_f64:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0xc0);  // cvttsd2si rax, xmm0
-            store_rax_vreg(inst.dest);
-            return true;
-         case ir_op::i64_trunc_u_f64:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0xc0);  // cvttsd2si rax, xmm0
-            store_rax_vreg(inst.dest);
-            return true;
+         // ── Float-to-int conversions (trapping, via softfloat, register mode) ──
+         case ir_op::i32_trunc_s_f32:  emit_trunc_call_reg(inst, &trunc_f32_i32s); return true;
+         case ir_op::i32_trunc_u_f32:  emit_trunc_call_reg(inst, &trunc_f32_i32u); return true;
+         case ir_op::i32_trunc_s_f64:  emit_trunc_call_reg(inst, &trunc_f64_i32s); return true;
+         case ir_op::i32_trunc_u_f64:  emit_trunc_call_reg(inst, &trunc_f64_i32u); return true;
+         case ir_op::i64_trunc_s_f32:  emit_trunc_call_reg(inst, &trunc_f32_i64s); return true;
+         case ir_op::i64_trunc_u_f32:  emit_trunc_call_reg(inst, &trunc_f32_i64u); return true;
+         case ir_op::i64_trunc_s_f64:  emit_trunc_call_reg(inst, &trunc_f64_i64s); return true;
+         case ir_op::i64_trunc_u_f64:  emit_trunc_call_reg(inst, &trunc_f64_i64u); return true;
 
          // ── Saturating truncations (register mode) ──
          case ir_op::i32_trunc_sat_f32_s:
@@ -4768,6 +4698,37 @@ namespace eosio { namespace vm {
          this->emit_push_raw(rax);
       }
 
+      // Call a trapping trunc function: uint64_t fn(uint64_t).
+      // Pops float value from x86 stack, calls fn, pushes int result.
+      void emit_trunc_call(uint64_t (*fn)(uint64_t)) {
+         this->emit_pop_raw(rax);         // float bits
+         this->emit_push_raw(rdi);        // save context
+         this->emit_push_raw(rsi);        // save linear_memory
+         this->emit_mov(rax, rdi);        // arg0 = float bits
+         this->emit_bytes(0x48, 0x83, 0xe4, 0xf0); // andq $-16, %rsp (align)
+         this->emit_bytes(0x48, 0xb8);
+         this->emit_operand_ptr(fn);
+         this->emit_bytes(0xff, 0xd0);    // call *%rax
+         this->emit_pop_raw(rsi);
+         this->emit_pop_raw(rdi);
+         this->emit_push_raw(rax);        // result
+      }
+
+      // Register-mode: load src vreg, call trunc fn, store dest vreg.
+      void emit_trunc_call_reg(const ir_inst& inst, uint64_t (*fn)(uint64_t)) {
+         load_vreg_rax(inst.rr.src1);
+         this->emit_push_raw(rdi);
+         this->emit_push_raw(rsi);
+         this->emit_mov(rax, rdi);
+         this->emit_bytes(0x48, 0x83, 0xe4, 0xf0);
+         this->emit_bytes(0x48, 0xb8);
+         this->emit_operand_ptr(fn);
+         this->emit_bytes(0xff, 0xd0);
+         this->emit_pop_raw(rsi);
+         this->emit_pop_raw(rdi);
+         store_rax_vreg(inst.dest);
+      }
+
       // Softfloat unary: call a v128_t -> v128_t function
       void simd_v128_unop_softfloat(v128_t (*fn)(v128_t)) {
          // The v128 argument is on the x86 stack as 16 bytes.
@@ -5782,6 +5743,16 @@ namespace eosio { namespace vm {
       }
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>("unreachable"); }
       static void on_fp_error() { vm::throw_<wasm_interpreter_exception>("floating point error"); }
+
+      // Trapping float-to-int conversions via softfloat (longjmp on overflow/NaN)
+      static uint64_t trunc_f32_i32s(uint64_t v) { uint64_t r = 0; float f; memcpy(&f, &v, 4); vm::longjmp_on_exception([&](){ r = static_cast<uint32_t>(_eosio_f32_trunc_i32s(f)); }); return r; }
+      static uint64_t trunc_f32_i32u(uint64_t v) { uint64_t r = 0; float f; memcpy(&f, &v, 4); vm::longjmp_on_exception([&](){ r = _eosio_f32_trunc_i32u(f); }); return r; }
+      static uint64_t trunc_f64_i32s(uint64_t v) { uint64_t r = 0; double f; memcpy(&f, &v, 8); vm::longjmp_on_exception([&](){ r = static_cast<uint32_t>(_eosio_f64_trunc_i32s<false>(f)); }); return r; }
+      static uint64_t trunc_f64_i32u(uint64_t v) { uint64_t r = 0; double f; memcpy(&f, &v, 8); vm::longjmp_on_exception([&](){ r = _eosio_f64_trunc_i32u(f); }); return r; }
+      static uint64_t trunc_f32_i64s(uint64_t v) { uint64_t r = 0; float f; memcpy(&f, &v, 4); vm::longjmp_on_exception([&](){ r = static_cast<uint64_t>(_eosio_f32_trunc_i64s(f)); }); return r; }
+      static uint64_t trunc_f32_i64u(uint64_t v) { uint64_t r = 0; float f; memcpy(&f, &v, 4); vm::longjmp_on_exception([&](){ r = static_cast<uint64_t>(_eosio_f32_trunc_i64u(f)); }); return r; }
+      static uint64_t trunc_f64_i64s(uint64_t v) { uint64_t r = 0; double f; memcpy(&f, &v, 8); vm::longjmp_on_exception([&](){ r = static_cast<uint64_t>(_eosio_f64_trunc_i64s(f)); }); return r; }
+      static uint64_t trunc_f64_i64u(uint64_t v) { uint64_t r = 0; double f; memcpy(&f, &v, 8); vm::longjmp_on_exception([&](){ r = static_cast<uint64_t>(_eosio_f64_trunc_i64u(f)); }); return r; }
       static void on_call_indirect_error() { vm::throw_<wasm_interpreter_exception>("call_indirect out of range"); }
       static void on_type_error() { vm::throw_<wasm_interpreter_exception>("call_indirect incorrect function type"); }
       static void on_stack_overflow() { vm::throw_<wasm_interpreter_exception>("stack overflow"); }
