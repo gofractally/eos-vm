@@ -3050,31 +3050,30 @@ namespace eosio { namespace vm {
          return true;
       }
 
-      // Try to fold addr = add(base, const) into the load displacement.
+      // Try to fold addr = add(base, const) into the load/store displacement.
       // Returns the base vreg and updated offset, or the original if no folding.
+      // Recurses to chain add(add(base, c1), c2) → base + c1 + c2.
       uint32_t try_fold_addr(uint32_t addr_vreg, uint32_t& uoffset) {
-         if (!_func_def_inst || addr_vreg >= _num_vregs) return addr_vreg;
+         if (!_cur_func || !_cur_func->is_const || addr_vreg >= _num_vregs) return addr_vreg;
+         if (!_func_def_inst) return addr_vreg;
          uint32_t def = _func_def_inst[addr_vreg];
          if (def >= _func_inst_count) return addr_vreg;
          auto& di = _func_insts[def];
          if (di.opcode != ir_op::i32_add) return addr_vreg;
-         // Only fold if the add result is single-use (this load is the only consumer)
+         // Only fold if the add result is single-use (this load/store is the only consumer)
          if (!_func_use_count || _func_use_count[addr_vreg] != 1) return addr_vreg;
-         // Check both sides for a non-negative constant
+         // Check both sides for a non-negative constant (using persisted is_const)
          for (int side = 0; side < 2; ++side) {
             uint32_t cv = (side == 0) ? di.rr.src2 : di.rr.src1;
             uint32_t bv = (side == 0) ? di.rr.src1 : di.rr.src2;
-            if (cv >= _num_vregs) continue;
-            uint32_t cd = _func_def_inst[cv];
-            if (cd >= _func_inst_count) continue;
-            auto& ci = _func_insts[cd];
-            if (ci.opcode != ir_op::const_i32) continue;
-            int32_t cval = static_cast<int32_t>(ci.imm64);
+            if (cv >= _num_vregs || !_cur_func->is_const[cv]) continue;
+            int32_t cval = static_cast<int32_t>(_cur_func->const_val[cv]);
             if (cval < 0) continue;
             uint64_t combined = static_cast<uint64_t>(uoffset) + static_cast<uint64_t>(static_cast<uint32_t>(cval));
             if (combined > INT32_MAX) continue;
             uoffset = static_cast<uint32_t>(combined);
-            return bv;
+            // Recurse: try to fold further (chain add(add(base, c1), c2))
+            return try_fold_addr(bv, uoffset);
          }
          return addr_vreg;
       }
