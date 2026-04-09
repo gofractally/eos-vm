@@ -105,9 +105,69 @@ BACKEND_TEST_CASE( "Testing wasm <unreached-invalid_110_wasm>", "[unreached-inva
    CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
 }
 
+BACKEND_TEST_CASE( "Testing wasm <unreached-invalid_111_wasm>", "[unreached-invalid_111_wasm_tests]" ) {
+   using backend_t = backend<standalone_function_t, TestType>;
+   auto code = read_wasm( std::string(wasm_directory) + "unreached-invalid.111.wasm");
+   CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
+}
+
+BACKEND_TEST_CASE( "Testing wasm <unreached-invalid_112_wasm>", "[unreached-invalid_112_wasm_tests]" ) {
+   using backend_t = backend<standalone_function_t, TestType>;
+   auto code = read_wasm( std::string(wasm_directory) + "unreached-invalid.112.wasm");
+   CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
+}
+
+BACKEND_TEST_CASE( "Testing wasm <unreached-invalid_113_wasm>", "[unreached-invalid_113_wasm_tests]" ) {
+   using backend_t = backend<standalone_function_t, TestType>;
+   auto code = read_wasm( std::string(wasm_directory) + "unreached-invalid.113.wasm");
+   CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
+}
+
+BACKEND_TEST_CASE( "Testing wasm <unreached-invalid_114_wasm>", "[unreached-invalid_114_wasm_tests]" ) {
+   using backend_t = backend<standalone_function_t, TestType>;
+   auto code = read_wasm( std::string(wasm_directory) + "unreached-invalid.114.wasm");
+   CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
+}
+
+BACKEND_TEST_CASE( "Testing wasm <unreached-invalid_115_wasm>", "[unreached-invalid_115_wasm_tests]" ) {
+   using backend_t = backend<standalone_function_t, TestType>;
+   auto code = read_wasm( std::string(wasm_directory) + "unreached-invalid.115.wasm");
+   CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
+}
+
+BACKEND_TEST_CASE( "Testing wasm <unreached-invalid_116_wasm>", "[unreached-invalid_116_wasm_tests]" ) {
+   using backend_t = backend<standalone_function_t, TestType>;
+   auto code = read_wasm( std::string(wasm_directory) + "unreached-invalid.116.wasm");
+   CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
+}
+
+BACKEND_TEST_CASE( "Testing wasm <unreached-invalid_117_wasm>", "[unreached-invalid_117_wasm_tests]" ) {
+   using backend_t = backend<standalone_function_t, TestType>;
+   auto code = read_wasm( std::string(wasm_directory) + "unreached-invalid.117.wasm");
+   CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
+}
+
+BACKEND_TEST_CASE( "Testing wasm <unreached-invalid_118_wasm>", "[unreached-invalid_118_wasm_tests]" ) {
+   using backend_t = backend<standalone_function_t, TestType>;
+   auto code = read_wasm( std::string(wasm_directory) + "unreached-invalid.118.wasm");
+   CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
+}
+
+BACKEND_TEST_CASE( "Testing wasm <unreached-invalid_119_wasm>", "[unreached-invalid_119_wasm_tests]" ) {
+   using backend_t = backend<standalone_function_t, TestType>;
+   auto code = read_wasm( std::string(wasm_directory) + "unreached-invalid.119.wasm");
+   CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
+}
+
 BACKEND_TEST_CASE( "Testing wasm <unreached-invalid_12_wasm>", "[unreached-invalid_12_wasm_tests]" ) {
    using backend_t = backend<standalone_function_t, TestType>;
    auto code = read_wasm( std::string(wasm_directory) + "unreached-invalid.12.wasm");
+   CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
+}
+
+BACKEND_TEST_CASE( "Testing wasm <unreached-invalid_120_wasm>", "[unreached-invalid_120_wasm_tests]" ) {
+   using backend_t = backend<standalone_function_t, TestType>;
+   auto code = read_wasm( std::string(wasm_directory) + "unreached-invalid.120.wasm");
    CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
 }
 

@@ -22,7 +22,7 @@ BACKEND_TEST_CASE( "Testing wasm <memory_trap_0_wasm>", "[memory_trap_0_wasm_tes
 
    CHECK(!bkend.call_with_return("env", "store", UINT32_C(4294967292), UINT32_C(42)));
    CHECK(bkend.call_with_return("env", "load", UINT32_C(4294967292))->to_ui32() == UINT32_C(42));
-   CHECK_THROWS_AS(bkend("env", "store", UINT32_C(4294967293), UINT32_C(13)), std::exception);
+   CHECK_THROWS_AS(bkend("env", "store", UINT32_C(4294967293), UINT32_C(305419896)), std::exception);
    CHECK_THROWS_AS(bkend("env", "load", UINT32_C(4294967293)), std::exception);
    CHECK_THROWS_AS(bkend("env", "store", UINT32_C(4294967294), UINT32_C(13)), std::exception);
    CHECK_THROWS_AS(bkend("env", "load", UINT32_C(4294967294)), std::exception);
@@ -196,7 +196,16 @@ BACKEND_TEST_CASE( "Testing wasm <memory_trap_1_wasm>", "[memory_trap_1_wasm_tes
    CHECK_THROWS_AS(bkend("env", "i64.load32_u", UINT32_C(4294967294)), std::exception);
    CHECK_THROWS_AS(bkend("env", "i64.load32_u", UINT32_C(4294967293)), std::exception);
    CHECK_THROWS_AS(bkend("env", "i64.load32_u", UINT32_C(4294967292)), std::exception);
-   CHECK(bkend.call_with_return("env", "i64.load", UINT32_C(65528))->to_ui64() == UINT32_C(7523094288207667809));
-   CHECK(bkend.call_with_return("env", "i64.load", UINT32_C(0))->to_ui64() == UINT32_C(7523094288207667809));
+   CHECK(bkend.call_with_return("env", "i64.load", UINT32_C(65528))->to_ui64() == UINT64_C(7523094288207667809));
+   CHECK(bkend.call_with_return("env", "i64.load", UINT32_C(0))->to_ui64() == UINT64_C(7523094288207667809));
+   CHECK(!bkend.call_with_return("env", "i64.store", UINT32_C(65528), UINT64_C(0)));
+   CHECK_THROWS_AS(bkend("env", "i32.store", UINT32_C(65533), UINT32_C(305419896)), std::exception);
+   CHECK(bkend.call_with_return("env", "i32.load", UINT32_C(65532))->to_ui32() == UINT32_C(0));
+   CHECK_THROWS_AS(bkend("env", "i64.store", UINT32_C(65529), UINT64_C(1311768467294899695)), std::exception);
+   CHECK(bkend.call_with_return("env", "i64.load", UINT32_C(65528))->to_ui64() == UINT64_C(0));
+   CHECK_THROWS_AS(bkend("env", "f32.store", UINT32_C(65533), bit_cast<float>(UINT32_C(1301390004))), std::exception);
+   CHECK(bit_cast<uint32_t>(bkend.call_with_return("env", "f32.load", UINT32_C(65532))->to_f32()) == UINT32_C(0));
+   CHECK_THROWS_AS(bkend("env", "f64.store", UINT32_C(65529), bit_cast<double>(UINT64_C(4878018892390247374))), std::exception);
+   CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "f64.load", UINT32_C(65528))->to_f64()) == UINT64_C(0));
 }
 

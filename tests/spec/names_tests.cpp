@@ -512,5 +512,8 @@ BACKEND_TEST_CASE( "Testing wasm <names_2_wasm>", "[names_2_wasm_tests]" ) {
    CHECK(bkend.call_with_return("env", "\343\200\207")->to_ui32() == UINT32_C(473));
    CHECK(bkend.call_with_return("env", "\340\271\233")->to_ui32() == UINT32_C(474));
    CHECK(bkend.call_with_return("env", "\352\231\256")->to_ui32() == UINT32_C(475));
+   CHECK(bkend.call_with_return("env", "\317\223")->to_ui32() == UINT32_C(476));
+   CHECK(bkend.call_with_return("env", "\317\224")->to_ui32() == UINT32_C(477));
+   CHECK(bkend.call_with_return("env", "\341\272\233")->to_ui32() == UINT32_C(478));
 }
 

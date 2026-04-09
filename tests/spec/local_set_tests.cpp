@@ -38,7 +38,7 @@ BACKEND_TEST_CASE( "Testing wasm <local_set_0_wasm>", "[local_set_0_wasm_tests]"
    CHECK(!bkend.call_with_return("env", "as-if-then", UINT32_C(1)));
    CHECK(!bkend.call_with_return("env", "as-if-else", UINT32_C(0)));
    CHECK(!bkend.call_with_return("env", "type-mixed", UINT64_C(1), bit_cast<float>(UINT32_C(1074580685)), bit_cast<double>(UINT64_C(4614613358185178726)), UINT32_C(4), UINT32_C(5)));
-   CHECK(bkend.call_with_return("env", "write", UINT64_C(1), bit_cast<float>(UINT32_C(1073741824)), bit_cast<double>(UINT64_C(4614613358185178726)), UINT32_C(4), UINT32_C(5))->to_ui64() == UINT32_C(56));
+   CHECK(bkend.call_with_return("env", "write", UINT64_C(1), bit_cast<float>(UINT32_C(1073741824)), bit_cast<double>(UINT64_C(4614613358185178726)), UINT32_C(4), UINT32_C(5))->to_ui64() == UINT64_C(56));
 }
 
 BACKEND_TEST_CASE( "Testing wasm <local_set_1_wasm>", "[local_set_1_wasm_tests]" ) {

@@ -21,11 +21,11 @@ BACKEND_TEST_CASE( "Testing wasm <local_get_0_wasm>", "[local_get_0_wasm_tests]"
    backend_t bkend( code, &wa );
 
    CHECK(bkend.call_with_return("env", "type-local-i32")->to_ui32() == UINT32_C(0));
-   CHECK(bkend.call_with_return("env", "type-local-i64")->to_ui64() == UINT32_C(0));
+   CHECK(bkend.call_with_return("env", "type-local-i64")->to_ui64() == UINT64_C(0));
    CHECK(bit_cast<uint32_t>(bkend.call_with_return("env", "type-local-f32")->to_f32()) == UINT32_C(0));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "type-local-f64")->to_f64()) == UINT64_C(0));
    CHECK(bkend.call_with_return("env", "type-param-i32", UINT32_C(2))->to_ui32() == UINT32_C(2));
-   CHECK(bkend.call_with_return("env", "type-param-i64", UINT64_C(3))->to_ui64() == UINT32_C(3));
+   CHECK(bkend.call_with_return("env", "type-param-i64", UINT64_C(3))->to_ui64() == UINT64_C(3));
    CHECK(bit_cast<uint32_t>(bkend.call_with_return("env", "type-param-f32", bit_cast<float>(UINT32_C(1082969293)))->to_f32()) == UINT32_C(1082969293));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "type-param-f64", bit_cast<double>(UINT64_C(4617878467915022336)))->to_f64()) == UINT64_C(4617878467915022336));
    CHECK(bkend.call_with_return("env", "as-block-value", UINT32_C(6))->to_ui32() == UINT32_C(6));

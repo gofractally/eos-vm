@@ -21,11 +21,11 @@ BACKEND_TEST_CASE( "Testing wasm <local_tee_0_wasm>", "[local_tee_0_wasm_tests]"
    backend_t bkend( code, &wa );
 
    CHECK(bkend.call_with_return("env", "type-local-i32")->to_ui32() == UINT32_C(0));
-   CHECK(bkend.call_with_return("env", "type-local-i64")->to_ui64() == UINT32_C(0));
+   CHECK(bkend.call_with_return("env", "type-local-i64")->to_ui64() == UINT64_C(0));
    CHECK(bit_cast<uint32_t>(bkend.call_with_return("env", "type-local-f32")->to_f32()) == UINT32_C(0));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "type-local-f64")->to_f64()) == UINT64_C(0));
    CHECK(bkend.call_with_return("env", "type-param-i32", UINT32_C(2))->to_ui32() == UINT32_C(10));
-   CHECK(bkend.call_with_return("env", "type-param-i64", UINT64_C(3))->to_ui64() == UINT32_C(11));
+   CHECK(bkend.call_with_return("env", "type-param-i64", UINT64_C(3))->to_ui64() == UINT64_C(11));
    CHECK(bit_cast<uint32_t>(bkend.call_with_return("env", "type-param-f32", bit_cast<float>(UINT32_C(1082969293)))->to_f32()) == UINT32_C(1093769626));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "type-param-f64", bit_cast<double>(UINT64_C(4617878467915022336)))->to_f64()) == UINT64_C(4623057607486498406));
    CHECK(bkend.call_with_return("env", "as-block-first", UINT32_C(0))->to_ui32() == UINT32_C(1));
@@ -73,7 +73,7 @@ BACKEND_TEST_CASE( "Testing wasm <local_tee_0_wasm>", "[local_tee_0_wasm_tests]"
    CHECK(bkend.call_with_return("env", "as-convert-operand", UINT64_C(0))->to_ui32() == UINT32_C(41));
    CHECK(bkend.call_with_return("env", "as-memory.grow-size", UINT32_C(0))->to_ui32() == UINT32_C(1));
    CHECK(!bkend.call_with_return("env", "type-mixed", UINT64_C(1), bit_cast<float>(UINT32_C(1074580685)), bit_cast<double>(UINT64_C(4614613358185178726)), UINT32_C(4), UINT32_C(5)));
-   CHECK(bkend.call_with_return("env", "write", UINT64_C(1), bit_cast<float>(UINT32_C(1073741824)), bit_cast<double>(UINT64_C(4614613358185178726)), UINT32_C(4), UINT32_C(5))->to_ui64() == UINT32_C(56));
+   CHECK(bkend.call_with_return("env", "write", UINT64_C(1), bit_cast<float>(UINT32_C(1073741824)), bit_cast<double>(UINT64_C(4614613358185178726)), UINT32_C(4), UINT32_C(5))->to_ui64() == UINT64_C(56));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "result", UINT64_C(18446744073709551615), bit_cast<float>(UINT32_C(3221225472)), bit_cast<double>(UINT64_C(13837985395039954534)), UINT32_C(4294967292), UINT32_C(4294967291))->to_f64()) == UINT64_C(4630094481904264806));
 }
 
@@ -290,6 +290,12 @@ BACKEND_TEST_CASE( "Testing wasm <local_tee_40_wasm>", "[local_tee_40_wasm_tests
 BACKEND_TEST_CASE( "Testing wasm <local_tee_41_wasm>", "[local_tee_41_wasm_tests]" ) {
    using backend_t = backend<standalone_function_t, TestType>;
    auto code = read_wasm( std::string(wasm_directory) + "local_tee.41.wasm");
+   CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
+}
+
+BACKEND_TEST_CASE( "Testing wasm <local_tee_42_wasm>", "[local_tee_42_wasm_tests]" ) {
+   using backend_t = backend<standalone_function_t, TestType>;
+   auto code = read_wasm( std::string(wasm_directory) + "local_tee.42.wasm");
    CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
 }
 

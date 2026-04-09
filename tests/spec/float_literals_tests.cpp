@@ -41,6 +41,10 @@ BACKEND_TEST_CASE( "Testing wasm <float_literals_0_wasm>", "[float_literals_0_wa
    CHECK(bkend.call_with_return("env", "f32.max_subnormal")->to_ui32() == UINT32_C(8388607));
    CHECK(bkend.call_with_return("env", "f32.max_finite")->to_ui32() == UINT32_C(2139095039));
    CHECK(bkend.call_with_return("env", "f32.trailing_dot")->to_ui32() == UINT32_C(1149239296));
+   CHECK(bkend.call_with_return("env", "f32.misc_int")->to_ui32() == UINT32_C(1200726656));
+   CHECK(bkend.call_with_return("env", "f32.large_int")->to_ui32() == UINT32_C(1736441856));
+   CHECK(bkend.call_with_return("env", "f32.min_int32")->to_ui32() == UINT32_C(3472883712));
+   CHECK(bkend.call_with_return("env", "f32.min_int64")->to_ui32() == UINT32_C(3741319168));
    CHECK(bkend.call_with_return("env", "f32_dec.zero")->to_ui32() == UINT32_C(0));
    CHECK(bkend.call_with_return("env", "f32_dec.positive_zero")->to_ui32() == UINT32_C(0));
    CHECK(bkend.call_with_return("env", "f32_dec.negative_zero")->to_ui32() == UINT32_C(2147483648));
@@ -51,6 +55,10 @@ BACKEND_TEST_CASE( "Testing wasm <float_literals_0_wasm>", "[float_literals_0_wa
    CHECK(bkend.call_with_return("env", "f32_dec.max_finite")->to_ui32() == UINT32_C(2139095039));
    CHECK(bkend.call_with_return("env", "f32_dec.trailing_dot")->to_ui32() == UINT32_C(1343554297));
    CHECK(bkend.call_with_return("env", "f32_dec.root_beer_float")->to_ui32() == UINT32_C(1065353217));
+   CHECK(bkend.call_with_return("env", "f32_dec.misc_int")->to_ui32() == UINT32_C(1178657792));
+   CHECK(bkend.call_with_return("env", "f32_dec.large_int")->to_ui32() == UINT32_C(1621981420));
+   CHECK(bkend.call_with_return("env", "f32_dec.min_int32")->to_ui32() == UINT32_C(3472883712));
+   CHECK(bkend.call_with_return("env", "f32_dec.min_int64")->to_ui32() == UINT32_C(3741319168));
    CHECK(bkend.call_with_return("env", "f64.nan")->to_ui64() == UINT64_C(9221120237041090560));
    CHECK(bkend.call_with_return("env", "f64.positive_nan")->to_ui64() == UINT64_C(9221120237041090560));
    CHECK(bkend.call_with_return("env", "f64.negative_nan")->to_ui64() == UINT64_C(18444492273895866368));
@@ -72,6 +80,10 @@ BACKEND_TEST_CASE( "Testing wasm <float_literals_0_wasm>", "[float_literals_0_wa
    CHECK(bkend.call_with_return("env", "f64.max_subnormal")->to_ui64() == UINT64_C(4503599627370495));
    CHECK(bkend.call_with_return("env", "f64.max_finite")->to_ui64() == UINT64_C(9218868437227405311));
    CHECK(bkend.call_with_return("env", "f64.trailing_dot")->to_ui64() == UINT64_C(5057542381537067008));
+   CHECK(bkend.call_with_return("env", "f64.misc_int")->to_ui64() == UINT64_C(4679860480993394688));
+   CHECK(bkend.call_with_return("env", "f64.large_int")->to_ui64() == UINT64_C(4967470388989657088));
+   CHECK(bkend.call_with_return("env", "f64.min_int32")->to_ui64() == UINT64_C(13970166044103278592));
+   CHECK(bkend.call_with_return("env", "f64.min_int64")->to_ui64() == UINT64_C(14114281232179134464));
    CHECK(bkend.call_with_return("env", "f64_dec.zero")->to_ui64() == UINT64_C(0));
    CHECK(bkend.call_with_return("env", "f64_dec.positive_zero")->to_ui64() == UINT64_C(0));
    CHECK(bkend.call_with_return("env", "f64_dec.negative_zero")->to_ui64() == UINT64_C(9223372036854775808));
@@ -82,6 +94,10 @@ BACKEND_TEST_CASE( "Testing wasm <float_literals_0_wasm>", "[float_literals_0_wa
    CHECK(bkend.call_with_return("env", "f64_dec.max_finite")->to_ui64() == UINT64_C(9218868437227405311));
    CHECK(bkend.call_with_return("env", "f64_dec.trailing_dot")->to_ui64() == UINT64_C(6103021453049119613));
    CHECK(bkend.call_with_return("env", "f64_dec.root_beer_float")->to_ui64() == UINT64_C(4607182419335945764));
+   CHECK(bkend.call_with_return("env", "f64_dec.misc_int")->to_ui64() == UINT64_C(4668012349850910720));
+   CHECK(bkend.call_with_return("env", "f64_dec.large_int")->to_ui64() == UINT64_C(4906019910204099648));
+   CHECK(bkend.call_with_return("env", "f64_dec.min_int32")->to_ui64() == UINT64_C(13970166044103278592));
+   CHECK(bkend.call_with_return("env", "f64_dec.min_int64")->to_ui64() == UINT64_C(14114281232179134464));
    CHECK(bit_cast<uint32_t>(bkend.call_with_return("env", "f32-dec-sep1")->to_f32()) == UINT32_C(1232348160));
    CHECK(bit_cast<uint32_t>(bkend.call_with_return("env", "f32-dec-sep2")->to_f32()) == UINT32_C(1148846080));
    CHECK(bit_cast<uint32_t>(bkend.call_with_return("env", "f32-dec-sep3")->to_f32()) == UINT32_C(1148897552));

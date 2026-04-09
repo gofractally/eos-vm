@@ -52,6 +52,8 @@ BACKEND_TEST_CASE( "Testing wasm <unreachable_0_wasm>", "[unreachable_0_wasm_tes
    CHECK(bkend.call_with_return("env", "as-if-then", UINT32_C(0), UINT32_C(6))->to_ui32() == UINT32_C(6));
    CHECK_THROWS_AS(bkend("env", "as-if-else", UINT32_C(0), UINT32_C(6)), std::exception);
    CHECK(bkend.call_with_return("env", "as-if-else", UINT32_C(1), UINT32_C(6))->to_ui32() == UINT32_C(6));
+   CHECK_THROWS_AS(bkend("env", "as-if-then-no-else", UINT32_C(1), UINT32_C(6)), std::exception);
+   CHECK(bkend.call_with_return("env", "as-if-then-no-else", UINT32_C(0), UINT32_C(6))->to_ui32() == UINT32_C(6));
    CHECK_THROWS_AS(bkend("env", "as-select-first", UINT32_C(0), UINT32_C(6)), std::exception);
    CHECK_THROWS_AS(bkend("env", "as-select-first", UINT32_C(1), UINT32_C(6)), std::exception);
    CHECK_THROWS_AS(bkend("env", "as-select-second", UINT32_C(0), UINT32_C(6)), std::exception);

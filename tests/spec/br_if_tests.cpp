@@ -25,7 +25,7 @@ BACKEND_TEST_CASE( "Testing wasm <br_if_0_wasm>", "[br_if_0_wasm_tests]" ) {
    CHECK(!bkend.call_with_return("env", "type-f32"));
    CHECK(!bkend.call_with_return("env", "type-f64"));
    CHECK(bkend.call_with_return("env", "type-i32-value")->to_ui32() == UINT32_C(1));
-   CHECK(bkend.call_with_return("env", "type-i64-value")->to_ui64() == UINT32_C(2));
+   CHECK(bkend.call_with_return("env", "type-i64-value")->to_ui64() == UINT64_C(2));
    CHECK(bit_cast<uint32_t>(bkend.call_with_return("env", "type-f32-value")->to_f32()) == UINT32_C(1077936128));
    CHECK(bit_cast<uint64_t>(bkend.call_with_return("env", "type-f64-value")->to_f64()) == UINT64_C(4616189618054758400));
    CHECK(bkend.call_with_return("env", "as-block-first", UINT32_C(0))->to_ui32() == UINT32_C(2));
@@ -54,7 +54,7 @@ BACKEND_TEST_CASE( "Testing wasm <br_if_0_wasm>", "[br_if_0_wasm_tests]" ) {
    CHECK(!bkend.call_with_return("env", "as-br_table-index"));
    CHECK(bkend.call_with_return("env", "as-br_table-value")->to_ui32() == UINT32_C(1));
    CHECK(bkend.call_with_return("env", "as-br_table-value-index")->to_ui32() == UINT32_C(1));
-   CHECK(bkend.call_with_return("env", "as-return-value")->to_ui64() == UINT32_C(1));
+   CHECK(bkend.call_with_return("env", "as-return-value")->to_ui64() == UINT64_C(1));
    CHECK(bkend.call_with_return("env", "as-if-cond", UINT32_C(0))->to_ui32() == UINT32_C(2));
    CHECK(bkend.call_with_return("env", "as-if-cond", UINT32_C(1))->to_ui32() == UINT32_C(1));
    CHECK(!bkend.call_with_return("env", "as-if-then", UINT32_C(0), UINT32_C(0)));
@@ -245,6 +245,12 @@ BACKEND_TEST_CASE( "Testing wasm <br_if_29_wasm>", "[br_if_29_wasm_tests]" ) {
 BACKEND_TEST_CASE( "Testing wasm <br_if_3_wasm>", "[br_if_3_wasm_tests]" ) {
    using backend_t = backend<standalone_function_t, TestType>;
    auto code = read_wasm( std::string(wasm_directory) + "br_if.3.wasm");
+   CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
+}
+
+BACKEND_TEST_CASE( "Testing wasm <br_if_30_wasm>", "[br_if_30_wasm_tests]" ) {
+   using backend_t = backend<standalone_function_t, TestType>;
+   auto code = read_wasm( std::string(wasm_directory) + "br_if.30.wasm");
    CHECK_THROWS_AS(backend_t(code, nullptr), std::exception);
 }
 
