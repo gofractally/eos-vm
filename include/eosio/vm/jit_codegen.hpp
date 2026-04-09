@@ -3530,15 +3530,54 @@ namespace eosio { namespace vm {
       }
 
       void emit_f32_binop(const ir_inst& inst, uint8_t op) {
+         int8_t x1 = get_xmm(inst.rr.src1);
+         int8_t x2 = get_xmm(inst.rr.src2);
+         int8_t xd = get_xmm(inst.dest);
+         if (x1 >= 0 && x2 >= 0 && xd >= 0) {
+            auto vex_op = [op]() -> decltype(base::VADDSS) {
+               switch (op) {
+               case 0x58: return base::VADDSS;
+               case 0x5c: return base::VSUBSS;
+               case 0x59: return base::VMULSS;
+               case 0x5e: return base::VDIVSS;
+               default:   return base::VADDSS;
+               }
+            }();
+            this->emit(vex_op, static_cast<typename base::xmm_register>(x2),
+                               static_cast<typename base::xmm_register>(x1),
+                               static_cast<typename base::xmm_register>(xd));
+            return;
+         }
          load_float_to_xmm(inst.rr.src1, xmm0, false);
          load_float_to_xmm(inst.rr.src2, xmm1, false);
-         this->emit_bytes(0xf3, 0x0f, op, 0xc1);           // OPss xmm1, xmm0
+         this->emit_bytes(0xf3, 0x0f, op, 0xc1);
          store_xmm_to_float(xmm0, inst.dest, false);
       }
       void emit_f64_binop(const ir_inst& inst, uint8_t op) {
+         // Try VEX 3-operand form when all operands have XMM registers
+         int8_t x1 = get_xmm(inst.rr.src1);
+         int8_t x2 = get_xmm(inst.rr.src2);
+         int8_t xd = get_xmm(inst.dest);
+         if (x1 >= 0 && x2 >= 0 && xd >= 0) {
+            // Single VEX instruction: vOPsd xmm_src2, xmm_src1, xmm_dest
+            auto vex_op = [op]() -> decltype(base::VADDSD) {
+               switch (op) {
+               case 0x58: return base::VADDSD;
+               case 0x5c: return base::VSUBSD;
+               case 0x59: return base::VMULSD;
+               case 0x5e: return base::VDIVSD;
+               default:   return base::VADDSD; // shouldn't happen
+               }
+            }();
+            this->emit(vex_op, static_cast<typename base::xmm_register>(x2),
+                               static_cast<typename base::xmm_register>(x1),
+                               static_cast<typename base::xmm_register>(xd));
+            return;
+         }
+         // Fallback: use scratch xmm0/xmm1
          load_float_to_xmm(inst.rr.src1, xmm0, true);
          load_float_to_xmm(inst.rr.src2, xmm1, true);
-         this->emit_bytes(0xf2, 0x0f, op, 0xc1);           // OPsd xmm1, xmm0
+         this->emit_bytes(0xf2, 0x0f, op, 0xc1);
          store_xmm_to_float(xmm0, inst.dest, true);
       }
       // Float comparison: cmpss/cmpsd with predicate, result = 0 or 1
