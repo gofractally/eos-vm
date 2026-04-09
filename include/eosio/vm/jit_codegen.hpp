@@ -2574,11 +2574,20 @@ namespace eosio { namespace vm {
             this->emit_bytes(0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x08);
             store_xmm_to_float(xmm0, inst.dest, false);
             return true;
-         case ir_op::f32_sqrt:
+         case ir_op::f32_sqrt: {
+            int8_t x1 = get_xmm(inst.rr.src1);
+            int8_t xd = get_xmm(inst.dest);
+            if (x1 >= 0 && xd >= 0) {
+               auto xs = static_cast<typename base::xmm_register>(x1);
+               auto xr = static_cast<typename base::xmm_register>(xd);
+               this->emit(base::VSQRTSS, xs, xs, xr);
+               return true;
+            }
             load_float_to_xmm(inst.rr.src1, xmm0, false);
             this->emit_bytes(0xf3, 0x0f, 0x51, 0xc0);
             store_xmm_to_float(xmm0, inst.dest, false);
             return true;
+         }
          case ir_op::f64_abs:
             load_vreg_rax(inst.rr.src1);
             this->emit_bytes(0x48, 0x0f, 0xba, 0xf0, 0x3f);      // btr $63, rax
@@ -2609,11 +2618,20 @@ namespace eosio { namespace vm {
             this->emit_bytes(0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x08);
             store_xmm_to_float(xmm0, inst.dest, true);
             return true;
-         case ir_op::f64_sqrt:
+         case ir_op::f64_sqrt: {
+            int8_t x1 = get_xmm(inst.rr.src1);
+            int8_t xd = get_xmm(inst.dest);
+            if (x1 >= 0 && xd >= 0) {
+               auto xs = static_cast<typename base::xmm_register>(x1);
+               auto xr = static_cast<typename base::xmm_register>(xd);
+               this->emit(base::VSQRTSD, xs, xs, xr);
+               return true;
+            }
             load_float_to_xmm(inst.rr.src1, xmm0, true);
             this->emit_bytes(0xf2, 0x0f, 0x51, 0xc0);
             store_xmm_to_float(xmm0, inst.dest, true);
             return true;
+         }
 
          // ── Float binary ops (register mode) ──
          case ir_op::f32_add:      emit_f32_binop(inst, 0x58); return true;
