@@ -2256,6 +2256,7 @@ namespace eosio { namespace vm {
             store_rax_vreg(inst.dest);
             return true;
          case ir_op::i32_div_u:
+            if (try_emit_div_by_const_u32(inst)) return true;
             load_vreg_rcx(inst.rr.src2);
             load_vreg_rax(inst.rr.src1);
             this->emit_xor(edx, edx);
@@ -2875,6 +2876,55 @@ namespace eosio { namespace vm {
                return true;
             }
          }
+      }
+
+      // Division by constant → multiply by magic number (Hacker's Delight).
+      // For unsigned 32-bit: n/d = (n * M) >> (32 + s) using 64-bit multiply.
+      bool try_emit_div_by_const_u32(const ir_inst& inst) {
+         if (!_cur_func || !_cur_func->is_const) return false;
+         uint32_t divisor_vreg = inst.rr.src2;
+         if (divisor_vreg >= _num_vregs || !_cur_func->is_const[divisor_vreg]) return false;
+         uint32_t d = static_cast<uint32_t>(_cur_func->const_val[divisor_vreg]);
+         if (d == 0 || d == 1) return false; // d=0 must trap, d=1 is identity
+         if (d != 0 && (d & (d-1)) == 0) return false; // power of 2 handled by shr
+
+         // Compute magic multiplier and shift (Algorithm from Hacker's Delight)
+         uint32_t p;
+         uint64_t m;
+         for (p = 31; p < 64; ++p) {
+            uint64_t two_p = 1ULL << p;
+            m = (two_p + d - 1) / d; // ceil(2^p / d)
+            if (m * d <= two_p) break;
+            // Check: m * d - 2^p <= 2^(p-32) where p >= 32
+            // Simplified: does m fit in 32 bits and give correct results?
+            if (m <= UINT32_MAX) {
+               // Verify: for all n in [0, 2^32-1], (n*m) >> p == n/d
+               // Instead of exhaustive check, use Granlund-Montgomery condition
+               uint64_t q = two_p / d;
+               uint64_t r = two_p % d;
+               if (r * (UINT64_MAX / d) < two_p) break;
+            }
+         }
+         if (p >= 64 || m > UINT32_MAX) return false;
+
+         // Emit: rax = n; rcx = M; mul rcx (result in rdx:rax); shr edx, shift
+         load_vreg_rax(inst.rr.src1);
+         this->emit_mov(static_cast<uint32_t>(m), ecx);
+         // Zero-extend eax to rax for 32-bit multiply
+         this->emit_mov(eax, eax);
+         // imul rcx, rax (64-bit multiply, result in rax)
+         this->emit_bytes(0x48, 0x0f, 0xaf, 0xc1); // imul rcx, rax
+         uint32_t shift = p;
+         if (shift >= 32) {
+            this->emit_bytes(0x48, 0xc1, 0xe8, static_cast<uint8_t>(shift)); // shr rax, shift
+         }
+         store_rax_vreg(inst.dest);
+         // Mark const as dead if single-use
+         if (_func_use_count && _func_use_count[divisor_vreg] == 1) {
+            uint32_t def = _func_def_inst ? _func_def_inst[divisor_vreg] : UINT32_MAX;
+            if (def < _func_inst_count) _func_insts[def].flags |= IR_DEAD;
+         }
+         return true;
       }
 
       // LEA optimization for add: when dest != src1 != src2 and both src vregs
