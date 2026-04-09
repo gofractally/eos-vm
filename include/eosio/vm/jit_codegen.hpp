@@ -4770,32 +4770,36 @@ namespace eosio { namespace vm {
       // Call a trapping trunc function: uint64_t fn(uint64_t).
       // Pops float value from x86 stack, calls fn, pushes int result.
       void emit_trunc_call(uint64_t (*fn)(uint64_t)) {
-         this->emit_pop_raw(rax);         // float bits
-         this->emit_push_raw(rdi);        // save context
-         this->emit_push_raw(rsi);        // save linear_memory
-         this->emit_mov(rax, rdi);        // arg0 = float bits
-         this->emit_bytes(0x48, 0x83, 0xe4, 0xf0); // andq $-16, %rsp (align)
-         this->emit_bytes(0x48, 0xb8);
-         this->emit_operand_ptr(fn);
-         this->emit_bytes(0xff, 0xd0);    // call *%rax
-         this->emit_pop_raw(rsi);
-         this->emit_pop_raw(rdi);
+         this->emit_pop_raw(rdi);         // float bits → arg0 (overwrites context, saved below)
+         emit_c_call(fn);
          this->emit_push_raw(rax);        // result
       }
 
       // Register-mode: load src vreg, call trunc fn, store dest vreg.
       void emit_trunc_call_reg(const ir_inst& inst, uint64_t (*fn)(uint64_t)) {
          load_vreg_rax(inst.rr.src1);
-         this->emit_push_raw(rdi);
-         this->emit_push_raw(rsi);
-         this->emit_mov(rax, rdi);
-         this->emit_bytes(0x48, 0x83, 0xe4, 0xf0);
+         this->emit_mov(rax, rdi);        // arg0 = float bits
+         emit_c_call(fn);
+         store_rax_vreg(inst.dest);
+      }
+
+      // Call a C function with rdi already set as arg0.
+      // Saves/restores rdi (context) and rsi (linear memory) around the call.
+      // Uses proper stack alignment with rsp save/restore.
+      template<typename F>
+      void emit_c_call(F fn) {
+         // Save rdi and rsi, then save rsp for alignment restoration
+         this->emit_push_raw(rdi);        // [rsp] = context
+         this->emit_push_raw(rsi);        // [rsp] = linear_memory
+         this->emit_mov(rsp, rsi);        // rsi = saved rsp (rsi is about to be saved)
+         this->emit_bytes(0x48, 0x83, 0xe4, 0xf0); // andq $-16, %rsp
+         this->emit_push_raw(rsi);        // push saved rsp (using aligned stack)
          this->emit_bytes(0x48, 0xb8);
          this->emit_operand_ptr(fn);
-         this->emit_bytes(0xff, 0xd0);
-         this->emit_pop_raw(rsi);
-         this->emit_pop_raw(rdi);
-         store_rax_vreg(inst.dest);
+         this->emit_bytes(0xff, 0xd0);    // call *%rax
+         this->emit_pop_raw(rsp);         // restore pre-alignment rsp
+         this->emit_pop_raw(rsi);         // restore linear_memory
+         this->emit_pop_raw(rdi);         // restore context
       }
 
       // Softfloat unary: call a v128_t -> v128_t function
