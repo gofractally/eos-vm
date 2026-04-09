@@ -321,63 +321,6 @@ namespace eosio { namespace vm {
                use_count[ret_vreg]++;
          }
 
-         // ── Phase 2.5: Loop-Invariant Code Motion (local_get dedup) ──
-         // For invariant locals in loops, convert duplicate local_gets to movs
-         // from the first load. This lets the register allocator keep the value
-         // in a register across iterations instead of reloading from the frame.
-         if (func.blocks) {
-            for (uint32_t bi = 0; bi < func.block_count; ++bi) {
-               auto& blk = func.blocks[bi];
-               if (!blk.is_loop) continue;
-               // Find loop body range
-               uint32_t loop_start = UINT32_MAX, loop_end = UINT32_MAX;
-               for (uint32_t i = 0; i < n; ++i) {
-                  if (func.insts[i].opcode == ir_op::block_start && func.insts[i].dest == bi)
-                     loop_start = i;
-                  if (func.insts[i].opcode == ir_op::block_end && func.insts[i].dest == bi)
-                     { loop_end = i; break; }
-               }
-               if (loop_start == UINT32_MAX || loop_end == UINT32_MAX) continue;
-               // Build set of locals written inside loop
-               uint64_t written[32] = {}; // bitmap for up to 2048 locals
-               for (uint32_t i = loop_start; i <= loop_end; ++i) {
-                  auto& inst = func.insts[i];
-                  if (inst.flags & IR_DEAD) continue;
-                  if (inst.opcode == ir_op::local_set || inst.opcode == ir_op::local_tee) {
-                     uint32_t li = inst.local.index;
-                     if (li < 2048) written[li / 64] |= (1ULL << (li % 64));
-                  }
-               }
-               // For each invariant local_get, track the first occurrence.
-               // Convert subsequent occurrences to mov from the first.
-               uint32_t first_vreg[2048];
-               std::memset(first_vreg, 0xFF, sizeof(first_vreg));
-               for (uint32_t i = loop_start + 1; i < loop_end; ++i) {
-                  auto& inst = func.insts[i];
-                  if (inst.flags & IR_DEAD) continue;
-                  if (inst.opcode != ir_op::local_get) continue;
-                  uint32_t li = inst.local.index;
-                  if (li >= 2048) continue;
-                  if (written[li / 64] & (1ULL << (li % 64))) continue; // not invariant
-                  if (first_vreg[li] == UINT32_MAX) {
-                     // First occurrence — remember its dest vreg
-                     first_vreg[li] = inst.dest;
-                  } else {
-                     // Subsequent occurrence — convert to mov from first
-                     uint32_t orig_dest = inst.dest;
-                     inst.opcode = ir_op::mov;
-                     inst.type = inst.type; // preserve type
-                     inst.flags = IR_NONE;
-                     inst.rr.src1 = first_vreg[li];
-                     inst.rr.src2 = ir_vreg_none;
-                     // Update use_count: first_vreg gains a use, local_get no longer reads the local
-                     if (first_vreg[li] < num_vregs && use_count[first_vreg[li]] < UINT16_MAX)
-                        use_count[first_vreg[li]]++;
-                  }
-               }
-            }
-         }
-
          // ── Phase 3: Dead code elimination ──
          for (uint32_t i = 0; i < n; ++i) {
             auto& inst = func.insts[i];
