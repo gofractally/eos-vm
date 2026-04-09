@@ -363,6 +363,53 @@ namespace eosio { namespace vm {
             }
          }
 
+         // ── Phase 3.5: Copy propagation ──
+         // When mov src → dest has use_count[dest] == 1, find the single consumer
+         // and replace its reference from dest to src, eliminating the mov.
+         // Skip the function body return vreg (read by epilogue outside IR).
+         uint32_t return_vreg = ir_vreg_none;
+         if (func.vstack_top > 0 && func.type && func.type->return_count > 0) {
+            bool is_v128_ret = func.type->return_type == types::v128;
+            uint32_t ret_idx = is_v128_ret && func.vstack_top >= 2
+                               ? func.vstack_top - 2 : func.vstack_top - 1;
+            return_vreg = func.vstack[ret_idx];
+         }
+         for (uint32_t i = 0; i < n; ++i) {
+            auto& inst = func.insts[i];
+            if (inst.flags & IR_DEAD) continue;
+            if (inst.opcode != ir_op::mov) continue;
+            uint32_t mv_dest = inst.dest;
+            uint32_t mv_src = inst.rr.src1;
+            if (mv_dest >= num_vregs || mv_src >= num_vregs) continue;
+            if (mv_dest == mv_src) { inst.flags |= IR_DEAD; continue; } // self-mov
+            if (use_count[mv_dest] != 1) continue;
+            if (mv_dest == return_vreg) continue; // epilogue reads this outside IR
+            // Skip phi-node merge vregs (written by multiple control flow paths).
+            // Count non-dead definitions of mv_dest — only propagate if exactly 1.
+            {
+               uint32_t def_count = 0;
+               for (uint32_t k = 0; k < n && def_count < 2; ++k) {
+                  auto& ki = func.insts[k];
+                  if (ki.flags & IR_DEAD) continue;
+                  bool is_s = (ki.opcode >= ir_op::i32_store && ki.opcode <= ir_op::i64_store32);
+                  bool is_b = (ki.opcode == ir_op::block_start || ki.opcode == ir_op::block_end);
+                  if (!is_s && !is_b && ki.dest == mv_dest) def_count++;
+               }
+               if (def_count != 1) continue;
+            }
+            // Scan forward for the single consumer (bounded window)
+            for (uint32_t j = i + 1; j < n && j < i + 32; ++j) {
+               auto& u = func.insts[j];
+               if (u.flags & IR_DEAD) continue;
+               if (replace_vreg_use(u, mv_dest, mv_src)) {
+                  inst.flags |= IR_DEAD;
+                  use_count[mv_dest] = 0;
+                  if (use_count[mv_src] < UINT16_MAX) use_count[mv_src]++;
+                  break;
+               }
+            }
+         }
+
          // ── Phase 4: Instruction fusion (cmp + branch) ──
          for (uint32_t i = 0; i + 1 < n; ++i) {
             auto& inst = func.insts[i];
@@ -471,6 +518,115 @@ namespace eosio { namespace vm {
          case ir_op::i64_extend32_s: result = static_cast<int32_t>(a); return true;
          default: return false;
          }
+      }
+
+      // Replace a vreg reference in an instruction's source operands.
+      // Returns true if the replacement was made, false if old_vreg not found.
+      // Handles each opcode's specific union layout correctly.
+      static bool replace_vreg_use(ir_inst& inst, uint32_t old_vreg, uint32_t new_vreg) {
+         bool found = false;
+         auto try_replace = [&](uint32_t& field) {
+            if (field == old_vreg) { field = new_vreg; found = true; }
+         };
+         auto try_replace16 = [&](uint16_t& field) {
+            if (field == old_vreg) { field = static_cast<uint16_t>(new_vreg); found = true; }
+         };
+         switch (inst.opcode) {
+         // rr format: binary ops, comparisons, unary ops, mov, br_table, return, arg, drop, memory_grow
+         case ir_op::i32_add: case ir_op::i32_sub: case ir_op::i32_mul:
+         case ir_op::i32_div_s: case ir_op::i32_div_u: case ir_op::i32_rem_s: case ir_op::i32_rem_u:
+         case ir_op::i32_and: case ir_op::i32_or: case ir_op::i32_xor:
+         case ir_op::i32_shl: case ir_op::i32_shr_s: case ir_op::i32_shr_u:
+         case ir_op::i32_rotl: case ir_op::i32_rotr:
+         case ir_op::i64_add: case ir_op::i64_sub: case ir_op::i64_mul:
+         case ir_op::i64_div_s: case ir_op::i64_div_u: case ir_op::i64_rem_s: case ir_op::i64_rem_u:
+         case ir_op::i64_and: case ir_op::i64_or: case ir_op::i64_xor:
+         case ir_op::i64_shl: case ir_op::i64_shr_s: case ir_op::i64_shr_u:
+         case ir_op::i64_rotl: case ir_op::i64_rotr:
+         case ir_op::i32_eq: case ir_op::i32_ne:
+         case ir_op::i32_lt_s: case ir_op::i32_lt_u: case ir_op::i32_gt_s: case ir_op::i32_gt_u:
+         case ir_op::i32_le_s: case ir_op::i32_le_u: case ir_op::i32_ge_s: case ir_op::i32_ge_u:
+         case ir_op::i64_eq: case ir_op::i64_ne:
+         case ir_op::i64_lt_s: case ir_op::i64_lt_u: case ir_op::i64_gt_s: case ir_op::i64_gt_u:
+         case ir_op::i64_le_s: case ir_op::i64_le_u: case ir_op::i64_ge_s: case ir_op::i64_ge_u:
+         case ir_op::f32_add: case ir_op::f32_sub: case ir_op::f32_mul: case ir_op::f32_div:
+         case ir_op::f32_min: case ir_op::f32_max: case ir_op::f32_copysign:
+         case ir_op::f64_add: case ir_op::f64_sub: case ir_op::f64_mul: case ir_op::f64_div:
+         case ir_op::f64_min: case ir_op::f64_max: case ir_op::f64_copysign:
+         case ir_op::f32_eq: case ir_op::f32_ne: case ir_op::f32_lt: case ir_op::f32_gt:
+         case ir_op::f32_le: case ir_op::f32_ge:
+         case ir_op::f64_eq: case ir_op::f64_ne: case ir_op::f64_lt: case ir_op::f64_gt:
+         case ir_op::f64_le: case ir_op::f64_ge:
+            try_replace(inst.rr.src1);
+            try_replace(inst.rr.src2);
+            break;
+         // rr format: unary ops, mov, return, arg, br_table, memory_grow, drop
+         case ir_op::i32_eqz: case ir_op::i64_eqz:
+         case ir_op::i32_clz: case ir_op::i32_ctz: case ir_op::i32_popcnt:
+         case ir_op::i64_clz: case ir_op::i64_ctz: case ir_op::i64_popcnt:
+         case ir_op::i32_wrap_i64: case ir_op::i64_extend_s_i32: case ir_op::i64_extend_u_i32:
+         case ir_op::i32_trunc_s_f32: case ir_op::i32_trunc_u_f32:
+         case ir_op::i32_trunc_s_f64: case ir_op::i32_trunc_u_f64:
+         case ir_op::i64_trunc_s_f32: case ir_op::i64_trunc_u_f32:
+         case ir_op::i64_trunc_s_f64: case ir_op::i64_trunc_u_f64:
+         case ir_op::f32_convert_s_i32: case ir_op::f32_convert_u_i32:
+         case ir_op::f32_convert_s_i64: case ir_op::f32_convert_u_i64:
+         case ir_op::f64_convert_s_i32: case ir_op::f64_convert_u_i32:
+         case ir_op::f64_convert_s_i64: case ir_op::f64_convert_u_i64:
+         case ir_op::f32_demote_f64: case ir_op::f64_promote_f32:
+         case ir_op::i32_reinterpret_f32: case ir_op::i64_reinterpret_f64:
+         case ir_op::f32_reinterpret_i32: case ir_op::f64_reinterpret_i64:
+         case ir_op::i32_trunc_sat_f32_s: case ir_op::i32_trunc_sat_f32_u:
+         case ir_op::i32_trunc_sat_f64_s: case ir_op::i32_trunc_sat_f64_u:
+         case ir_op::i64_trunc_sat_f32_s: case ir_op::i64_trunc_sat_f32_u:
+         case ir_op::i64_trunc_sat_f64_s: case ir_op::i64_trunc_sat_f64_u:
+         case ir_op::i32_extend8_s: case ir_op::i32_extend16_s:
+         case ir_op::i64_extend8_s: case ir_op::i64_extend16_s: case ir_op::i64_extend32_s:
+         case ir_op::f32_abs: case ir_op::f32_neg: case ir_op::f32_ceil: case ir_op::f32_floor:
+         case ir_op::f32_trunc: case ir_op::f32_nearest: case ir_op::f32_sqrt:
+         case ir_op::f64_abs: case ir_op::f64_neg: case ir_op::f64_ceil: case ir_op::f64_floor:
+         case ir_op::f64_trunc: case ir_op::f64_nearest: case ir_op::f64_sqrt:
+         case ir_op::mov: case ir_op::return_: case ir_op::arg:
+         case ir_op::br_table: case ir_op::memory_grow: case ir_op::drop:
+            try_replace(inst.rr.src1);
+            break;
+         // ri format: loads (src1 = address vreg)
+         case ir_op::i32_load: case ir_op::i64_load: case ir_op::f32_load: case ir_op::f64_load:
+         case ir_op::i32_load8_s: case ir_op::i32_load8_u: case ir_op::i32_load16_s: case ir_op::i32_load16_u:
+         case ir_op::i64_load8_s: case ir_op::i64_load8_u: case ir_op::i64_load16_s: case ir_op::i64_load16_u:
+         case ir_op::i64_load32_s: case ir_op::i64_load32_u:
+            try_replace(inst.ri.src1);
+            break;
+         // ri format: stores (src1 = address, dest = value)
+         case ir_op::i32_store: case ir_op::i64_store: case ir_op::f32_store: case ir_op::f64_store:
+         case ir_op::i32_store8: case ir_op::i32_store16:
+         case ir_op::i64_store8: case ir_op::i64_store16: case ir_op::i64_store32:
+            try_replace(inst.ri.src1);
+            // dest is value vreg for stores — also replace
+            try_replace(inst.dest);
+            break;
+         // br format: if_, br_if, br
+         case ir_op::if_: case ir_op::br_if: case ir_op::br:
+            try_replace(inst.br.src1);
+            break;
+         // call format
+         case ir_op::call: case ir_op::call_indirect:
+            try_replace(inst.call.src1);
+            break;
+         // local format: local_set, local_tee, global_set
+         case ir_op::local_set: case ir_op::local_tee: case ir_op::global_set:
+            try_replace(inst.local.src1);
+            break;
+         // select: 3 packed 16-bit vregs
+         case ir_op::select:
+            try_replace16(inst.sel.val1);
+            try_replace16(inst.sel.val2);
+            try_replace16(inst.sel.cond);
+            break;
+         default:
+            break;
+         }
+         return found;
       }
    };
 
