@@ -607,11 +607,33 @@ namespace eosio { namespace vm {
                interval.phys_xmm = static_cast<int8_t>(assigned + XMM_BASE);
                xmm_used[assigned] = true;
                xmm_active[num_xmm_active++] = i;
+            } else if (xmm_crosses_call && interval.type != types::v128
+                       && interval.phys_reg < 0) {
+               // f32/f64 crossing a call: try a callee-saved GPR to hold the
+               // float bits across the call (faster than memory spill).
+               // The codegen loads floats via load_vreg_rax → vmovd/vmovq,
+               // so a GPR assignment works transparently.
+               int gpr = -1;
+               for (int r = static_cast<int>(phys_reg::caller_saved_count); r < NUM_REGS; ++r) {
+                  if (!reg_used[r]) { gpr = r; break; }
+               }
+               if (gpr >= 0) {
+                  interval.phys_reg = static_cast<int8_t>(gpr);
+                  reg_used[gpr] = true;
+                  active[num_active++] = i;
+                  if (gpr >= static_cast<int>(phys_reg::caller_saved_count))
+                     func.callee_saved_used |= (1 << (gpr - static_cast<int>(phys_reg::caller_saved_count)));
+               } else {
+                  // All callee-saved GPRs taken — fall back to memory spill
+                  interval.phys_xmm = -1;
+                  interval.spill_slot = static_cast<int16_t>(next_spill_slot);
+                  next_spill_slot += (interval.type == types::v128) ? 2 : 1;
+               }
             } else {
-               // Spill: v128 spill slots use 16 bytes (2 x 8-byte slots)
+               // v128 or no call crossing: memory spill
                interval.phys_xmm = -1;
                interval.spill_slot = static_cast<int16_t>(next_spill_slot);
-               next_spill_slot += 2; // 16 bytes
+               next_spill_slot += (interval.type == types::v128) ? 2 : 1;
             }
          }
 

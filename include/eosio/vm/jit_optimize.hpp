@@ -308,6 +308,17 @@ namespace eosio { namespace vm {
             }
          }
 
+         // The function epilogue reads the return vreg outside of IR.
+         // Add an artificial use so DCE doesn't eliminate the mov that writes it.
+         if (func.vstack_top > 0 && func.type && func.type->return_count > 0) {
+            bool is_v128_ret = func.type->return_type == types::v128;
+            uint32_t ret_idx = is_v128_ret && func.vstack_top >= 2
+                               ? func.vstack_top - 2 : func.vstack_top - 1;
+            uint32_t ret_vreg = func.vstack[ret_idx];
+            if (ret_vreg < num_vregs)
+               use_count[ret_vreg]++;
+         }
+
          // ── Phase 3: Dead code elimination ──
          for (uint32_t i = 0; i < n; ++i) {
             auto& inst = func.insts[i];

@@ -158,9 +158,7 @@ namespace eosio { namespace vm {
                   ir_inst mov{};
                   mov.opcode = ir_op::mov;
                   mov.type = entry.result_type;
-                  // Function body merge_vreg: mark as side effect to prevent DCE
-                  // (the epilogue reads it outside IR, so use_count would be 0)
-                  mov.flags = entry.is_function ? IR_SIDE_EFFECT : IR_NONE;
+                  mov.flags = IR_NONE;
                   mov.dest = entry.merge_vreg;
                   mov.rr.src1 = else_result;
                   mov.rr.src2 = ir_vreg_none;
@@ -351,7 +349,7 @@ namespace eosio { namespace vm {
                         mov.opcode = ir_op::mov;
                         mov.type = rt;
                         // Function body merge: side effect to prevent DCE
-                        mov.flags = target_entry.is_function ? IR_SIDE_EFFECT : IR_NONE;
+                        mov.flags = IR_NONE;
                         mov.dest = target_entry.merge_vreg;
                         mov.rr.src1 = src;
                         mov.rr.src2 = ir_vreg_none;
@@ -400,7 +398,7 @@ namespace eosio { namespace vm {
                         ir_inst mov{};
                         mov.opcode = ir_op::mov;
                         mov.type = rt;
-                        mov.flags = target_entry.is_function ? IR_SIDE_EFFECT : IR_NONE;
+                        mov.flags = IR_NONE;
                         mov.dest = target_entry.merge_vreg;
                         mov.rr.src1 = src;
                         mov.rr.src2 = ir_vreg_none;
@@ -441,7 +439,7 @@ namespace eosio { namespace vm {
                         ir_inst mov{};
                         mov.opcode = ir_op::mov;
                         mov.type = rt;
-                        mov.flags = target_entry.is_function ? IR_SIDE_EFFECT : IR_NONE;
+                        mov.flags = IR_NONE;
                         mov.dest = target_entry.merge_vreg;
                         mov.rr.src1 = src;
                         mov.rr.src2 = ir_vreg_none;
