@@ -127,9 +127,9 @@ namespace eosio { namespace vm {
                      inst.imm64 = 0;
                      if (inst.dest < num_vregs) { const_val[inst.dest] = 0; is_const[inst.dest] = 1; }
                      reduced = true;
-                  // NOTE: mul-by-power-of-2 → shl optimization removed.
-                  // It corrupted the const instruction's imm64, affecting all
-                  // other uses of the same constant vreg.
+                  }
+                  // NOTE: mul-by-power-of-2 → shl moved to codegen layer
+                  // (try_emit_mul_as_shl) to avoid corrupting shared constant vregs.
                   break;
                case ir_op::i32_and: case ir_op::i64_and:
                   if (c == 0) { // x & 0 → 0

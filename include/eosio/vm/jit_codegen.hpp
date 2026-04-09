@@ -52,12 +52,9 @@
 // [ ] Common subexpression elimination (CSE): deduplicate repeated address
 //     calculations and redundant loads from the same memory location.
 //
-// [ ] Strength reduction for multiply by power-of-2: replace `imul $8, %rax`
-//     with `shl $3, %rax`. Must be done in the CODEGEN (emit_binop_imm for
-//     i32_mul/i64_mul), NOT in the optimizer. The previous IR-level
-//     implementation corrupted shared constant vregs. The codegen can safely
-//     emit shl when it sees mul-by-immediate-power-of-2 via the def_inst
-//     lookup, since it reads the const value without modifying it.
+// [x] Strength reduction for multiply by power-of-2: replace `imul $8, %rax`
+//     with `shl $3, %rax`. Implemented in codegen (try_emit_mul_as_shl),
+//     NOT the optimizer. Reads the const value via def_inst without modifying it.
 //
 // --- Memory / allocator ---
 //
@@ -1551,6 +1548,47 @@ namespace eosio { namespace vm {
          return true;
       }
 
+      // Strength reduction: mul by power-of-2 → shl.
+      // Done at codegen level — reads the constant via def_inst without modifying the IR.
+      bool try_emit_mul_as_shl(const ir_inst& inst, bool is32) {
+         if (!_func_def_inst || inst.rr.src2 >= _num_vregs) return false;
+         uint32_t def = _func_def_inst[inst.rr.src2];
+         if (def >= _func_inst_count) return false;
+         auto& di = _func_insts[def];
+         if (di.opcode != ir_op::const_i32 && di.opcode != ir_op::const_i64) return false;
+         int64_t c = di.imm64;
+         if (is32) c = static_cast<uint32_t>(c);
+         if (c <= 0 || (c & (c - 1)) != 0) return false; // not a power of 2
+         uint8_t shift = 0;
+         int64_t tmp = c;
+         while (tmp > 1) { tmp >>= 1; shift++; }
+         // Emit: dest = src1 << shift
+         int8_t pr_d = get_phys(inst.dest);
+         int8_t pr_s1 = get_phys(inst.rr.src1);
+         if (pr_d >= 0 && pr_s1 >= 0) {
+            if (pr_d != pr_s1) {
+               if (is32) this->emit_mov(phys_to_reg32(pr_s1), phys_to_reg32(pr_d));
+               else      this->emit_mov(phys_to_reg64(pr_s1), phys_to_reg64(pr_d));
+            }
+            uint8_t modrm = static_cast<uint8_t>(0xc0 | (4 << 3) | (phys_to_reg64(pr_d) & 7)); // shl = reg_field 4
+            if (is32) {
+               if (phys_to_reg64(pr_d) & 8) this->emit_bytes(0x41);
+               this->emit_bytes(0xc1, modrm, shift);
+            } else {
+               this->emit_bytes(static_cast<uint8_t>(0x48 | ((phys_to_reg64(pr_d) & 8) ? 1 : 0)),
+                                0xc1, modrm, shift);
+            }
+         } else {
+            load_vreg_rax(inst.rr.src1);
+            if (is32) this->emit_bytes(0xc1, static_cast<uint8_t>(0xc0 | (4 << 3)), shift); // shl eax, shift
+            else      this->emit_bytes(0x48, 0xc1, static_cast<uint8_t>(0xc0 | (4 << 3)), shift); // shl rax, shift
+            store_rax_vreg(inst.dest);
+         }
+         if (_func_use_count && _func_use_count[inst.rr.src2] == 1)
+            di.flags |= IR_DEAD;
+         return true;
+      }
+
       // ──────── Register-based IR emission ────────
       // Uses physical registers for vreg values instead of push/pop.
       // rax and rcx are temporaries. Vregs in physical registers are
@@ -1856,7 +1894,9 @@ namespace eosio { namespace vm {
          case ir_op::i32_sub:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_sub(imm, d); }, true)) return true;
             return emit_binop(inst, base::SUB_A, true);
-         case ir_op::i32_mul: return emit_binop(inst, base::IMUL, true);
+         case ir_op::i32_mul:
+            if (try_emit_mul_as_shl(inst, true)) return true;
+            return emit_binop(inst, base::IMUL, true);
          case ir_op::i32_and:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_and(imm, d); }, true)) return true;
             return emit_binop(inst, base::AND_A, true);
@@ -1873,7 +1913,9 @@ namespace eosio { namespace vm {
          case ir_op::i64_sub:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_sub(imm, d); }, false)) return true;
             return emit_binop(inst, base::SUB_A, false);
-         case ir_op::i64_mul: return emit_binop(inst, base::IMUL, false);
+         case ir_op::i64_mul:
+            if (try_emit_mul_as_shl(inst, false)) return true;
+            return emit_binop(inst, base::IMUL, false);
          case ir_op::i64_and:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_and(imm, d); }, false)) return true;
             return emit_binop(inst, base::AND_A, false);
