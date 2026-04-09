@@ -581,12 +581,25 @@ namespace eosio { namespace vm {
                }
             }
 
-            // Assign XMM register
+            // Check if this interval crosses a call (XMM regs are caller-saved)
+            bool xmm_crosses_call = false;
+            if (has_calls) {
+               for (uint32_t p = interval.start; p <= interval.end; ++p) {
+                  if (call_bmp[p / 64] & (uint64_t(1) << (p % 64))) {
+                     xmm_crosses_call = true;
+                     break;
+                  }
+               }
+            }
+
+            // Assign XMM register (only if interval doesn't cross a call)
             int assigned = -1;
-            for (int r = 0; r < NUM_XMM; ++r) {
-               if (!xmm_used[r]) {
-                  assigned = r;
-                  break;
+            if (!xmm_crosses_call) {
+               for (int r = 0; r < NUM_XMM; ++r) {
+                  if (!xmm_used[r]) {
+                     assigned = r;
+                     break;
+                  }
                }
             }
 
