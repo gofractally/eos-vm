@@ -1963,6 +1963,7 @@ namespace eosio { namespace vm {
          // Integer binary ops (with const-immediate for add/sub)
          case ir_op::i32_add:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_add(imm, d); }, true, true)) return true;
+            if (emit_lea(inst, true)) return true;
             return emit_binop(inst, base::ADD_A, true);
          case ir_op::i32_sub:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_sub(imm, d); }, true)) return true;
@@ -1982,6 +1983,7 @@ namespace eosio { namespace vm {
 
          case ir_op::i64_add:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_add(imm, d); }, false, true)) return true;
+            if (emit_lea(inst, false)) return true;
             return emit_binop(inst, base::ADD_A, false);
          case ir_op::i64_sub:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_sub(imm, d); }, false)) return true;
@@ -2873,6 +2875,24 @@ namespace eosio { namespace vm {
                return true;
             }
          }
+      }
+
+      // LEA optimization for add: when dest != src1 != src2 and both src vregs
+      // are in GPRs, use lea [src1 + src2], dest instead of mov + add.
+      // Returns true if LEA was emitted, false to fall through to normal binop.
+      bool emit_lea(const ir_inst& inst, bool is32) {
+         int8_t pr_d = get_phys(inst.dest);
+         int8_t pr_s1 = get_phys(inst.rr.src1);
+         int8_t pr_s2 = get_phys(inst.rr.src2);
+         // Need all three in GPRs, dest != src1 (otherwise normal add is fine)
+         if (pr_d < 0 || pr_s1 < 0 || pr_s2 < 0) return false;
+         if (pr_d == pr_s1) return false; // normal add handles this
+         // lea [src1 + src2], dest — single instruction, always use 64-bit regs
+         auto d = phys_to_reg64(pr_d);
+         auto s1 = phys_to_reg64(pr_s1);
+         auto s2 = phys_to_reg64(pr_s2);
+         this->emit(base::LEA, *(s1 + s2 + 0), d);
+         return true;
       }
 
       // Register-based binary op helper — opcode-driven, supports memory operands.
