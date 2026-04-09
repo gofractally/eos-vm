@@ -1188,11 +1188,26 @@ namespace eosio { namespace vm {
             this->emit_bytes(0xf3, 0x48, 0x0f, 0x2a, 0x04, 0x24);
             this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
             break;
-         case ir_op::f32_convert_u_i64:
-            // TODO: handle unsigned i64 range properly
-            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2a, 0x04, 0x24);
+         case ir_op::f32_convert_u_i64: {
+            // Unsigned i64 → f32: cvtsi2ss treats as signed, so handle high bit
+            this->emit_mov(*(rsp), rax);
+            this->emit(base::TEST, rax, rax);
+            void* positive = this->emit_branchcc32(base::JGE);
+            // Negative (as signed): value >= 2^63. Split: convert (value >> 1) | (value & 1), then double
+            this->emit_mov(rax, rcx);
+            this->emit_bytes(0x48, 0xd1, 0xe8);          // shr $1, rax
+            this->emit_bytes(0x83, 0xe1, 0x01);           // and $1, ecx
+            this->emit(base::OR_A, rcx, rax);             // preserve LSB for rounding
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2a, 0xc0); // cvtsi2ss rax, xmm0
+            this->emit_bytes(0xf3, 0x0f, 0x58, 0xc0);    // addss xmm0, xmm0 (double it)
+            { void* done = emit_jmp32();
+            base::fix_branch(positive, code);
+            // Positive: value < 2^63, cvtsi2ss handles it
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2a, 0xc0); // cvtsi2ss rax, xmm0
+            base::fix_branch(done, code); }
             this->emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
             break;
+         }
          case ir_op::f64_convert_s_i32:
             this->emit_bytes(0xf2, 0x0f, 0x2a, 0x04, 0x24);
             this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
@@ -1206,10 +1221,24 @@ namespace eosio { namespace vm {
             this->emit_bytes(0xf2, 0x48, 0x0f, 0x2a, 0x04, 0x24);
             this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
             break;
-         case ir_op::f64_convert_u_i64:
-            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2a, 0x04, 0x24);
+         case ir_op::f64_convert_u_i64: {
+            // Unsigned i64 → f64: same approach as f32 version
+            this->emit_mov(*(rsp), rax);
+            this->emit(base::TEST, rax, rax);
+            void* positive = this->emit_branchcc32(base::JGE);
+            this->emit_mov(rax, rcx);
+            this->emit_bytes(0x48, 0xd1, 0xe8);          // shr $1, rax
+            this->emit_bytes(0x83, 0xe1, 0x01);           // and $1, ecx
+            this->emit(base::OR_A, rcx, rax);
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2a, 0xc0); // cvtsi2sd rax, xmm0
+            this->emit_bytes(0xf2, 0x0f, 0x58, 0xc0);    // addsd xmm0, xmm0
+            { void* done = emit_jmp32();
+            base::fix_branch(positive, code);
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2a, 0xc0); // cvtsi2sd rax, xmm0
+            base::fix_branch(done, code); }
             this->emit_bytes(0xf2, 0x0f, 0x11, 0x04, 0x24);
             break;
+         }
 
          // ── Float-float conversions ──
          case ir_op::f32_demote_f64:
@@ -2682,13 +2711,25 @@ namespace eosio { namespace vm {
             this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
             store_rax_vreg(inst.dest);
             return true;
-         case ir_op::f32_convert_u_i64:
-            // For unsigned i64 → f32, use signed i64 convert (works for values < 2^63)
+         case ir_op::f32_convert_u_i64: {
             load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2a, 0xc0);  // cvtsi2ss rax, xmm0
+            this->emit(base::TEST, rax, rax);
+            void* positive = this->emit_branchcc32(base::JGE);
+            // value >= 2^63: split, convert, double
+            this->emit_mov(rax, rcx);
+            this->emit_bytes(0x48, 0xd1, 0xe8);          // shr $1, rax
+            this->emit_bytes(0x83, 0xe1, 0x01);           // and $1, ecx
+            this->emit(base::OR_A, rcx, rax);
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2a, 0xc0); // cvtsi2ss rax, xmm0
+            this->emit_bytes(0xf3, 0x0f, 0x58, 0xc0);    // addss xmm0, xmm0
+            { void* done = emit_jmp32();
+            base::fix_branch(positive, code);
+            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2a, 0xc0); // cvtsi2ss rax, xmm0
+            base::fix_branch(done, code); }
             this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
             store_rax_vreg(inst.dest);
             return true;
+         }
          case ir_op::f64_convert_s_i32:
             load_vreg_rax(inst.rr.src1);
             this->emit_bytes(0xf2, 0x0f, 0x2a, 0xc0);         // cvtsi2sd eax, xmm0
@@ -2708,12 +2749,24 @@ namespace eosio { namespace vm {
             this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
             store_rax_vreg(inst.dest);
             return true;
-         case ir_op::f64_convert_u_i64:
+         case ir_op::f64_convert_u_i64: {
             load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2a, 0xc0);  // cvtsi2sd rax, xmm0
+            this->emit(base::TEST, rax, rax);
+            void* positive = this->emit_branchcc32(base::JGE);
+            this->emit_mov(rax, rcx);
+            this->emit_bytes(0x48, 0xd1, 0xe8);          // shr $1, rax
+            this->emit_bytes(0x83, 0xe1, 0x01);           // and $1, ecx
+            this->emit(base::OR_A, rcx, rax);
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2a, 0xc0); // cvtsi2sd rax, xmm0
+            this->emit_bytes(0xf2, 0x0f, 0x58, 0xc0);    // addsd xmm0, xmm0
+            { void* done = emit_jmp32();
+            base::fix_branch(positive, code);
+            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2a, 0xc0); // cvtsi2sd rax, xmm0
+            base::fix_branch(done, code); }
             this->emit_bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
             store_rax_vreg(inst.dest);
             return true;
+         }
 
          // ── Float-float conversions (register mode) ──
          case ir_op::f32_demote_f64:
@@ -5806,7 +5859,7 @@ namespace eosio { namespace vm {
       // Trapping float-to-int conversions via softfloat (longjmp on overflow/NaN)
       static uint64_t trunc_f32_i32s(uint64_t v) { uint64_t r = 0; float f; memcpy(&f, &v, 4); vm::longjmp_on_exception([&](){ r = static_cast<uint32_t>(_eosio_f32_trunc_i32s(f)); }); return r; }
       static uint64_t trunc_f32_i32u(uint64_t v) { uint64_t r = 0; float f; memcpy(&f, &v, 4); vm::longjmp_on_exception([&](){ r = _eosio_f32_trunc_i32u(f); }); return r; }
-      static uint64_t trunc_f64_i32s(uint64_t v) { uint64_t r = 0; double f; memcpy(&f, &v, 8); vm::longjmp_on_exception([&](){ r = static_cast<uint32_t>(_eosio_f64_trunc_i32s<false>(f)); }); return r; }
+      static uint64_t trunc_f64_i32s(uint64_t v) { uint64_t r = 0; double f; memcpy(&f, &v, 8); vm::longjmp_on_exception([&](){ r = static_cast<uint32_t>(_eosio_f64_trunc_i32s<true>(f)); }); return r; }
       static uint64_t trunc_f64_i32u(uint64_t v) { uint64_t r = 0; double f; memcpy(&f, &v, 8); vm::longjmp_on_exception([&](){ r = _eosio_f64_trunc_i32u(f); }); return r; }
       static uint64_t trunc_f32_i64s(uint64_t v) { uint64_t r = 0; float f; memcpy(&f, &v, 4); vm::longjmp_on_exception([&](){ r = static_cast<uint64_t>(_eosio_f32_trunc_i64s(f)); }); return r; }
       static uint64_t trunc_f32_i64u(uint64_t v) { uint64_t r = 0; float f; memcpy(&f, &v, 4); vm::longjmp_on_exception([&](){ r = static_cast<uint64_t>(_eosio_f32_trunc_i64u(f)); }); return r; }
