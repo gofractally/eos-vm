@@ -1334,13 +1334,96 @@ namespace eosio { namespace vm {
             break;
          }
 
-         case ir_op::memory_init:
-         case ir_op::data_drop:
-         case ir_op::table_init:
-         case ir_op::elem_drop:
-         case ir_op::table_copy:
-            // TODO: implement bulk memory/table ops
+         case ir_op::memory_init: {
+            // Stack: [dest, src, count] via arg pushes
+            this->emit_pop_raw(r8);   // count → arg5
+            this->emit_pop_raw(rcx);  // src   → arg4
+            this->emit_pop_raw(rdx);  // dest  → arg3
+            // rdi = ctx (arg1, already), need esi = seg_idx (arg2)
+            this->emit_push_raw(rdi);
+            this->emit_push_raw(rsi);
+            this->emit_mov(static_cast<uint32_t>(inst.ri.imm), esi); // seg_idx → arg2
+            this->emit_mov(rsp, rax);
+            this->emit_bytes(0x48, 0x83, 0xe4, 0xf0); // andq $-16, %rsp
+            this->emit_push_raw(rax);
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&memory_init_impl);
+            this->emit_bytes(0xff, 0xd0);
+            this->emit_pop_raw(rsp);
+            this->emit_pop_raw(rsi);
+            this->emit_pop_raw(rdi);
             break;
+         }
+         case ir_op::data_drop: {
+            // No stack args, just segment index
+            this->emit_push_raw(rdi);
+            this->emit_push_raw(rsi);
+            this->emit_mov(static_cast<uint32_t>(inst.ri.imm), esi); // seg_idx → arg2
+            this->emit_mov(rsp, rax);
+            this->emit_bytes(0x48, 0x83, 0xe4, 0xf0);
+            this->emit_push_raw(rax);
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&data_drop_impl);
+            this->emit_bytes(0xff, 0xd0);
+            this->emit_pop_raw(rsp);
+            this->emit_pop_raw(rsi);
+            this->emit_pop_raw(rdi);
+            break;
+         }
+         case ir_op::table_init: {
+            // Stack: [dest, src, count] via arg pushes
+            this->emit_pop_raw(r8);   // count → arg5
+            this->emit_pop_raw(rcx);  // src   → arg4
+            this->emit_pop_raw(rdx);  // dest  → arg3
+            this->emit_push_raw(rdi);
+            this->emit_push_raw(rsi);
+            this->emit_mov(static_cast<uint32_t>(inst.ri.imm), esi); // seg_idx → arg2
+            this->emit_mov(rsp, rax);
+            this->emit_bytes(0x48, 0x83, 0xe4, 0xf0);
+            this->emit_push_raw(rax);
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&table_init_impl);
+            this->emit_bytes(0xff, 0xd0);
+            this->emit_pop_raw(rsp);
+            this->emit_pop_raw(rsi);
+            this->emit_pop_raw(rdi);
+            break;
+         }
+         case ir_op::elem_drop: {
+            // No stack args, just segment index
+            this->emit_push_raw(rdi);
+            this->emit_push_raw(rsi);
+            this->emit_mov(static_cast<uint32_t>(inst.ri.imm), esi); // seg_idx → arg2
+            this->emit_mov(rsp, rax);
+            this->emit_bytes(0x48, 0x83, 0xe4, 0xf0);
+            this->emit_push_raw(rax);
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&elem_drop_impl);
+            this->emit_bytes(0xff, 0xd0);
+            this->emit_pop_raw(rsp);
+            this->emit_pop_raw(rsi);
+            this->emit_pop_raw(rdi);
+            break;
+         }
+         case ir_op::table_copy: {
+            // Stack: [dest, src, count] via arg pushes
+            this->emit_pop_raw(rcx);  // count → arg4
+            this->emit_pop_raw(rdx);  // src   → arg3
+            this->emit_pop_raw(rax);  // dest
+            this->emit_push_raw(rdi);
+            this->emit_push_raw(rsi);
+            this->emit_mov(eax, esi); // dest → arg2
+            this->emit_mov(rsp, rax);
+            this->emit_bytes(0x48, 0x83, 0xe4, 0xf0);
+            this->emit_push_raw(rax);
+            this->emit_bytes(0x48, 0xb8);
+            this->emit_operand_ptr(&table_copy_impl);
+            this->emit_bytes(0xff, 0xd0);
+            this->emit_pop_raw(rsp);
+            this->emit_pop_raw(rsi);
+            this->emit_pop_raw(rdi);
+            break;
+         }
 
          default:
             break;
@@ -2353,8 +2436,7 @@ namespace eosio { namespace vm {
          case ir_op::table_init:
          case ir_op::elem_drop:
          case ir_op::table_copy:
-            // Not yet implemented — args on stack, just discard
-            return true;
+            return false; // use stack-mode emit_ir_inst
 
          // ── Memory management (register mode) ──
          case ir_op::memory_size:
@@ -5675,6 +5757,39 @@ namespace eosio { namespace vm {
                std::memmove(ctx->linear_memory() + dest, ctx->linear_memory() + src, count);
          });
       }
+      static void memory_init_impl(Context* ctx, uint32_t seg_idx, uint32_t dest, uint32_t src, uint32_t count) {
+         vm::longjmp_on_exception([&]() {
+            ctx->init_linear_memory(seg_idx, dest, src, count);
+         });
+      }
+
+      static void data_drop_impl(Context* ctx, uint32_t seg_idx) {
+         vm::longjmp_on_exception([&]() {
+            ctx->drop_data(seg_idx);
+         });
+      }
+
+      static void table_init_impl(Context* ctx, uint32_t seg_idx, uint32_t dest, uint32_t src, uint32_t count) {
+         vm::longjmp_on_exception([&]() {
+            ctx->init_table(seg_idx, dest, src, count);
+         });
+      }
+
+      static void elem_drop_impl(Context* ctx, uint32_t seg_idx) {
+         vm::longjmp_on_exception([&]() {
+            ctx->drop_elem(seg_idx);
+         });
+      }
+
+      static void table_copy_impl(Context* ctx, uint32_t dest, uint32_t src, uint32_t count) {
+         vm::longjmp_on_exception([&]() {
+            auto* s = ctx->get_table_ptr(src, count);
+            auto* d = ctx->get_table_ptr(dest, count);
+            if (count > 0)
+               std::memmove(d, s, count * sizeof(table_entry));
+         });
+      }
+
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>("unreachable"); }
       static void on_fp_error() { vm::throw_<wasm_interpreter_exception>("floating point error"); }
 

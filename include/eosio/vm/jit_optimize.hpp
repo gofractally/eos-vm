@@ -327,6 +327,22 @@ namespace eosio { namespace vm {
                is_pure = (inst.opcode >= ir_op::i32_eqz && inst.opcode <= ir_op::i64_extend32_s)
                        || (inst.opcode >= ir_op::i32_add && inst.opcode <= ir_op::f64_copysign)
                        || (inst.opcode >= ir_op::f32_abs && inst.opcode <= ir_op::f64_sqrt);
+               // Exclude trapping ops: div/rem can trap on div-by-zero or overflow,
+               // trunc can trap on NaN/overflow — must not be eliminated even if unused
+               if (is_pure) {
+                  switch (inst.opcode) {
+                  case ir_op::i32_div_s: case ir_op::i32_div_u:
+                  case ir_op::i32_rem_s: case ir_op::i32_rem_u:
+                  case ir_op::i64_div_s: case ir_op::i64_div_u:
+                  case ir_op::i64_rem_s: case ir_op::i64_rem_u:
+                  case ir_op::i32_trunc_s_f32: case ir_op::i32_trunc_u_f32:
+                  case ir_op::i32_trunc_s_f64: case ir_op::i32_trunc_u_f64:
+                  case ir_op::i64_trunc_s_f32: case ir_op::i64_trunc_u_f32:
+                  case ir_op::i64_trunc_s_f64: case ir_op::i64_trunc_u_f64:
+                     is_pure = false; break;
+                  default: break;
+                  }
+               }
                break;
             }
             if (is_pure) {

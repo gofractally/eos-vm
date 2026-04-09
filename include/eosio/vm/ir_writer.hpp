@@ -106,7 +106,12 @@ namespace eosio { namespace vm {
          entry.is_loop = 0;
          entry.is_function = 1;
          entry.entered_unreachable = 0;
-         entry.merge_vreg = ir_vreg_none;
+         // Allocate merge vreg so br-to-function-body can pass return values
+         if (entry.result_type != types::pseudo) {
+            entry.merge_vreg = _func->alloc_vreg(entry.result_type);
+         } else {
+            entry.merge_vreg = ir_vreg_none;
+         }
          _func->ctrl_push(entry);
          _func->start_block(entry.block_idx);
       }
@@ -153,7 +158,9 @@ namespace eosio { namespace vm {
                   ir_inst mov{};
                   mov.opcode = ir_op::mov;
                   mov.type = entry.result_type;
-                  mov.flags = IR_NONE;
+                  // Function body merge_vreg: mark as side effect to prevent DCE
+                  // (the epilogue reads it outside IR, so use_count would be 0)
+                  mov.flags = entry.is_function ? IR_SIDE_EFFECT : IR_NONE;
                   mov.dest = entry.merge_vreg;
                   mov.rr.src1 = else_result;
                   mov.rr.src2 = ir_vreg_none;
@@ -343,7 +350,8 @@ namespace eosio { namespace vm {
                         ir_inst mov{};
                         mov.opcode = ir_op::mov;
                         mov.type = rt;
-                        mov.flags = IR_NONE;
+                        // Function body merge: side effect to prevent DCE
+                        mov.flags = target_entry.is_function ? IR_SIDE_EFFECT : IR_NONE;
                         mov.dest = target_entry.merge_vreg;
                         mov.rr.src1 = src;
                         mov.rr.src2 = ir_vreg_none;
@@ -392,7 +400,7 @@ namespace eosio { namespace vm {
                         ir_inst mov{};
                         mov.opcode = ir_op::mov;
                         mov.type = rt;
-                        mov.flags = IR_NONE;
+                        mov.flags = target_entry.is_function ? IR_SIDE_EFFECT : IR_NONE;
                         mov.dest = target_entry.merge_vreg;
                         mov.rr.src1 = src;
                         mov.rr.src2 = ir_vreg_none;
@@ -433,7 +441,7 @@ namespace eosio { namespace vm {
                         ir_inst mov{};
                         mov.opcode = ir_op::mov;
                         mov.type = rt;
-                        mov.flags = IR_NONE;
+                        mov.flags = target_entry.is_function ? IR_SIDE_EFFECT : IR_NONE;
                         mov.dest = target_entry.merge_vreg;
                         mov.rr.src1 = src;
                         mov.rr.src2 = ir_vreg_none;
@@ -1394,10 +1402,18 @@ namespace eosio { namespace vm {
          if (!_unreachable) {
             ir_inst inst{}; inst.opcode = ir_op::memory_init;
             inst.flags = IR_SIDE_EFFECT; inst.dest = ir_vreg_none;
+            inst.ri.imm = static_cast<int32_t>(s); // data segment index
             _func->emit(inst);
          }
       }
-      void emit_data_drop(std::uint32_t s) { }
+      void emit_data_drop(std::uint32_t s) {
+         if (!_unreachable) {
+            ir_inst inst{}; inst.opcode = ir_op::data_drop;
+            inst.flags = IR_SIDE_EFFECT; inst.dest = ir_vreg_none;
+            inst.ri.imm = static_cast<int32_t>(s); // data segment index
+            _func->emit(inst);
+         }
+      }
       void emit_memory_copy() {
          ir_bulk_mem3(); // vpop the 3 args from vstack
          if (!_unreachable) {
@@ -1414,9 +1430,31 @@ namespace eosio { namespace vm {
             _func->emit(inst);
          }
       }
-      void emit_table_init(std::uint32_t s) { ir_bulk_mem3(); }
-      void emit_elem_drop(std::uint32_t s) { }
-      void emit_table_copy() { ir_bulk_mem3(); }
+      void emit_table_init(std::uint32_t s) {
+         ir_bulk_mem3();
+         if (!_unreachable) {
+            ir_inst inst{}; inst.opcode = ir_op::table_init;
+            inst.flags = IR_SIDE_EFFECT; inst.dest = ir_vreg_none;
+            inst.ri.imm = static_cast<int32_t>(s); // element segment index
+            _func->emit(inst);
+         }
+      }
+      void emit_elem_drop(std::uint32_t s) {
+         if (!_unreachable) {
+            ir_inst inst{}; inst.opcode = ir_op::elem_drop;
+            inst.flags = IR_SIDE_EFFECT; inst.dest = ir_vreg_none;
+            inst.ri.imm = static_cast<int32_t>(s); // element segment index
+            _func->emit(inst);
+         }
+      }
+      void emit_table_copy() {
+         ir_bulk_mem3();
+         if (!_unreachable) {
+            ir_inst inst{}; inst.opcode = ir_op::table_copy;
+            inst.flags = IR_SIDE_EFFECT; inst.dest = ir_vreg_none;
+            _func->emit(inst);
+         }
+      }
 
       // ──── Branch fixup ────
       // Patch a br/br_if IR instruction's target to the resolved block index.
