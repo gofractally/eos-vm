@@ -1160,39 +1160,15 @@ namespace eosio { namespace vm {
          case ir_op::i64_trunc_s_f64:  emit_trunc_call(&trunc_f64_i64s); break;
          case ir_op::i64_trunc_u_f64:  emit_trunc_call(&trunc_f64_i64u); break;
 
-         // Saturating truncations (same as above for now — TODO: clamp)
-         case ir_op::i32_trunc_sat_f32_s:
-            this->emit_bytes(0xf3, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
-         case ir_op::i32_trunc_sat_f32_u:
-            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
-         case ir_op::i32_trunc_sat_f64_s:
-            this->emit_bytes(0xf2, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
-         case ir_op::i32_trunc_sat_f64_u:
-            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
-         case ir_op::i64_trunc_sat_f32_s:
-            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
-         case ir_op::i64_trunc_sat_f32_u:
-            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
-         case ir_op::i64_trunc_sat_f64_s:
-            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
-         case ir_op::i64_trunc_sat_f64_u:
-            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0x04, 0x24);
-            this->emit_mov(rax, *rsp);
-            break;
+         // Saturating truncations (clamp to min/max, NaN → 0)
+         case ir_op::i32_trunc_sat_f32_s: emit_trunc_call(&trunc_sat_f32_i32s); break;
+         case ir_op::i32_trunc_sat_f32_u: emit_trunc_call(&trunc_sat_f32_i32u); break;
+         case ir_op::i32_trunc_sat_f64_s: emit_trunc_call(&trunc_sat_f64_i32s); break;
+         case ir_op::i32_trunc_sat_f64_u: emit_trunc_call(&trunc_sat_f64_i32u); break;
+         case ir_op::i64_trunc_sat_f32_s: emit_trunc_call(&trunc_sat_f32_i64s); break;
+         case ir_op::i64_trunc_sat_f32_u: emit_trunc_call(&trunc_sat_f32_i64u); break;
+         case ir_op::i64_trunc_sat_f64_s: emit_trunc_call(&trunc_sat_f64_i64s); break;
+         case ir_op::i64_trunc_sat_f64_u: emit_trunc_call(&trunc_sat_f64_i64u); break;
 
          // ── Int-to-float conversions ──
          case ir_op::f32_convert_s_i32:
@@ -2594,57 +2570,15 @@ namespace eosio { namespace vm {
          case ir_op::i64_trunc_s_f64:  emit_trunc_call_reg(inst, &trunc_f64_i64s); return true;
          case ir_op::i64_trunc_u_f64:  emit_trunc_call_reg(inst, &trunc_f64_i64u); return true;
 
-         // ── Saturating truncations (register mode) ──
-         case ir_op::i32_trunc_sat_f32_s:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf3, 0x0f, 0x2c, 0xc0);         // cvttss2si eax, xmm0
-            store_rax_vreg(inst.dest);
-            return true;
-         case ir_op::i32_trunc_sat_f32_u:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0xc0);  // cvttss2si rax, xmm0
-            this->emit_bytes(0x89, 0xc0);                      // mov eax, eax
-            store_rax_vreg(inst.dest);
-            return true;
-         case ir_op::i32_trunc_sat_f64_s:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf2, 0x0f, 0x2c, 0xc0);         // cvttsd2si eax, xmm0
-            store_rax_vreg(inst.dest);
-            return true;
-         case ir_op::i32_trunc_sat_f64_u:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0xc0);  // cvttsd2si rax, xmm0
-            this->emit_bytes(0x89, 0xc0);                      // mov eax, eax
-            store_rax_vreg(inst.dest);
-            return true;
-         case ir_op::i64_trunc_sat_f32_s:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0xc0);  // cvttss2si rax, xmm0
-            store_rax_vreg(inst.dest);
-            return true;
-         case ir_op::i64_trunc_sat_f32_u:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf3, 0x48, 0x0f, 0x2c, 0xc0);  // cvttss2si rax, xmm0
-            store_rax_vreg(inst.dest);
-            return true;
-         case ir_op::i64_trunc_sat_f64_s:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0xc0);  // cvttsd2si rax, xmm0
-            store_rax_vreg(inst.dest);
-            return true;
-         case ir_op::i64_trunc_sat_f64_u:
-            load_vreg_rax(inst.rr.src1);
-            this->emit_bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
-            this->emit_bytes(0xf2, 0x48, 0x0f, 0x2c, 0xc0);  // cvttsd2si rax, xmm0
-            store_rax_vreg(inst.dest);
-            return true;
+         // ── Saturating truncations (register mode, clamp to min/max, NaN → 0) ──
+         case ir_op::i32_trunc_sat_f32_s: emit_trunc_call_reg(inst, &trunc_sat_f32_i32s); return true;
+         case ir_op::i32_trunc_sat_f32_u: emit_trunc_call_reg(inst, &trunc_sat_f32_i32u); return true;
+         case ir_op::i32_trunc_sat_f64_s: emit_trunc_call_reg(inst, &trunc_sat_f64_i32s); return true;
+         case ir_op::i32_trunc_sat_f64_u: emit_trunc_call_reg(inst, &trunc_sat_f64_i32u); return true;
+         case ir_op::i64_trunc_sat_f32_s: emit_trunc_call_reg(inst, &trunc_sat_f32_i64s); return true;
+         case ir_op::i64_trunc_sat_f32_u: emit_trunc_call_reg(inst, &trunc_sat_f32_i64u); return true;
+         case ir_op::i64_trunc_sat_f64_s: emit_trunc_call_reg(inst, &trunc_sat_f64_i64s); return true;
+         case ir_op::i64_trunc_sat_f64_u: emit_trunc_call_reg(inst, &trunc_sat_f64_i64u); return true;
 
          // ── Int-to-float conversions (register mode) ──
          case ir_op::f32_convert_s_i32:
@@ -5743,6 +5677,16 @@ namespace eosio { namespace vm {
       }
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>("unreachable"); }
       static void on_fp_error() { vm::throw_<wasm_interpreter_exception>("floating point error"); }
+
+      // Saturating float-to-int conversions for trunc_sat (no trap, clamp to min/max, NaN→0)
+      static uint64_t trunc_sat_f32_i32s(uint64_t v) { float f; memcpy(&f, &v, 4); if (f != f) return 0; if (f >= 2147483648.0f) return (uint32_t)INT32_MAX; if (f <= -2147483649.0f) return (uint32_t)INT32_MIN; return (uint32_t)(int32_t)f; }
+      static uint64_t trunc_sat_f32_i32u(uint64_t v) { float f; memcpy(&f, &v, 4); if (f != f) return 0; if (f >= 4294967296.0f) return UINT32_MAX; if (f <= -1.0f) return 0; return (uint32_t)f; }
+      static uint64_t trunc_sat_f64_i32s(uint64_t v) { double f; memcpy(&f, &v, 8); if (f != f) return 0; if (f >= 2147483648.0) return (uint32_t)INT32_MAX; if (f <= -2147483649.0) return (uint32_t)INT32_MIN; return (uint32_t)(int32_t)f; }
+      static uint64_t trunc_sat_f64_i32u(uint64_t v) { double f; memcpy(&f, &v, 8); if (f != f) return 0; if (f >= 4294967296.0) return UINT32_MAX; if (f <= -1.0) return 0; return (uint32_t)f; }
+      static uint64_t trunc_sat_f32_i64s(uint64_t v) { float f; memcpy(&f, &v, 4); if (f != f) return 0; if (f >= 9223372036854775808.0f) return (uint64_t)INT64_MAX; if (f <= -9223372036854775809.0f) return (uint64_t)INT64_MIN; return (uint64_t)(int64_t)f; }
+      static uint64_t trunc_sat_f32_i64u(uint64_t v) { float f; memcpy(&f, &v, 4); if (f != f) return 0; if (f >= 18446744073709551616.0f) return UINT64_MAX; if (f <= -1.0f) return 0; return (uint64_t)f; }
+      static uint64_t trunc_sat_f64_i64s(uint64_t v) { double f; memcpy(&f, &v, 8); if (f != f) return 0; if (f >= 9223372036854775808.0) return (uint64_t)INT64_MAX; if (f <= -9223372036854775809.0) return (uint64_t)INT64_MIN; return (uint64_t)(int64_t)f; }
+      static uint64_t trunc_sat_f64_i64u(uint64_t v) { double f; memcpy(&f, &v, 8); if (f != f) return 0; if (f >= 18446744073709551616.0) return UINT64_MAX; if (f <= -1.0) return 0; return (uint64_t)f; }
 
       // Trapping float-to-int conversions via softfloat (longjmp on overflow/NaN)
       static uint64_t trunc_f32_i32s(uint64_t v) { uint64_t r = 0; float f; memcpy(&f, &v, 4); vm::longjmp_on_exception([&](){ r = static_cast<uint32_t>(_eosio_f32_trunc_i32s(f)); }); return r; }
