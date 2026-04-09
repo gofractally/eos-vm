@@ -1577,19 +1577,27 @@ namespace eosio { namespace vm {
       // Emit binop with constant src2: load src1 → rax, apply op with immediate, store.
       // Lambda receives int32_t immediate value.
       template<typename F>
-      bool emit_binop_imm(const ir_inst& inst, F op_imm, bool is32) {
-         if (!_func_def_inst || inst.rr.src2 >= _num_vregs) return false;
-         uint32_t def = _func_def_inst[inst.rr.src2];
-         if (def >= _func_inst_count) return false;
-         auto& di = _func_insts[def];
-         if (di.opcode != ir_op::const_i32 && di.opcode != ir_op::const_i64) return false;
-         int32_t imm = static_cast<int32_t>(di.imm64);
+      bool emit_binop_imm(const ir_inst& inst, F op_imm, bool is32, bool commutative = false) {
+         // Try src2 as constant first
+         uint32_t const_src = inst.rr.src2;
+         uint32_t other_src = inst.rr.src1;
+         bool found = false;
+         if (_cur_func && _cur_func->is_const && const_src < _num_vregs && _cur_func->is_const[const_src]) {
+            found = true;
+         } else if (commutative && _cur_func && _cur_func->is_const && other_src < _num_vregs && _cur_func->is_const[other_src]) {
+            // Commutative: swap operands so the constant is on the imm side
+            const_src = inst.rr.src1;
+            other_src = inst.rr.src2;
+            found = true;
+         }
+         if (!found) return false;
+         int32_t imm = static_cast<int32_t>(_cur_func->const_val[const_src]);
          // For i64 operations, the imm32 is sign-extended to 64 bits by the CPU.
          // Reject if the sign-extended value doesn't match the original i64 constant.
-         if (!is32 && static_cast<int64_t>(imm) != static_cast<int64_t>(di.imm64))
+         if (!is32 && static_cast<int64_t>(imm) != _cur_func->const_val[const_src])
             return false;
          int8_t pr_d = get_phys(inst.dest);
-         int8_t pr_s1 = get_phys(inst.rr.src1);
+         int8_t pr_s1 = get_phys(other_src);
          if (pr_d >= 0 && pr_s1 >= 0) {
             // Both in physical registers — operate directly
             if (pr_d != pr_s1) {
@@ -1599,13 +1607,17 @@ namespace eosio { namespace vm {
             if (is32) op_imm(imm, phys_to_reg32(pr_d));
             else      op_imm(imm, phys_to_reg64(pr_d));
          } else {
-            load_vreg_rax(inst.rr.src1);
+            load_vreg_rax(other_src);
             if (is32) op_imm(imm, eax);
             else      op_imm(imm, rax);
             store_rax_vreg(inst.dest);
          }
-         if (_func_use_count && _func_use_count[inst.rr.src2] == 1)
-            di.flags |= IR_DEAD;
+         // Mark the constant instruction as dead if single-use
+         if (_func_use_count && _func_use_count[const_src] == 1) {
+            uint32_t def = _func_def_inst ? _func_def_inst[const_src] : UINT32_MAX;
+            if (def < _func_inst_count)
+               _func_insts[def].flags |= IR_DEAD;
+         }
          return true;
       }
 
@@ -1950,7 +1962,7 @@ namespace eosio { namespace vm {
 
          // Integer binary ops (with const-immediate for add/sub)
          case ir_op::i32_add:
-            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_add(imm, d); }, true)) return true;
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_add(imm, d); }, true, true)) return true;
             return emit_binop(inst, base::ADD_A, true);
          case ir_op::i32_sub:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_sub(imm, d); }, true)) return true;
@@ -1959,17 +1971,17 @@ namespace eosio { namespace vm {
             if (try_emit_mul_as_shl(inst, true)) return true;
             return emit_binop(inst, base::IMUL, true);
          case ir_op::i32_and:
-            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_and(imm, d); }, true)) return true;
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_and(imm, d); }, true, true)) return true;
             return emit_binop(inst, base::AND_A, true);
          case ir_op::i32_or:
-            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_or(imm, d); }, true)) return true;
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_or(imm, d); }, true, true)) return true;
             return emit_binop(inst, base::OR_A, true);
          case ir_op::i32_xor:
-            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_xor(imm, d); }, true)) return true;
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_xor(imm, d); }, true, true)) return true;
             return emit_binop(inst, base::XOR_A, true);
 
          case ir_op::i64_add:
-            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_add(imm, d); }, false)) return true;
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_add(imm, d); }, false, true)) return true;
             return emit_binop(inst, base::ADD_A, false);
          case ir_op::i64_sub:
             if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_sub(imm, d); }, false)) return true;
@@ -1978,13 +1990,13 @@ namespace eosio { namespace vm {
             if (try_emit_mul_as_shl(inst, false)) return true;
             return emit_binop(inst, base::IMUL, false);
          case ir_op::i64_and:
-            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_and(imm, d); }, false)) return true;
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_and(imm, d); }, false, true)) return true;
             return emit_binop(inst, base::AND_A, false);
          case ir_op::i64_or:
-            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_or(imm, d); }, false)) return true;
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_or(imm, d); }, false, true)) return true;
             return emit_binop(inst, base::OR_A, false);
          case ir_op::i64_xor:
-            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_xor(imm, d); }, false)) return true;
+            if (emit_binop_imm(inst, [this](int32_t imm, auto d){ this->emit_xor(imm, d); }, false, true)) return true;
             return emit_binop(inst, base::XOR_A, false);
 
          // Shifts/rotates with constant folding
