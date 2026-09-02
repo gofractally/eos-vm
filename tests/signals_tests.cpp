@@ -1,8 +1,10 @@
 #include <eosio/vm/signals.hpp>
 #include <chrono>
 #include <csignal>
+#include <future>
 #include <thread>
 #include <iostream>
+#include <poll.h>
 
 #include <catch2/catch.hpp>
 
@@ -88,4 +90,74 @@ TEST_CASE("Test signal handler forwarding", "[signal_handler_forward]") {
       std::raise(SIGFPE);
       CHECK(sig_handled == 142 + SIGFPE);
    }
+}
+
+static int signal_pipefds[2];
+static void signal_write_pipe(int) {
+   write(signal_pipefds[1], "", 1);
+}
+
+TEST_CASE("Test signal mask longjmp restoration", "[signal_mask_longjmp_restoration]") {
+   REQUIRE(pipe(signal_pipefds) == 0);
+   auto pipe_guard = eosio::vm::scope_guard{[&]{
+      close(signal_pipefds[0]);
+      close(signal_pipefds[1]);
+   }};
+
+   struct sigaction sa, old_sa;
+   sa.sa_handler = signal_write_pipe;
+   sigemptyset(&sa.sa_mask);
+   REQUIRE(sigaction(SIGTERM, &sa, &old_sa) == 0);
+   auto resore_orig_sigterm_guard = eosio::vm::scope_guard{[&]{
+      sigaction(SIGTERM, &old_sa, nullptr);
+   }};
+
+   std::promise<void> thread_running;
+   std::promise<void> thread_may_return;
+   std::thread t([&] {
+      //block everything except SIGTERM in this thread
+      sigset_t suspend_mask;
+      sigfillset(&suspend_mask);
+      sigdelset(&suspend_mask, SIGTERM);
+      pthread_sigmask(SIG_SETMASK, &suspend_mask, nullptr);
+
+      thread_running.set_value();
+      thread_may_return.get_future().get();
+   });
+   auto thread_guard = eosio::vm::scope_guard{[&] {
+      thread_may_return.set_value();
+      t.join();
+   }};
+
+   thread_running.get_future().get();
+
+   sigset_t old_mask;
+   //block SIGTERM on main thread
+   sigset_t set;
+   sigemptyset(&set);
+   sigaddset(&set, SIGTERM);
+   REQUIRE(pthread_sigmask(SIG_BLOCK, &set, &old_mask) == 0);
+   auto mask_guard = eosio::vm::scope_guard{[&] {
+      pthread_sigmask(SIG_SETMASK, &old_mask, nullptr);
+   }};
+
+   eosio::vm::growable_allocator code_alloc;
+   eosio::vm::wasm_allocator wasm_alloc;
+   eosio::vm::invoke_with_signal_handler([&]() {
+      volatile auto i = *wasm_alloc.get_base_ptr<unsigned char>();
+   }, [](int sig){}, code_alloc, &wasm_alloc);
+
+   //send SIGTERM to the process, it should be delivered to the signal handling thread
+   REQUIRE(kill(getpid(), SIGTERM) == 0);
+
+   pollfd pfd{
+      .fd = signal_pipefds[0],
+      .events = POLLIN,
+   };
+   int r = poll(&pfd, 1, 500);
+   REQUIRE(r == 1);
+   REQUIRE((pfd.revents & POLLIN) != 0);
+
+   char buf;
+   REQUIRE(read(signal_pipefds[0], &buf, 1) == 1);
 }
