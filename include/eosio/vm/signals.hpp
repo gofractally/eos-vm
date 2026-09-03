@@ -165,7 +165,10 @@ namespace eosio { namespace vm {
       code_memory_range = code_allocator.get_code_span();
       memory_range = mem_allocator->get_span();
       int sig;
-      if((sig = sigsetjmp(dest, 1)) == 0) {
+      sigset_t old_sigmask;
+      pthread_sigmask(SIG_SETMASK, nullptr, &old_sigmask);
+      // modifications to locals after setjmp might not be preserved across longjmp
+      if((sig = sigsetjmp(dest, 0)) == 0) {
          // Note: Cannot use RAII, as non-trivial destructors w/ longjmp
          // have undefined behavior. [csetjmp.syn]
          //
@@ -174,13 +177,13 @@ namespace eosio { namespace vm {
          // signals to make sure that only our signal handler is executed
          // if the caller has previously blocked signals.
          old_signal_handler = std::atomic_exchange(&signal_dest, &dest);
-         sigset_t unblock_mask, old_sigmask; // Might not be preserved across longjmp
+         sigset_t unblock_mask;
          sigemptyset(&unblock_mask);
          sigaddset(&unblock_mask, SIGSEGV);
          sigaddset(&unblock_mask, SIGBUS);
          sigaddset(&unblock_mask, SIGFPE);
          sigaddset(&unblock_mask, SIGPROF);
-         pthread_sigmask(SIG_UNBLOCK, &unblock_mask, &old_sigmask);
+         pthread_sigmask(SIG_UNBLOCK, &unblock_mask, nullptr);
          try {
             f();
             pthread_sigmask(SIG_SETMASK, &old_sigmask, nullptr);
@@ -195,6 +198,7 @@ namespace eosio { namespace vm {
             throw;
          }
       } else {
+         pthread_sigmask(SIG_SETMASK, &old_sigmask, nullptr);
          std::atomic_store(&signal_dest, old_signal_handler);
          memory_range = old_memory_range;
          code_memory_range = old_code_memory_range;
