@@ -309,7 +309,7 @@ set(softfloat_sources
 add_library(softfloat STATIC ${softfloat_sources})
 target_compile_definitions(
    softfloat PUBLIC
-   "-DSOFTFLOAT_FAST_INT64 -DSOFTFLOAT_ROUND_EVEN -DINLINE_LEVEL=5 -DSOFTFLOAT_FAST_DIV32TO16 -DSOFTFLOAT_FAST_DIV64TO32" -DTHREAD_LOCAL=thread_local
+   "-DSOFTFLOAT_FAST_INT64 -DSOFTFLOAT_ROUND_EVEN -DINLINE_LEVEL=5 -DSOFTFLOAT_FAST_DIV32TO16 -DSOFTFLOAT_FAST_DIV64TO32" -DTHREAD_LOCAL=_Thread_local
    )
 target_include_directories(softfloat
                            PUBLIC ${SOFTFLOAT_SRC}/include ${SOFTFLOAT_SRC}/8086-SSE
